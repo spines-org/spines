@@ -67,7 +67,7 @@ typedef struct Edge_d
     struct Node_d *src;                    /* Source node */
     struct Node_d *dst;                    /* Destination node */
 
-    struct Network_Leg_d   *leg;                    /* the underlying communication leg */
+    struct Network_Leg_d   *leg;           /* the underlying communication leg */
   
 } Edge;
 
