@@ -1,4 +1,4 @@
-This is the v1.1.0 (May 2009) distribution of the StdUtil library.
+This is the v1.1.3 (January 2012) distribution of the StdUtil library.
 
 DESCRIPTION:
 
@@ -16,7 +16,7 @@ Documentation is currently incomplete but will be available in a
 subsequent release in HTML format in the docs directory.  The
 documentation will also be available at:
 
-http://www.cnds.jhu.edu/software/stdutil/docs
+http://www.stdutil.org
 
 BUILDING: 
 
@@ -26,10 +26,10 @@ option.
 
 PROBLEMS:
 
-Please report bugs and/or bug fixes to jschultz@cnds.jhu.edu with a
+Please report bugs and/or bug fixes to jschultz@spreadconcepts.com with a
 gdb compatible core (if possible) and any information that could help
 fix the problem.
 
 Enjoy,
-John Schultz <jschultz@cnds.jhu.edu>
-May 2009
+John Schultz <jschultz@spreadconcepts.com>
+January 2012

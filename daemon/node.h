@@ -1,6 +1,6 @@
 /*
  * Spines.
- *     
+ *
  * The contents of this file are subject to the Spines Open-Source
  * License, Version 1.0 (the ``License''); you may not use
  * this file except in compliance with the License.  You may obtain a
@@ -10,15 +10,15 @@
  *
  * or in the file ``LICENSE.txt'' found in this distribution.
  *
- * Software distributed under the License is distributed on an AS IS basis, 
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License 
- * for the specific language governing rights and limitations under the 
+ * Software distributed under the License is distributed on an AS IS basis,
+ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+ * for the specific language governing rights and limitations under the
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir and Claudiu Danilov.
+ *  Yair Amir, Claudiu Danilov and John Schultz.
  *
- * Copyright (c) 2003 - 2009 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2013 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -29,68 +29,60 @@
  *
  */
 
-
 #ifndef NODE_H
 #define NODE_H
 
+#include "stdutil/stdhash.h"
+#include "stdutil/stdskl.h"
 
-#define LOCAL_NODE               0x0001
-#define NEIGHBOR_NODE            0x0002
-#define CONNECTED_NODE           0x0004
-#define NOT_YET_CONNECTED_NODE   0x0008
-#define REMOTE_NODE              0x0010
+#include "spu_events.h"
 
-#ifdef SPINES_SSL
-#include <openssl/ssl.h>
-#endif
+#include "net_types.h"
 #include "link.h"
+#include "link_state.h"
+#include "network.h"
+
 #ifdef SPINES_WIRELESS
-#include "wireless.h"
+#  include "wireless.h"
 #endif
 
+struct Node_d;
+struct Edge_d;
+struct Interface_d;
+struct Network_Leg_d;
+struct Link_d;
 
-typedef struct Node_d {
-    int32 address;               /* IP Address */
-    int16 node_id;               /* Index in the global neighbor nodes array */
-    int16 node_no;               /* Ordered id of all the nodes in the system */
-    int16 flags;                 /* Connected, Neighbor, etc. */
-    int16 counter;               /* Number of outstanding "hello" messages */
+typedef struct Node_d 
+{
+  Node_ID             nid;               /* node identifier */
+  stdhash             interfaces;        /* known interfaces of this node: <Interface_ID -> Interface*> */
+  struct Edge_d      *edge;              /* the edge to this node from This_Node (can be NULL) */
+  int16               neighbor_id;       /* index in Neighbor_Nodes array if Is_Connected_Neighbor() */
 
-    sp_time last_time_neighbor;    
-    struct Link_d *link[MAX_LINKS_4_EDGE]; /* Links to this node, if a neighbor */
+  /* Routing Variables */
 
-    /* Routing info */
-    stdhash multicast_routes;    /* hash keyed on address of destination, and
-				    having data of address of forwarder */
+  int16               node_no;           /* ordered id of all the nodes in the system */
+  int                 cost;
+  int                 distance;
 
-    /* Routing info for Dijkstra only */
-    int cost;
-    int distance;
+  struct Node_d      *forwarder;
 
-    /* Wireless Info from this node */
-#ifdef SPINES_WIRELESS
-    struct  Wireless_Data_d w_data;
-#endif
+  struct Node_d      *prev;
+  struct Node_d      *next;
 
-    struct Node_d *forwarder;
+  char               *device_name;       /* device name to reach this node, if Is_Connected_Neighbor() */ 
 
-    struct Node_d *prev;         /* Used to build an ordered linked list */
-    struct Node_d *next;         /* Used to build an ordered linked list */
-
-    char *device_name;           /* Device name to reach this node, if a neighbors */ 
 } Node;
 
-#ifdef SPINES_SSL
-struct send_item {
-    SSL *ssl;
-    char pseudo_scat[MAX_PACKET_SIZE];
-    int size;
-};
-#endif
+int   Node_ID_cmp(const void *l, const void *r);
 
-void Init_Nodes(void);
-void Create_Node(int32 address, int16 mode);
-void Disconnect_Node(int32 address);
-int  Try_Remove_Node(int32 address);
+void  Init_Nodes(void);
+
+Node *Create_Node(Node_ID nid);
+Node *Get_Node(Node_ID nid);
+int   Is_Connected_Neighbor(Node_ID nid);
+int   Is_Connected_Neighbor2(Node *nd);
+void  Disconnect_Node(Node_ID nid);
+int   Try_Remove_Node(Node_ID nid);
 
 #endif

@@ -1,6 +1,6 @@
 /*
  * Spines.
- *     
+ *
  * The contents of this file are subject to the Spines Open-Source
  * License, Version 1.0 (the ``License''); you may not use
  * this file except in compliance with the License.  You may obtain a
@@ -10,15 +10,15 @@
  *
  * or in the file ``LICENSE.txt'' found in this distribution.
  *
- * Software distributed under the License is distributed on an AS IS basis, 
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License 
- * for the specific language governing rights and limitations under the 
+ * Software distributed under the License is distributed on an AS IS basis,
+ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+ * for the specific language governing rights and limitations under the
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir and Claudiu Danilov.
+ *  Yair Amir, Claudiu Danilov and John Schultz.
  *
- * Copyright (c) 2003 - 2009 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2013 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -29,27 +29,27 @@
  *
  */
 
-
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <errno.h>
+#include <assert.h>
+#include <math.h>
 
 #ifndef ARCH_PC_WIN95
-#include <unistd.h>
-#include <sys/time.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h> 
-#include <netdb.h>
-#include <sys/ipc.h>
-#include <sys/shm.h>
+#  include <unistd.h>
+#  include <sys/time.h>
+#  include <sys/types.h>
+#  include <sys/socket.h>
+#  include <netinet/in.h> 
+#  include <netdb.h>
+#  include <sys/ipc.h>
+#  include <sys/shm.h>
 #else 
-#include <winsock2.h>
-#include <ws2tcpip.h>
+#  include <winsock2.h>
+#  include <ws2tcpip.h>
 #endif
-#include <errno.h>
-#include <math.h>
-#include <assert.h>
+
 #include "spines_lib.h"
 
 static int  Num_bytes;
@@ -123,7 +123,7 @@ int main( int argc, char *argv[] )
   FILE *f1 = NULL;
   
   struct sockaddr_in host, serv_addr, name, remote;
-  int remote_addr_sz;
+  socklen_t remote_addr_sz;
   struct hostent     h_ent;
   struct hostent  *host_ptr;
   char   machine_name[256];
@@ -473,9 +473,9 @@ int main( int argc, char *argv[] )
       }
       
       if(verbose_mode == 1) {
-	printf("%d\t%d\t%d\t%d\r\n", ntohl(*pkt_size), ntohl(*pkts_sending), ntohl(*pkt_no), oneway_time);
+	printf("%d\t%d\t%d\t%lld\r\n", ntohl(*pkt_size), ntohl(*pkts_sending), ntohl(*pkt_no), oneway_time);
 	if(fileflag == 1) {
-	  fprintf(f1, "%d\t%d\t%d\t%d\r\n", ntohl(*pkt_size), ntohl(*pkts_sending), ntohl(*pkt_no), oneway_time);
+	  fprintf(f1, "%d\t%d\t%d\t%lld\r\n", ntohl(*pkt_size), ntohl(*pkts_sending), ntohl(*pkt_no), oneway_time);
 	  fflush(f1);
 	}       
       }
@@ -663,7 +663,7 @@ static  void    Usage(int argc, char *argv[])
 	printf("Bad Protocol %d specified through -P option!\r\n", tmp);
 	exit(0);
       }
-      Protocol != tmp;
+      Protocol |= tmp;
       argc--; argv++;
     } else if( !strncmp( *argv, "-f", 2 ) ){
       sscanf(argv[1], "%s", filename );

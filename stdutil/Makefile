@@ -1,4 +1,4 @@
-all:
+all: src/Makefile
 	cd src; $(MAKE) all
 
 clean: 
@@ -15,3 +15,7 @@ uberclean:
 	rm -rf autom4te.cache
 	rm -f configure
 	cd src; $(MAKE) uberclean
+
+src/Makefile:
+	./configure
+

@@ -1,6 +1,6 @@
 /*
  * Spines.
- *     
+ *
  * The contents of this file are subject to the Spines Open-Source
  * License, Version 1.0 (the ``License''); you may not use
  * this file except in compliance with the License.  You may obtain a
@@ -10,15 +10,15 @@
  *
  * or in the file ``LICENSE.txt'' found in this distribution.
  *
- * Software distributed under the License is distributed on an AS IS basis, 
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License 
- * for the specific language governing rights and limitations under the 
+ * Software distributed under the License is distributed on an AS IS basis,
+ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+ * for the specific language governing rights and limitations under the
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir and Claudiu Danilov.
+ *  Yair Amir, Claudiu Danilov and John Schultz.
  *
- * Copyright (c) 2003 - 2009 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2013 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -29,41 +29,35 @@
  *
  */
 
-
-#include "util/arch.h"
+#include "arch.h"
 
 #ifndef	ARCH_PC_WIN95
-
-#include <sys/socket.h>
-#include <sys/ioctl.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-
+#  include <sys/socket.h>
+#  include <sys/ioctl.h>
+#  include <netinet/in.h>
+#  include <netinet/tcp.h>
 #else
-
-#include <winsock2.h>
-
+#  include <winsock2.h>
 #endif
 
 #ifdef ARCH_SPARC_SOLARIS
-#include <unistd.h>
-#include <stropts.h>
+#  include <unistd.h>
+#  include <stropts.h>
 #endif
 
 #ifndef _WIN32_WCE
-#include <errno.h>
+#  include <errno.h>
 #endif
 
 #include <stdlib.h>
 #include <string.h>
 
-
-#include "util/alarm.h"
-#include "util/sp_events.h"
-#include "util/memory.h"
-#include "util/data_link.h"
-#include "stdutil/src/stdutil/stdhash.h"
-#include "stdutil/src/stdutil/stdcarr.h"
+#include "spu_alarm.h"
+#include "spu_events.h"
+#include "spu_memory.h"
+#include "spu_data_link.h"
+#include "stdutil/stdhash.h"
+#include "stdutil/stdcarr.h"
 
 #include "objects.h"
 #include "net_types.h"
@@ -79,7 +73,7 @@
 
 /* Global variables */
 
-extern int32     My_Address;
+extern Node_ID     My_Address;
 extern stdhash   Sessions_ID;
 extern stdhash   Sessions_Port;
 extern stdhash   Rel_Sessions_Port;
@@ -96,7 +90,7 @@ static const sp_time disconnect_timeout = {    30,    0};
 
 
 /***********************************************************/
-/* int Init_Reliable_Session(Session* ses, int32 address,  */
+/* int Init_Reliable_Session(Session* ses, Node_ID address,  */
 /*                           int16u port)                  */
 /*                                                         */
 /* Initializes a reliable session                          */
@@ -115,7 +109,7 @@ static const sp_time disconnect_timeout = {    30,    0};
 /***********************************************************/
 
 
-int Init_Reliable_Session(Session *ses, int32 address, int16u port)
+int Init_Reliable_Session(Session *ses, Node_ID address, int16u port)
 {
     int32u i;
     Reliable_Data *r_data;
@@ -178,7 +172,7 @@ int Init_Reliable_Session(Session *ses, int32 address, int16u port)
 
 
 /***********************************************************/
-/* int Init_Reliable_Connect(Session* ses, int32 address,  */
+/* int Init_Reliable_Connect(Session* ses, Node_ID address,  */
 /*                           int16u port)                  */
 /*                                                         */
 /* Starts a reliable session connect                       */
@@ -198,7 +192,7 @@ int Init_Reliable_Session(Session *ses, int32 address, int16u port)
 /*                                                         */
 /***********************************************************/
 
-int Init_Reliable_Connect(Session *ses, int32 address, int16u port)
+int Init_Reliable_Connect(Session *ses, Node_ID address, int16u port)
 {
 
     Init_Reliable_Session(ses, address, port);
@@ -627,8 +621,8 @@ void Disconnect_Reliable_Session(Session* ses)
     /* Set the flags for a disconnected (orphan for now) session */
     ses->client_stat = SES_CLIENT_ORPHAN;
 
-    Ses_Send_Rel_Hello(ses->sess_id, NULL);   
-
+    Ses_Send_Rel_Hello(ses->sess_id, NULL);  
+ 
     if(ses->sess_id != 0) {
       E_queue(Ses_Delay_Close, ses->sess_id, NULL, disconnect_timeout);
     }
@@ -1700,7 +1694,7 @@ int Reliable_Ses_Send(Session* ses)
     /* If I got here it means that I have some space in the window, 
      * so I can go ahead and send the packet */
     if(r_data->head > r_tail->seq_no) {
-	Alarm(EXIT, "Reliable_Ses_Msg(): sending a packet with a smaller seq_no\n");
+      Alarm(EXIT, "Reliable_Ses_Msg(): sending a packet with a smaller seq_no\n");
     }
     
     r_data->window[r_tail->seq_no%MAX_WINDOW].data_len = data_len;
@@ -2671,7 +2665,7 @@ void Ses_Send_Nack_Retransm(int sesid, void *dummy)
 	
 	if(ses->links_used == SOFT_REALTIME_LINKS) {
 	    Forward_RT_UDP_Data(next_hop, send_buff,
-				      u_hdr->len+sizeof(udp_header));
+				u_hdr->len+sizeof(udp_header));
 	}
 	else if(ses->links_used == RELIABLE_LINKS) {
 	    Forward_Rel_UDP_Data(next_hop, send_buff, 

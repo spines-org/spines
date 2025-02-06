@@ -1,6 +1,6 @@
 /*
  * Spines.
- *     
+ *
  * The contents of this file are subject to the Spines Open-Source
  * License, Version 1.0 (the ``License''); you may not use
  * this file except in compliance with the License.  You may obtain a
@@ -10,15 +10,15 @@
  *
  * or in the file ``LICENSE.txt'' found in this distribution.
  *
- * Software distributed under the License is distributed on an AS IS basis, 
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License 
- * for the specific language governing rights and limitations under the 
+ * Software distributed under the License is distributed on an AS IS basis,
+ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+ * for the specific language governing rights and limitations under the
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir and Claudiu Danilov.
+ *  Yair Amir, Claudiu Danilov and John Schultz.
  *
- * Copyright (c) 2003 - 2009 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2013 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -29,11 +29,10 @@
  *
  */
 
-
 #ifndef OBJECTS_H
 #define OBJECTS_H
 
-#include "util/arch.h"
+#include "arch.h"
 
 #define MAX_OBJECTS             200
 #define MAX_OBJ_USED            (UNKNOWN_OBJ+1)
@@ -69,6 +68,8 @@
 #define CHANGED_STATE           25
 #define STATE_CHAIN             26
 #define MULTICAST_GROUP         27
+#define INTERFACE               28
+#define NETWORK_LEG             29
 
 #define BUFFER_CELL             31
 #define UDP_CELL                32
@@ -77,22 +78,16 @@
 #define CONTROL_DATA            41
 #define RELIABLE_DATA           42
 #define REALTIME_DATA           43
-#define RESERVED_DATA           44 /* LC_ARP */
+#define RESERVED_DATA1          44 /* MN */
+#define RESERVED_DATA2          45 /* SC2 */
 
 #define SESSION_OBJ             51
 
 
 #define REL_MCAST_TREE_OBJ	52 
 
-#ifdef SPINES_SSL
-/* added for security part */
-#define SSL_IP_BUFFER           53
-#define SSL_PKT_BUFFER          54
-#define SSL_SOCKADDR_IN         55
-#endif
-
 /* Special objects */
-#define UNKNOWN_OBJ             56      /* This represents an object of undertermined or 
+#define UNKNOWN_OBJ             53      /* This represents an object of undertermined or 
                                          * variable type.  Can only be used when appropriate.
                                          * i.e. when internal structure of object is not accessed.
                                          * This is mainly used with queues

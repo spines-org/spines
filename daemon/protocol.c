@@ -1,6 +1,6 @@
 /*
  * Spines.
- *     
+ *
  * The contents of this file are subject to the Spines Open-Source
  * License, Version 1.0 (the ``License''); you may not use
  * this file except in compliance with the License.  You may obtain a
@@ -10,15 +10,15 @@
  *
  * or in the file ``LICENSE.txt'' found in this distribution.
  *
- * Software distributed under the License is distributed on an AS IS basis, 
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License 
- * for the specific language governing rights and limitations under the 
+ * Software distributed under the License is distributed on an AS IS basis,
+ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+ * for the specific language governing rights and limitations under the
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir and Claudiu Danilov.
+ *  Yair Amir, Claudiu Danilov and John Schultz.
  *
- * Copyright (c) 2003 - 2009 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2013 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -28,6 +28,7 @@
  *    Nilo Rivera
  *
  */
+
 #include <stdlib.h>
 #include <assert.h>
 
@@ -35,12 +36,12 @@
 #include <winsock2.h>
 #endif
 
-#include "util/arch.h"
-#include "util/alarm.h"
-#include "util/sp_events.h"
-#include "util/data_link.h"
-#include "util/memory.h"
-#include "stdutil/src/stdutil/stdhash.h"
+#include "arch.h"
+#include "spu_alarm.h"
+#include "spu_events.h"
+#include "spu_data_link.h"
+#include "spu_memory.h"
+#include "stdutil/stdhash.h"
 
 #include "objects.h"
 #include "net_types.h"
@@ -57,8 +58,10 @@
 #include "realtime_udp.h"
 #include "state_flood.h"
 
+extern int16u Port;
 
 /* Statistics */
+
 extern int64_t total_udp_pkts;
 extern int64_t total_udp_bytes;
 extern int64_t total_rel_udp_pkts;
@@ -71,11 +74,6 @@ extern int64_t total_link_state_pkts;
 extern int64_t total_link_state_bytes;
 extern int64_t total_group_state_pkts;
 extern int64_t total_group_state_bytes;
-
-
-
-
-
 
 /***********************************************************/
 /* int16 Prot_process_scat(sys_scatter *scat,              */
@@ -97,177 +95,201 @@ extern int64_t total_group_state_bytes;
 /*                                                         */
 /***********************************************************/
 
-
-
-/* scat is the receiving scatter (Global !). 
+/* scat is the receiving scatter (Global!). 
    At the return of the function I should either:
        - finish processing of scat, so it can be reused for receiving
-       - allocate a new scat header/body so I have smthg to receive in */
-void Prot_process_scat(sys_scatter *scat, int total_bytes, int mode, int32 type)
+       - allocate a new scat header/body so I have smthg to receive in 
+*/
+
+void Prot_process_scat(sys_scatter *scat, int total_bytes, Interface *local_interf, int mode, int32 type, Network_Address from_addr, int16u from_port)
 {
-    int remaining_bytes;
-    packet_header *pack_hdr;
- 
+  packet_header *pack_hdr        = (packet_header*) scat->elements[0].buf;
+  int            remaining_bytes = total_bytes - scat->elements[0].len;
+  Interface     *remote_interf   = NULL;
+  Network_Leg   *leg             = NULL;
+  Link          *link            = NULL;
+  
+  if (remaining_bytes != pack_hdr->data_len + pack_hdr->ack_len) {
+    Alarm(PRINT, "Prot_process_scat: Got a corrupted message; wrong sizes: %d != %d + %d!\r\n", remaining_bytes, pack_hdr->data_len, pack_hdr->ack_len);
+    return;
+  }
 
-    pack_hdr = (packet_header *)scat->elements[0].buf;
+  if (from_port != Port + mode) {
+    Alarm(PRINT, "Prot_process_scat: Recvd a msg on port %d from an unequal remote port (%d)!\r\n", Port + mode, (int) from_port);
+    return;
+  }
 
-    remaining_bytes = total_bytes - scat->elements[0].len;
-    if(remaining_bytes != pack_hdr->data_len+pack_hdr->ack_len) {
-	/* Ignore the message */
-	Alarm(PRINT, "Prot_process_scat(): Got a corrupted message: %d; %d; %d\n",
-	      remaining_bytes, pack_hdr->data_len, pack_hdr->ack_len);
-	return;
+  /* look up any existing remote interface, network leg and link on which this msg arrived */
+
+  if ((remote_interf = Get_Interface_by_Addr(from_addr)) != NULL) {
+
+    if (remote_interf->owner->nid != pack_hdr->sender_id) {
+      Alarm(PRINT, "Prot_process_scat: Sender ID (" IPF ") doesn't match known interface information (" IPF ") based on src address (" IPF ")! Dropping!\r\n",
+	    IP(pack_hdr->sender_id), IP(remote_interf->owner->nid), IP(from_addr));
+      return;
     }
 
-    /* Check the loss rate from the sender */
-    Check_Link_Loss(pack_hdr->sender_id, pack_hdr->seq_no);
+    if ((leg = Get_Network_Leg(local_interf->iid, remote_interf->iid)) != NULL) {
+      link = leg->links[mode];
+    }
+  }
 
-    /* Call the appropriate processing function for the packet */
-    if(Is_udp_data(pack_hdr->type)) {
-	Alarm(DEBUG, "Udp_data: %d\n", total_bytes);   
+  /* process hello's specially, regardless of lookup results */
 
-	total_udp_pkts++;
-	total_udp_bytes += total_bytes;
+  if (Is_hello_type(pack_hdr->type)) {
 
-        Process_udp_data_packet(pack_hdr->sender_id, scat->elements[1].buf, 
-			   pack_hdr->data_len, type, mode);
+    if (mode == CONTROL_LINK) {
 
-	/* Here it's not ok anymore, Process_udp_data_packet() 
-	   might still  need to keep the buffer after returning
-	   Therefore, the function should create a new buffer if needed
-	   and replace the original one. */
-	
-	if(get_ref_cnt(scat->elements[1].buf) > 1) {
-	    dec_ref_cnt(scat->elements[1].buf);
-	    if((scat->elements[1].buf = 
-		(char *) new_ref_cnt(PACK_BODY_OBJ)) == NULL) {
-		Alarm(EXIT, "Prot_process_scat: Could not allocate packet body obj\n");
-	    } 	    
+      Alarm(DEBUG, "\n\nprocess_hello*: size: %d\n", total_bytes);
+
+      total_hello_pkts++;
+      total_hello_bytes += total_bytes;
+
+      Process_hello_ping(pack_hdr, from_addr, local_interf, &remote_interf, &leg, &link);  /* try to create remote_interf, leg + ctrl link on demand */
+
+      if (link != NULL) {
+
+	if (Is_hello(pack_hdr->type) || Is_hello_req(pack_hdr->type)) {
+	  Process_hello_packet(link, pack_hdr, scat->elements[1].buf, remaining_bytes, type);
+	  /* NOTE: Check_Link_Loss() called in Process_hello_packet if appropriate */
 	}
+      }
+
+    } else {
+      Alarm(PRINT, "Prot_process_scat: Bad mode %d for hello msg type! Dropping!\r\n", mode);
+      return;
     }
-    else if(Is_realtime_data(pack_hdr->type)) {
-	Alarm(DEBUG, "\n\nprocess_realtime_udp_data: size: %d\n", total_bytes); 
 
-	total_udp_pkts++;
-	total_udp_bytes += total_bytes;
+  } else if (link != NULL) {  /* call the appropriate processing function for the packet if it was received on a link */
 
-        Process_RT_UDP_data_packet(pack_hdr->sender_id, scat->elements[1].buf, 
-			   pack_hdr->data_len, pack_hdr->ack_len, type, mode);
+    assert(leg->links[CONTROL_LINK] != NULL && link->link_type == mode);
 
-	/* Here it's not ok anymore, Process_udp_data_packet() 
-	   might still  need to keep the buffer after returning
-	   Therefore, the function should create a new buffer if needed
-	   and replace the original one. */
-	
-	if(get_ref_cnt(scat->elements[1].buf) > 1) {
-	    dec_ref_cnt(scat->elements[1].buf);
-	    if((scat->elements[1].buf = 
-		(char *) new_ref_cnt(PACK_BODY_OBJ)) == NULL) {
-		Alarm(EXIT, "Prot_process_scat: Could not allocate packet body obj\n");
-	    } 	    
-	}
+    if (pack_hdr->ctrl_link_id != leg->other_side_ctrl_link_id) {
+      Alarm(PRINT, "Prot_process_scat: Other side ctrl id 0x%x doesn't match current one 0x%x! Dropping!\n", pack_hdr->ctrl_link_id, leg->other_side_ctrl_link_id);
+      return;
     }
-    else if(Is_realtime_nack(pack_hdr->type)) {
-        Alarm(DEBUG, "\n\nprocess_realtime_nack: size: %d\n", total_bytes);
+
+    Check_Link_Loss(leg, pack_hdr->seq_no);
+
+    switch (mode) {
+
+    case CONTROL_LINK:
+
+      if (Is_link_state(pack_hdr->type)) {
+	Alarm(DEBUG, "\n\nprocess_state_packet: (link) size: %d\n", total_bytes);
+
+	total_link_state_pkts++;
+	total_link_state_bytes += total_bytes;
+
+	Process_state_packet(link, scat->elements[1].buf, pack_hdr->data_len, pack_hdr->ack_len, type, mode);
+
+      } else if (Is_group_state(pack_hdr->type)) {
+	Alarm(DEBUG, "\n\nprocess_state_packet: (group) size: %d\n", total_bytes);
+
+	total_group_state_pkts++;
+	total_group_state_bytes += total_bytes;   	    
+
+	Process_state_packet(link, scat->elements[1].buf, pack_hdr->data_len, pack_hdr->ack_len, type, mode);
+
+      } else if (Is_link_ack(pack_hdr->type)) {
+	Alarm(DEBUG, "\n\nprocess_ack: size: %d\n", total_bytes);
 
 	total_link_ack_pkts++;
 	total_link_ack_bytes += total_bytes;
  
-        Process_RT_nack_packet(pack_hdr->sender_id, scat->elements[1].buf, 
-			       pack_hdr->ack_len, type, mode);
-	 
+	Process_ack_packet(link, scat->elements[1].buf, pack_hdr->ack_len, type, mode);
 
-	/* Here it's not ok anymore, Process_RT_nack_packet() 
-	   might still  need to keep the buffer after returning
-	   Therefore, the function should create a new buffer if needed
-	   and replace the original one. */
-	if(get_ref_cnt(scat->elements[1].buf) > 1) {
-	    dec_ref_cnt(scat->elements[1].buf);
-	    if((scat->elements[1].buf = 
-		(char *) new_ref_cnt(PACK_BODY_OBJ)) == NULL) {
-		Alarm(EXIT, "Prot_process_scat: Could not allocate packet body obj\n");
-	    } 	    
-	}
+      } else {
+	Alarm(PRINT, "Prot_process_scat: Unexpected msg type 0x%x for mode %d! Dropping!\r\n", pack_hdr->type, mode);
+      }
 
-    }
-    else if(Is_rel_udp_data(pack_hdr->type)) {
+      break;
+
+    case UDP_LINK:
+
+      if (Is_udp_data(pack_hdr->type)) {
+	Alarm(DEBUG, "\n\nprocess_udp_data: size: %d\n", total_bytes);   
+
+	total_udp_pkts++;
+	total_udp_bytes += total_bytes;
+
+	Process_udp_data_packet(link, scat->elements[1].buf, pack_hdr->data_len, type, mode);
+
+      } else {
+	Alarm(PRINT, "Prot_process_scat: Unexpected msg type 0x%x for mode %d! Dropping!\r\n", pack_hdr->type, mode);
+      }
+      
+      break;
+
+    case RELIABLE_UDP_LINK:
+
+      if (Is_rel_udp_data(pack_hdr->type)) {
 	Alarm(DEBUG, "\n\nprocess_rel_udp_data: size: %d\n", total_bytes);    
 
 	total_rel_udp_pkts++;
 	total_rel_udp_bytes += total_bytes;
 
-        Process_rel_udp_data_packet(pack_hdr->sender_id, 
-				    scat->elements[1].buf, 
-				    pack_hdr->data_len, pack_hdr->ack_len,
-				    type, mode);
-	/* Here it's not ok anymore, Process_rel_udp_data_packet() 
-	   might still  need to keep the buffer after returning
-	   Therefore, the function should create a new buffer if needed
-	   and replace the original one. */
-	if(get_ref_cnt(scat->elements[1].buf) > 1) {
-	    dec_ref_cnt(scat->elements[1].buf);
-	    if((scat->elements[1].buf = 
-		(char *) new_ref_cnt(PACK_BODY_OBJ)) == NULL) {
-		Alarm(EXIT, "Prot_process_scat: Could not allocate packet body obj\n");
-	    } 	    
-	}
-    }
-    else if(Is_link_ack(pack_hdr->type)) {
-        /*Alarm(DEBUG, "\n\nprocess_ack: size: %d\n", total_bytes);*/
+	Process_rel_udp_data_packet(link, scat->elements[1].buf, pack_hdr->data_len, pack_hdr->ack_len, type, mode);
 
+      } else if (Is_link_ack(pack_hdr->type)) {
+	Alarm(DEBUG, "\n\nprocess_ack: size: %d\n", total_bytes);
+	
+	total_link_ack_pkts++;
+	total_link_ack_bytes += total_bytes;
+	
+	Process_ack_packet(link, scat->elements[1].buf, pack_hdr->ack_len, type, mode);
+
+      } else {
+	Alarm(PRINT, "Prot_process_scat: Unexpected msg type 0x%x for mode %d! Dropping!\r\n", pack_hdr->type, mode);
+      }
+     
+      break;
+
+    case REALTIME_UDP_LINK:
+
+      if (Is_realtime_data(pack_hdr->type)) {
+	Alarm(DEBUG, "\n\nprocess_realtime_udp_data: size: %d\n", total_bytes); 
+	
+	total_udp_pkts++;
+	total_udp_bytes += total_bytes;
+	
+	Process_RT_UDP_data_packet(link, scat->elements[1].buf, pack_hdr->data_len, pack_hdr->ack_len, type, mode);
+	
+      } else if(Is_realtime_nack(pack_hdr->type)) {
+	Alarm(DEBUG, "\n\nprocess_realtime_nack: size: %d\n", total_bytes);
+	
 	total_link_ack_pkts++;
 	total_link_ack_bytes += total_bytes;
  
-        Process_ack_packet(pack_hdr->sender_id, scat->elements[1].buf, 
-			   pack_hdr->ack_len, type, mode);
-	/* It's ok here, Process_ack_packet() does not need the buffer 
-	   after returning */
+	Process_RT_nack_packet(link, scat->elements[1].buf, pack_hdr->ack_len, type, mode);
+
+      } else {
+	Alarm(PRINT, "Prot_process_scat: Unexpected msg type 0x%x for mode %d! Dropping!\r\n", pack_hdr->type, mode);
+      }
+      
+      break;
+
+    case RESERVED0_LINK:
+    case RESERVED1_LINK:
+    case RESERVED2_LINK:
+    case MAX_LINKS_4_EDGE:
+    default:
+      Alarm(EXIT, "Prot_process_scat: Unrecognized mode %d! BUG!!\r\n", mode);
+      break;
     }
-    else if(Is_hello(pack_hdr->type)||Is_hello_req(pack_hdr->type)) {
-	/*Alarm(PRINT, "\n\nprocess_hello: size: %d\n", total_bytes);*/ 
 
-	total_hello_pkts++;
-	total_hello_bytes += total_bytes;
+  } else {
+    Alarm(DEBUG, "Prot_process_scat: Dropping message of type 0x%x in mode %d from " IPF " due to lack of link!\r\n", pack_hdr->type, mode, IP(from_addr));
+  }
 
-        Process_hello_packet(scat->elements[1].buf, remaining_bytes, 
-			     pack_hdr->sender_id, type);
-	/* It's ok here, Process_hello_packet() does not need the buffer 
-	   after returning */
-    }
-    else if(Is_hello_ping(pack_hdr->type)) {
-	/*Alarm(PRINT, "\n\nprocess_hello_ping: size: %d\n", total_bytes);*/  
+  /* check if the buffer is still needed */
 
-	total_hello_pkts++;
-	total_hello_bytes += total_bytes;
+  if (get_ref_cnt(scat->elements[1].buf) > 1) {
 
-        Process_hello_ping_packet(pack_hdr->sender_id, mode);
-	/* It's ok here, Process_hello_ping_packet() does not need the buffer 
-	   after returning */
-    }
-    else if((Is_link_state(pack_hdr->type)||(Is_group_state(pack_hdr->type)))) {
-        /*Alarm(PRINT, "\n\nprocess_state_packet: size: %d\n", total_bytes);*/ 
+    dec_ref_cnt(scat->elements[1].buf);
 
-	if(Is_link_state(pack_hdr->type)) {
-	    total_link_state_pkts++;
-	    total_link_state_bytes += total_bytes;   
-	}
-	else {
-	    total_group_state_pkts++;
-	    total_group_state_bytes += total_bytes;   	    
-	}
-
-        Process_state_packet(pack_hdr->sender_id, scat->elements[1].buf, 
-				  pack_hdr->data_len, pack_hdr->ack_len, 
-				  type, mode);
-	/* It's ok here, Process_state_packet() does not need the buffer 
-	   after returning */
-    }
-    else {
-	/* Ignore the message */
-        Alarm(DEBUG, "Prot_process_scat(): Unknown message type: %X\n",
-	      pack_hdr->type);
-	return;
-    }
+    if ((scat->elements[1].buf = (char*) new_ref_cnt(PACK_BODY_OBJ)) == NULL) {
+      Alarm(EXIT, "Prot_process_scat: Could not allocate packet body obj\r\n");
+    } 	    
+  }
 }
-
-

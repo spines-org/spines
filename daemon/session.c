@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir and Claudiu Danilov.
+ *  Yair Amir, Claudiu Danilov and John Schultz.
  *
- * Copyright (c) 2003 - 2009 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2013 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -29,41 +29,37 @@
  *
  */
 
-
-#include "util/arch.h"
-
+#include "arch.h"
 
 #ifndef	ARCH_PC_WIN95
-
-#include <sys/socket.h>
-#include <sys/ioctl.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <string.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
-
+#  include <sys/socket.h>
+#  include <sys/ioctl.h>
+#  include <netinet/in.h>
+#  include <netinet/tcp.h>
+#  include <string.h>
+#  include <sys/types.h>
+#  include <sys/stat.h>
+#  include <fcntl.h>
+#  include <unistd.h>
 #else
-#include <winsock2.h>
+#  include <winsock2.h>
 #endif
 
 #ifdef ARCH_SPARC_SOLARIS
-#include <unistd.h>
-#include <stropts.h>
+#  include <unistd.h>
+#  include <stropts.h>
 #endif
 
 #ifndef _WIN32_WCE
-#include <errno.h>
+#  include <errno.h>
 #endif
 
-#include "util/alarm.h"
-#include "util/sp_events.h"
-#include "util/memory.h"
-#include "util/data_link.h"
-#include "stdutil/src/stdutil/stdhash.h"
-#include "stdutil/src/stdutil/stdcarr.h"
+#include "spu_alarm.h"
+#include "spu_events.h"
+#include "spu_memory.h"
+#include "spu_data_link.h"
+#include "stdutil/stdhash.h"
+#include "stdutil/stdcarr.h"
 
 #include "objects.h"
 #include "net_types.h"
@@ -86,7 +82,7 @@
 /* Global variables */
 
 extern int16     Port;
-extern int32     My_Address;
+extern Node_ID   My_Address;
 extern stdhash   Sessions_ID;
 extern stdhash   Sessions_Port;
 extern stdhash   Rel_Sessions_Port;
@@ -95,13 +91,11 @@ extern int16     Link_Sessions_Blocked_On;
 extern stdhash   All_Groups_by_Node;
 extern stdhash   All_Groups_by_Name;
 extern stdhash   All_Nodes;
-extern stdhash   Neighbors;
 extern stdhash   Monitor_Params;
 extern int       Accept_Monitor;
 extern int       Unicast_Only;
-extern channel   Ses_UDP_Send_Channel;
-extern channel   Ses_UDP_Recv_Channel;
-
+extern channel   Ses_UDP_Channel; /* For udp client connection sends
+				     and receives */ 
 
 /* Local variables */
 
@@ -112,10 +106,32 @@ static sys_scatter Ses_UDP_Pack;
 static char *frag_buf[55];
 static channel ctrl_sk_requests[MAX_CTRL_SK_REQUESTS];
 
-
 #define FRAG_TTL         30
 
+static int Get_Ses_Mode(int32 ses_links_used)
+{
+  int ret = -1;
 
+  switch (ses_links_used) {
+
+  case UDP_LINKS:
+    ret = UDP_LINK;
+    break;
+
+  case RELIABLE_LINKS:
+    ret = RELIABLE_UDP_LINK;
+    break;
+
+  case SOFT_REALTIME_LINKS:
+    ret = REALTIME_UDP_LINK;
+    break;
+
+  default:
+    break;
+  }
+
+  return ret;
+}
 
 Frag_Packet* Delete_Frag_Element(Frag_Packet **head, Frag_Packet *frag_pkt)
 {
@@ -150,10 +166,6 @@ Frag_Packet* Delete_Frag_Element(Frag_Packet **head, Frag_Packet *frag_pkt)
     return(frag_tmp);
 }
 
-
-
-
-
 /***********************************************************/
 /* void Init_Session(void)                                 */
 /*                                                         */
@@ -186,7 +198,6 @@ void Init_Session(void)
 	}
     }
 
-
     stdhash_construct(&Sessions_ID, sizeof(int32), sizeof(Session*),
 		      NULL, NULL, 0);
 
@@ -199,10 +210,6 @@ void Init_Session(void)
     stdhash_construct(&Sessions_Sock, sizeof(int32), sizeof(Session*),
 		      NULL, NULL, 0);
 
-    stdhash_construct(&Neighbors, sizeof(int32), sizeof(Node*),
-		      NULL, NULL, 0);
-
-
     sk_local = socket(AF_INET, SOCK_STREAM, 0);
     if (sk_local<0) {
       Alarm(EXIT, "Int_Session(): socket failed\n");
@@ -210,7 +217,7 @@ void Init_Session(void)
 
     memset(&name, 0, sizeof(name));
     name.sin_family = AF_INET;
-    name.sin_addr.s_addr = htonl(My_Address);
+    name.sin_addr.s_addr = INADDR_ANY; /*htonl(My_Address);*/
     name.sin_port = htons((int16)(Port+SESS_PORT));
 
 
@@ -242,14 +249,13 @@ void Init_Session(void)
 
     /* For Datagram sockets */
 
-    Ses_UDP_Send_Channel = DL_init_channel(SEND_CHANNEL, 
-					   (int16)(Port+SESS_UDP_PORT), 0, 0);
-    Ses_UDP_Recv_Channel = DL_init_channel(RECV_CHANNEL, 
-					   (int16)(Port+SESS_UDP_PORT), 0, My_Address);
-    
-    E_attach_fd(Ses_UDP_Recv_Channel, READ_FD, Session_UDP_Read, 0, 
+    /* Use a single socket for sending and receiving udp packets to the client
+     * */
+    Ses_UDP_Channel = DL_init_channel(SEND_CHANNEL | RECV_CHANNEL,
+				      (int16)(Port+SESS_UDP_PORT), 0, INADDR_ANY /*My_Address*/);
+ 
+    E_attach_fd(Ses_UDP_Channel, READ_FD, Session_UDP_Read, 0, 
 		    NULL, LOW_PRIORITY );
-
 
     /* For Control socket */
 
@@ -260,7 +266,7 @@ void Init_Session(void)
 
     memset(&name, 0, sizeof(name));
     name.sin_family = AF_INET;
-    name.sin_addr.s_addr = htonl(My_Address);
+    name.sin_addr.s_addr = INADDR_ANY; /*htonl(My_Address);*/
     name.sin_port = htons((int16)(Port+SESS_CTRL_PORT));
 
     val = 1;
@@ -553,7 +559,7 @@ void Session_Read(int sk, int dummy, void *dummy_p)
 
     if(received_bytes + ses->partial_len > ses->read_len)
 	Alarm(EXIT, "Session_Read(): Too many bytes...\n");
-    
+   
     if(ses->r_data != NULL) {
 	add_size = sizeof(rel_udp_pkt_add);
     }
@@ -796,9 +802,9 @@ void Session_Close(int sesid, int reason)
 	/*Alarm(DEBUG, "Disconnect; Leaving group: %d.%d.%d.%d == %d\n",
 	*/
         Alarm(PRINT, "Disconnect; Leaving group: %d.%d.%d.%d == %d\n",
-	      IP1(g_state->dest_addr), IP2(g_state->dest_addr),
-	      IP3(g_state->dest_addr), IP4(g_state->dest_addr), cnt);
-	Leave_Group(g_state->dest_addr, ses);
+	      IP1(g_state->mcast_gid), IP2(g_state->mcast_gid),
+	      IP3(g_state->mcast_gid), IP4(g_state->mcast_gid), cnt);
+	Leave_Group(g_state->mcast_gid, ses);
 	cnt++;
 	if(cnt > 10) {
 	    /* Too many groups to leave at once. Queue the function again  */
@@ -904,14 +910,11 @@ int Process_Session_Packet(Session *ses)
     udp_header *hdr;
     udp_header *cmd;
     int32 *cmd_int, *pkt_len;
-    Node *next_hop;
     int ret, tot_bytes;
     int32 dummy_port, dest_addr;
-    stdit it, ngb_it;
+    stdit it;
     int32 *type;
-    Group_State *g_state;
     Lk_Param lkp;
-    stdhash *neighbors;
     spines_trace *spines_tr;
     char *buf;
 
@@ -1046,7 +1049,6 @@ int Process_Session_Packet(Session *ses)
 	}
 	else if(*type == LINKS_TYPE_MSG) {
 	    /* spines_socket() */
-
 	    ses->links_used = *cmd_int;
 	    ses->rnd_num  = *(cmd_int+1);
 	    ses->udp_addr = *(cmd_int+2);
@@ -1070,38 +1072,51 @@ int Process_Session_Packet(Session *ses)
 	    /* spines_setloss() */
 
 	    if(Accept_Monitor == 1) {
+	        Network_Leg_ID lid;
+
 		cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
-		lkp.loss_rate = *(int32*)(ses->data + 2*sizeof(udp_header)+3*sizeof(int32));
-		lkp.burst_rate = *(int32*)(ses->data + 2*sizeof(udp_header)+4*sizeof(int32));
-		lkp.bandwidth = *(int32*)(ses->data + 2*sizeof(udp_header)+sizeof(int32));
-		lkp.delay.sec = 0;
-		lkp.delay.usec = *(int32*)(ses->data + 2*sizeof(udp_header)+2*sizeof(int32));
-		lkp.was_loss = 0;
+
+		memset(&lkp, 0, sizeof(lkp));
+
+		lkp.bandwidth  = *(int32*)(ses->data + 2 * sizeof(udp_header) + 1 * sizeof(int32));
+		lkp.delay.usec = *(int32*)(ses->data + 2 * sizeof(udp_header) + 2 * sizeof(int32));
+		lkp.loss_rate  = *(int32*)(ses->data + 2 * sizeof(udp_header) + 3 * sizeof(int32));
+		lkp.burst_rate = *(int32*)(ses->data + 2 * sizeof(udp_header) + 4 * sizeof(int32));
 		
 		if(!Same_endian(ses->endianess_type)) {
 		    Flip_udp_hdr(cmd);
-		    lkp.loss_rate = Flip_int32(lkp.loss_rate);
-		    lkp.burst_rate = Flip_int32(lkp.burst_rate);
-		    lkp.bandwidth = Flip_int32(lkp.bandwidth);
+		    lkp.bandwidth  = Flip_int32(lkp.bandwidth);
 		    lkp.delay.usec = Flip_int32(lkp.delay.usec);
+		    lkp.loss_rate  = Flip_int32(lkp.loss_rate);
+		    lkp.burst_rate = Flip_int32(lkp.burst_rate);
 		}
+
 		/* Delay is given in milliseconds */
-		lkp.delay.usec *= 1000;
 
+		lkp.delay.usec   *= 1000;
 
-		lkp.bucket = BWTH_BUCKET;
+		lkp.delay.sec     = lkp.delay.usec / 1000000;
+		lkp.delay.usec    = lkp.delay.usec % 1000000;
+
+		lkp.was_loss      = 0;
+
+		lkp.bucket        = BWTH_BUCKET;
 		lkp.last_time_add = E_get_time();
 
-		Alarm(PRINT, "\nSetting link params: bandwidth: %d; latency: %d; loss: %d; burst: %d; was_loss %d\n\n",
-		      lkp.bandwidth, lkp.delay.usec, lkp.loss_rate, lkp.burst_rate, lkp.was_loss);
+		Alarm(PRINT, "\nSetting leg params(" IPF " -> " IPF "): bandwidth: %d; latency: %d; loss: %d; burst: %d; was_loss %d\n\n",
+		      IP(cmd->source), IP(cmd->dest), lkp.bandwidth, lkp.delay.usec, lkp.loss_rate, lkp.burst_rate, lkp.was_loss);
 
-		stdhash_find(&Monitor_Params, &it, &cmd->dest);
-		if (!stdhash_is_end(&Monitor_Params, &it)) {
-		    stdhash_erase(&Monitor_Params, &it);
-		}
-		if((lkp.loss_rate > 0)||(lkp.delay.sec > 0)||
-		   (lkp.delay.usec > 0)||(lkp.bandwidth > 0)) {
-		    stdhash_insert(&Monitor_Params, &it, &cmd->dest, &lkp);
+		memset(&lid, 0, sizeof(lid));
+		lid.src_interf_id = cmd->source;
+		lid.dst_interf_id = cmd->dest;
+
+		stdhash_erase_key(&Monitor_Params, &lid);
+
+		if (lkp.bandwidth > 0 || lkp.delay.sec > 0 || lkp.delay.usec > 0 || lkp.loss_rate > 0) {
+
+		  if (stdhash_insert(&Monitor_Params, &it, &lid, &lkp) != 0) {
+		    Alarm(EXIT, "Couldn't insert into Monitor_Params!\r\n");
+		  }
 		}
 	    }
 
@@ -1234,7 +1249,11 @@ int Process_Session_Packet(Session *ses)
 	    ses->multicast_loopback = (char)(cmd->dest);
 	    return(BUFF_EMPTY);
         }
+#if 0
 	else if(*type == ADD_NEIGHBOR_MSG) {
+
+	  TODO FIX ME to include network address, interface id, etc.
+
 	    /* spines_add_neighbor() for spines_ioctl() */
 	    cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
 	    if(!Same_endian(ses->endianess_type)) {
@@ -1245,6 +1264,7 @@ int Process_Session_Packet(Session *ses)
 	    Process_hello_ping_packet(cmd->dest, 0);
 	    return(BUFF_EMPTY);
 	}
+#endif
 	else if(*type == TRACEROUTE_TYPE_MSG || 
             *type == EDISTANCE_TYPE_MSG  || 
             *type == MEMBERSHIP_TYPE_MSG ) { 
@@ -1309,89 +1329,20 @@ int Process_Session_Packet(Session *ses)
     }
     else {
 	/* This is UDP Data*/
-	hdr->source = My_Address;
+	hdr->source      = My_Address;
 	hdr->source_port = ses->port;
 
 	if(hdr->len + sizeof(udp_header) == ses->read_len) {
-	    if(!Is_mcast_addr(hdr->dest) && !Is_acast_addr(hdr->dest)) {
-		/* This is not a multicast address */
-		/* Is this for me ? */
-		if(hdr->dest == My_Address) {
-		    ret = Deliver_UDP_Data(ses->data, ses->read_len, 0);
-		    return(ret);
-		}
-
-		/* Nope, it's for smbd else. See where we should forward it */
-		next_hop = Get_Route(My_Address, hdr->dest);
-		if((next_hop != NULL) && (hdr->ttl > 0)) {
-		    if(ses->links_used == SOFT_REALTIME_LINKS) {
-			ret = Forward_RT_UDP_Data(next_hop, ses->data,
-						  ses->read_len);
-		    }
-		    else if(ses->links_used == RELIABLE_LINKS) {
-			ret = Forward_Rel_UDP_Data(next_hop, ses->data,
-						   ses->read_len, 0);
-		    }
-		    else {
-			ret = Forward_UDP_Data(next_hop, ses->data,
-					       ses->read_len);
-		    }
-		    return(ret);
-		}
-		else {
-		    return(NO_ROUTE);
-		}
-	    }
-	    else { /* This is multicast or anycast */
-		if(Unicast_Only == 1) {
-		    return(NO_ROUTE);
-		}
-
-                if((g_state = (Group_State*)Find_State(&All_Groups_by_Node, My_Address, hdr->dest)) != NULL) {
-
-                    /* Hey, I joined this group !*/
-		    if(g_state->flags & ACTIVE_GROUP) {
-			/*&& ((g_state->flags & RECV_GROUP)||(!(g_state->flags & SEND_GROUP)))) {*/
-                        /* Deliver immediately for Multicast */
-			Deliver_UDP_Data(ses->data, ses->read_len, 0);
-       		    }
-		}
-
-		ret = NO_ROUTE;
-		if(((neighbors = Get_Mcast_Neighbors(hdr->source, hdr->dest)) != NULL) && (hdr->ttl > 0)) {
-		    stdhash_begin(neighbors, &ngb_it);
-		    while(!stdhash_is_end(neighbors, &ngb_it)) {
-			next_hop = *((Node **)stdhash_it_val(&ngb_it));
-			if(ses->links_used == SOFT_REALTIME_LINKS) {
-			    ret = Forward_RT_UDP_Data(next_hop, ses->data,
-						      ses->read_len);
-			}
-			else if(ses->links_used == RELIABLE_LINKS) {
-			    ret = Forward_Rel_UDP_Data(next_hop, ses->data,
-						   ses->read_len, 0);
-			}
-			else {
-			    ret = Forward_UDP_Data(next_hop, ses->data,
-						   ses->read_len);
-			    /*Alarm(PRINT,""IPF"\n",IP(next_hop->address));*/
-			}
-			stdhash_it_next(&ngb_it);
-		    }
-		}
-		return(ret);
-	    }
+	    return Deliver_and_Forward_Data(ses->data, ses->read_len, Get_Ses_Mode(ses->links_used), NULL);
 	}
 	else {
-	    Alarm(PRINT, "Process_udp_data_packet: Packed data... not available yet\n");
+	    Alarm(PRINT, "Process_Session_Packet: Packed data... not available yet\n");
 	    Alarm(PRINT, "hdr->len: %d; sizeof(udp_header): %d; ses->read_len: %d\n",
 		  hdr->len, sizeof(udp_header), ses->read_len);
 	}
     }
     return(NO_ROUTE);
 }
-
-
-
 
 /***********************************************************/
 /* int Deliver_UDP_Data(char* buff, int16u len,            */
@@ -1432,7 +1383,7 @@ int Deliver_UDP_Data(char* buff, int16u len, int32u type) {
 	if(g_state == NULL) {
 	    return(NO_ROUTE);
 	}
-	if((g_state->flags & ACTIVE_GROUP) == 0) {
+	if((g_state->status & ACTIVE_GROUP) == 0) {
 	    return(NO_ROUTE);
 	}
 
@@ -1541,10 +1492,10 @@ int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int 
     UDP_Cell *u_cell;
     sys_scatter scat;
     int32 total_bytes;
-    int32 rm_add_size;
-    int ret, flag, cnt, i, stop_flag;
+    int ret, found_frag_packet, cnt, i, j, stop_flag;
     int32 sum_len, send_len;
     udp_header *u_hdr;
+    udp_header *first_frag_udp_hdr = NULL;
     Frag_Packet *frag_pkt;
     sp_time now;
     int32 *pkt_no;
@@ -1556,10 +1507,10 @@ int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int 
     u_hdr = (udp_header *)buff;
 
 #if 0
-    Alarm(PRINT, "src_port: %d; sess_id: %d; len: %d; len_rep: %d; seq_no: %d; frag_num: %d; frag_idx: %d\n",
+    Alarm(PRINT, "Session_Deliver_Data: src_port: %d; sess_id: %d; len: %d; len_rep: %d; seq_no: %d; frag_num: %d; frag_idx: %d\n",
 	  u_hdr->source_port, u_hdr->sess_id, u_hdr->len, len, u_hdr->seq_no, 
 	  u_hdr->frag_num, u_hdr->frag_idx);
-#endif    
+#endif
 	
     if(u_hdr->frag_num > 1) {
 	/* This is a fragmented packet */
@@ -1568,7 +1519,7 @@ int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int 
 	now = E_get_time();
 	
 	/* Search for other fragments of the same packet */
-	flag = 0;
+	found_frag_packet = FALSE;
 	cnt = 0;
 	frag_pkt = ses->frag_pkts;
 	while(frag_pkt != NULL) {
@@ -1609,17 +1560,13 @@ int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int 
 		frag_pkt->scat.elements[(int)(u_hdr->frag_idx)].len = u_hdr->len + sizeof(udp_header);
 		frag_pkt->recv_elements++;
 		frag_pkt->timestamp_sec = now.sec;
-		flag = 1;
+		found_frag_packet = TRUE;
 		break;
-	    }
-	    else {
-		/* This is a different incomplete packet */
-		/*Alarm(PRINT, "Different fragmented packet\n");*/
 	    }
 	    frag_pkt = frag_pkt->next;
 	}
 
-	if(flag == 0) {
+	if(found_frag_packet == FALSE) {
 	    Alarm(DEBUG, "Couldn't find a fragmented packet. Total: %d; Create a new one\n", cnt);
 
 	    cnt++;
@@ -1654,52 +1601,72 @@ int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int 
 	    
 	/* Deliver the packet if it is complete */
 	if(frag_pkt->recv_elements == frag_pkt->scat.num_elements) {
-	    Alarm(DEBUG, "\n!!! Packet complete !!!\n\n");
+	    Alarmp(SPLOG_DEBUG, SESSION, "Session_Deliver_Data: Fragmented Packet complete\n");
 
-	    rm_add_size = 0;
-
-	    /* Prepare the packet */
-	    
-	    sum_len = 0;
-	    scat.num_elements = frag_pkt->scat.num_elements+1;
+            /* Calculate total non-fragmented message/packet length */
+	    sum_len = sizeof(udp_header);
 	    for(i=0; i<frag_pkt->scat.num_elements; i++) {
-		if(i == 0) {
-		    scat.elements[i+1].buf = frag_pkt->scat.elements[i].buf;
-		    scat.elements[i+1].len = frag_pkt->scat.elements[i].len;
-		}
-		else {
-		    scat.elements[i+1].buf = frag_pkt->scat.elements[i].buf + sizeof(udp_header) + rm_add_size;
-		    scat.elements[i+1].len = frag_pkt->scat.elements[i].len - sizeof(udp_header) - rm_add_size;
-		}
-		sum_len += scat.elements[i+1].len;
-	    }
-	    u_hdr = (udp_header *)(frag_pkt->scat.elements[0].buf);
-	    u_hdr->len = sum_len;
-	    scat.elements[0].len = sizeof(int32);
-	    scat.elements[0].buf = (char*)(&sum_len);
+		sum_len += (frag_pkt->scat.elements[i].len - sizeof(udp_header));
+            }
 
 
-	    Alarm(DEBUG, "sum_len: %d; elements: %d\n", sum_len, scat.num_elements);
+	    Alarmp(SPLOG_DEBUG, SESSION, "Total length of fragmented packet: sum_len: %d\n", sum_len);
 
 	    /* Deliver the packet */
 	    if((ses->udp_port != -1)&&(flags != 3)) {
 		/* The session communicates via UDP */
-		ret = DL_send(Ses_UDP_Send_Channel,  ses->udp_addr, ses->udp_port,  &scat);
+
+                /* Build UDP scatter to send */
+                /* Scatter layout:
+                 * [0] (int32) total length
+                 * [1] (udp_header) 
+                 * [2] original first data packet payload
+                 * [3..n] original 2..n-2 data packet payloads
+                 */
+                scat.num_elements = frag_pkt->scat.num_elements+2;
+                scat.elements[0].len = sizeof(int32);
+                scat.elements[0].buf = (char*)(&sum_len);
+                for(i=0, j=1; i<frag_pkt->scat.num_elements; i++, j++) {
+                    if(i == 0) {
+                        udp_header *udp_head_buf;
+                        if ((udp_head_buf = (udp_header*) new_ref_cnt(PACK_BODY_OBJ)) == NULL) {
+                            Alarm(EXIT, "Session_Deliver_Data: Failed to allocate packet_body to hold copy of udp_header for fragmented delivery of UDP message.\n");
+                        }
+                        Copy_udp_header((udp_header *)frag_pkt->scat.elements[0].buf, udp_head_buf );
+                        udp_head_buf->len = sum_len;
+                        scat.elements[j].buf = (char*) udp_head_buf;
+                        scat.elements[j].len = sizeof(udp_header);
+                        j++;
+                    }
+                    scat.elements[j].buf = frag_pkt->scat.elements[i].buf + sizeof(udp_header);
+                    scat.elements[j].len = frag_pkt->scat.elements[i].len - sizeof(udp_header);
+                }
+
+                /* Send message and unref message body */
+
+		ret = DL_send(Ses_UDP_Channel,  ses->udp_addr, ses->udp_port,  &scat);
+
+		Alarm(DEBUG,
+                        "|||||||||||||||||||| Sending packet for dest (%d.%d.%d.%d) to client addr (%d@%d.%d.%d.%d)!\r\n",
+		      IP1(u_hdr->dest), IP2(u_hdr->dest), IP3(u_hdr->dest), IP4(u_hdr->dest),
+		      ses->udp_port, IP1(ses->udp_addr), IP2(ses->udp_addr), IP3(ses->udp_addr), IP4(ses->udp_addr));
+
 		Delete_Frag_Element(&ses->frag_pkts, frag_pkt);
+                dec_ref_cnt(scat.elements[0].buf);
 		return(BUFF_EMPTY);
 	    }
 	    else {
 		/* The session communicates via TCP */
 
-		Alarm(DEBUG, "TCP-based session\n");
+		Alarmp(SPLOG_DEBUG, SESSION, "Session_Deliver_Data: TCP-based session\n");
 
 		for(i=0; i<frag_pkt->scat.num_elements; i++) {
 		    /* Try to deliver all the fragments, one by one */
 
-		    /* If there is already smthg in the buffer, put this one too */
+		    /* If there is already something in the buffer, put this one too */
 		    if(!stdcarr_empty(&ses->rel_deliver_buff)) {
 
-			Alarm(PRINT, "??? There is something in the buffer already: %d\n",
+			Alarmp(SPLOG_DEBUG, SESSION, "Session_Deliver_Data: (TCP) There are (%d) packets in the session buffer already\n",
 			      stdcarr_size(&ses->rel_deliver_buff));
 
 			if(i == 0) {
@@ -1707,7 +1674,7 @@ int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int 
 				/* disconnect the session or drop the packet */
 				if (flags == 1) {
 				    
-				    Alarm(PRINT, "=== Drop the packet\n");
+				    Alarmp(SPLOG_ERROR, SESSION, "Session_Deliver_Data: (TCP) === Drop packet because session buffer full\n");
 
 				    Delete_Frag_Element(&ses->frag_pkts, frag_pkt);
 				    return(BUFF_DROP);
@@ -1721,39 +1688,49 @@ int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int 
 			}
 		    
 			if((u_cell = (UDP_Cell*) new(UDP_CELL))==NULL) {
-			    Alarm(EXIT, "Deliver_UDP_Data(): Cannot allocte udp cell\n");
+			    Alarmp(SPLOG_FATAL, SESSION, "Session_Deliver_Data(): Cannot allocte udp cell\n");
 			}
 			u_cell->len = frag_pkt->scat.elements[i].len;
+                        u_cell->total_len = sum_len;
 			u_cell->buff = frag_pkt->scat.elements[i].buf;
 			stdcarr_push_back(&ses->rel_deliver_buff, &u_cell);
 			inc_ref_cnt(frag_pkt->scat.elements[i].buf);
 
-			Alarm(PRINT, "\n\n!!! Put the fragment in the buffer !!!\n");
-
+			Alarmp(SPLOG_DEBUG, SESSION, "Session_Deliver_Data: (TCP) Inserted fragment into session buffer\n");
 			continue;
 		    }
 
 		    /* There is nothing in the buffer. Try to deliver the fragment */
-
-
-
 		    total_bytes = frag_pkt->scat.elements[i].len + sizeof(int32);
 		    if(i == 0) {
 			ses->sent_bytes = 0;
+                        if ((first_frag_udp_hdr = (udp_header*) new_ref_cnt(PACK_BODY_OBJ)) == NULL) {
+                            Alarm(EXIT, "Session_Deliver_Data: Failed to allocate packet_body to hold copy of udp_header for fragmentd delivery.\n");
+                        }
+                        Copy_udp_header((udp_header *)frag_pkt->scat.elements[0].buf, first_frag_udp_hdr );
+                        first_frag_udp_hdr->len = sum_len;
 		    }
 		    else {
 			ses->sent_bytes = sizeof(udp_header) + sizeof(int32);
 		    }
 		    stop_flag = 0;
 		    while((ses->sent_bytes < total_bytes)&&(stop_flag == 0)) {
-			if(ses->sent_bytes < sizeof(int32)) {
-			    scat.num_elements = 2;
+                        if(ses->sent_bytes < sizeof(int32)) {
+			    scat.num_elements = 3;
 			    scat.elements[0].len = sizeof(int32) - ses->sent_bytes;
 			    scat.elements[0].buf = ((char*)(&sum_len)) + ses->sent_bytes;
-			    scat.elements[1].len = frag_pkt->scat.elements[i].len;
-			    scat.elements[1].buf = frag_pkt->scat.elements[i].buf;
+			    scat.elements[1].len = sizeof(udp_header);
+			    scat.elements[1].buf = (char *) first_frag_udp_hdr;
+			    scat.elements[2].len = frag_pkt->scat.elements[0].len - sizeof(udp_header);
+			    scat.elements[2].buf = frag_pkt->scat.elements[0].buf + sizeof(udp_header);
 			}
-			else {
+			else if (ses->sent_bytes < (sizeof(udp_header) + sizeof(int32)) ) {
+			    scat.num_elements = 2;
+			    scat.elements[0].len = sizeof(udp_header) - (ses->sent_bytes- sizeof(int32));
+			    scat.elements[0].buf = ((char*)(first_frag_udp_hdr)) + (ses->sent_bytes - sizeof(int32));
+			    scat.elements[1].len = frag_pkt->scat.elements[0].len - sizeof(udp_header);
+			    scat.elements[1].buf = frag_pkt->scat.elements[0].buf + sizeof(udp_header);
+                        } else {
 			    scat.num_elements = 1;
 			    scat.elements[0].len = frag_pkt->scat.elements[i].len - 
 				(ses->sent_bytes - sizeof(int32));
@@ -1788,9 +1765,10 @@ int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int 
 				}
 				u_cell->len = frag_pkt->scat.elements[i].len;
 				u_cell->buff = frag_pkt->scat.elements[i].buf;
+                                u_cell->total_len = sum_len;
 				stdcarr_push_back(&ses->rel_deliver_buff, &u_cell);
 				inc_ref_cnt(frag_pkt->scat.elements[i].buf);
-				
+
 				E_attach_fd(ses->sk, WRITE_FD, Session_Write, ses->sess_id,
 					    NULL, HIGH_PRIORITY );
 				ses->fd_flags = ses->fd_flags | WRITE_DESC;
@@ -1798,6 +1776,8 @@ int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int 
 				break;
 			    }
 			    else {
+                                if (i == 0)
+                                    dec_ref_cnt(first_frag_udp_hdr); /* free udp_header */
 				Session_Close(ses->sess_id, SOCK_ERR);
 				return(NO_BUFF);
 			    }
@@ -1816,7 +1796,9 @@ int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int 
 			    ses->sent_bytes = sizeof(udp_header) + sizeof(int32);
 			}
 		    }
-		}		
+                    if (i == 0)
+                        dec_ref_cnt(first_frag_udp_hdr); /* free udp_header */
+		}
 	    }
 	    Delete_Frag_Element(&ses->frag_pkts, frag_pkt);
 	}
@@ -1850,7 +1832,6 @@ int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int 
 
 	sprintf(line, "%d\t%d\n", *pkt_no, oneway_time);
 	
-	//Alarm(PRINT, "%s", line);
 	write(ses->fd, line, strlen(line));
 	
 	return(BUFF_EMPTY);
@@ -1875,6 +1856,7 @@ int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int 
 	    if((u_cell = (UDP_Cell*) new(UDP_CELL))==NULL) {
 		Alarm(EXIT, "Deliver_UDP_Data(): Cannot allocte udp cell\n");
 	    }
+            u_cell->total_len = len;
 	    u_cell->len = len;
 	    u_cell->buff = buff;
 	    stdcarr_push_back(&ses->rel_deliver_buff, &u_cell);
@@ -1886,8 +1868,6 @@ int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int 
 
     /* If I got up to here, the buffer is empty or we send via UDP.
      * Let's see if we can send this packet */
-
-
     total_bytes = sizeof(int32) + len;
     send_len = len;
     ses->sent_bytes = 0;
@@ -1909,13 +1889,20 @@ int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int 
 	    ret = DL_send(ses->sk,  My_Address, ses->port,  &scat);
 	}
 	else {
-	    /* The session communicates via UDP */
-	    ret = DL_send(Ses_UDP_Send_Channel,  ses->udp_addr, ses->udp_port,  &scat);
+
+	  /* The session communicates via UDP */
+
+	  ret = DL_send(Ses_UDP_Channel,  ses->udp_addr, ses->udp_port,  &scat);
+
+	  Alarm(DEBUG,
+		"|||||||||||||||||||| Sending packet for dest (%d.%d.%d.%d) to client addr (%d@%d.%d.%d.%d)!\r\n",
+		IP1(u_hdr->dest), IP2(u_hdr->dest), IP3(u_hdr->dest), IP4(u_hdr->dest),
+		ses->udp_port, IP1(ses->udp_addr), IP2(ses->udp_addr), IP3(ses->udp_addr), IP4(ses->udp_addr));
 	}
 
 	Alarm(DEBUG,"Session_deliver_data(): %d %d %d %d\n",ret,ses->sk,ses->port, send_len);
 
-	if(ret < 0) {
+	if(ret < 0) {  /* JLS: shouldn't blocking only occur if/when using TCP session? */
 	     Alarm(DEBUG, "Session_Deliver_Data(): write err\n");
 #ifndef	ARCH_PC_WIN95
 	    if((ret == -1)&&
@@ -1934,6 +1921,7 @@ int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int 
 		if((u_cell = (UDP_Cell*) new(UDP_CELL))==NULL) {
 		    Alarm(EXIT, "Deliver_UDP_Data(): Cannot allocte udp cell\n");
 		}
+                u_cell->total_len = len;
 		u_cell->len = len;
 		u_cell->buff = buff;
 		stdcarr_push_back(&ses->rel_deliver_buff, &u_cell);
@@ -2003,6 +1991,7 @@ void Session_Write(int sk, int sess_id, void *dummy_p)
     udp_header *u_hdr;
     udp_header *first_frag_udp_hdr = NULL;
 
+
     /* Find the session. This is not the session that I read packets from,
      * but rather the one I'm trying to write data to. */
 
@@ -2030,7 +2019,6 @@ void Session_Write(int sk, int sess_id, void *dummy_p)
     if(ses->client_stat == SES_CLIENT_OFF)
 	return;
 
-
     while(!stdcarr_empty(&ses->rel_deliver_buff)) {
 	stdcarr_begin(&ses->rel_deliver_buff, &it);
 
@@ -2056,31 +2044,48 @@ void Session_Write(int sk, int sess_id, void *dummy_p)
 	    total_bytes = sizeof(int32) + len;
 	}
 	if((u_hdr->frag_num > 1)&&(u_hdr->frag_idx == 0)) {
-	    send_bytes = u_hdr->len;
+	    send_bytes = u_cell->total_len;
+            ses->sent_bytes = 0;
+            if ((first_frag_udp_hdr = (udp_header*) new_ref_cnt(PACK_BODY_OBJ)) == NULL) {
+                Alarm(EXIT, "Session_Write: Failed to allocate packet_body to hold copy of udp_header for fragmented delivery.\n");
+            }
+            Copy_udp_header((udp_header *) buff, first_frag_udp_hdr );
+            first_frag_udp_hdr->len = u_cell->total_len;
 	}
 	else {
 	    send_bytes = data_bytes;
 	}
+
 	while(ses->sent_bytes < total_bytes) {
-	    if(ses->sent_bytes < sizeof(int32)) {
-		scat.num_elements = 2;
-		scat.elements[0].len = sizeof(int32) - ses->sent_bytes;
+            udp_header *send_hdr = (first_frag_udp_hdr == NULL ? u_hdr : first_frag_udp_hdr);
+
+            if(ses->sent_bytes < sizeof(int32)) {
+                scat.num_elements = 3;
+                scat.elements[0].len = sizeof(int32) - ses->sent_bytes;
 		scat.elements[0].buf = ((char*)(&send_bytes)) + ses->sent_bytes;
-		scat.elements[1].len = data_bytes;
-		scat.elements[1].buf = buff;
-	    }
-	    else {
-		scat.num_elements = 1;
-		scat.elements[0].len = data_bytes - (ses->sent_bytes - sizeof(int32));
-		scat.elements[0].buf = buff + (ses->sent_bytes - sizeof(int32));
-	    }
+                scat.elements[1].len = sizeof(udp_header);
+                scat.elements[1].buf = (char *) send_hdr;
+		scat.elements[2].len = data_bytes - sizeof(udp_header);
+		scat.elements[2].buf = buff + sizeof(udp_header);
+            }
+            else if (ses->sent_bytes < (sizeof(udp_header) + sizeof(int32)) ) {
+                scat.num_elements = 2;
+                scat.elements[0].len = sizeof(udp_header) - (ses->sent_bytes- sizeof(int32));
+                scat.elements[0].buf = (char *) send_hdr + (ses->sent_bytes - sizeof(int32));
+		scat.elements[1].len = data_bytes - sizeof(udp_header);
+		scat.elements[1].buf = buff + sizeof(udp_header);
+            } else {
+                scat.num_elements = 1;
+                scat.elements[0].len = data_bytes - sizeof(udp_header) - (ses->sent_bytes - sizeof(int32) - sizeof(udp_header));
+                scat.elements[0].buf = buff + sizeof(udp_header) + (ses->sent_bytes - sizeof(int32) - sizeof(udp_header));
+            }
+
 	    ret = DL_send(ses->sk,  My_Address, ses->port,  &scat);
 
-	    Alarm(PRINT,"Session_Write(): %d %d %d %d %d\n", ret, ses->sk, ses->port, len, ses->sent_bytes);
-
+	    Alarm(DEBUG, "Session_Write(): ret = %d; sk = %d; port = %d; len = %d; sent_bytes = %d; total_bytes = %d\n", ret, ses->sk, ses->port, len, ses->sent_bytes, total_bytes);
 
 	    if(ret < 0) {
-		Alarm(DEBUG, "Session_WRITE(): write err\n");
+		Alarm(DEBUG, "Session_WRITE(): write err %d %d '%s'\n", ret, errno, strerror(errno));
 #ifndef	ARCH_PC_WIN95
 		if((ret == -1)&&
 		   ((errno == EWOULDBLOCK)||(errno == EAGAIN)))
@@ -2253,7 +2258,7 @@ void Ses_Send_ERR(int address, int port)
    
     u_hdr.dest = -1;
 
-    DL_send(Ses_UDP_Send_Channel, address, port, &scat);
+    DL_send(Ses_UDP_Channel, address, port, &scat);
 }
 
 
@@ -2284,7 +2289,10 @@ void Session_UDP_Read(int sk, int dmy, void * dmy_p)
     char *tmp_buf;
     int i, processed_bytes, bytes_to_send;
 
-
+    int32 recvfrom_address;    /* address from which this packet was
+				  received */
+    int16u recvfrom_port;      /* port from which this packet was
+				  received */
 
     Ses_UDP_Pack.num_elements = 52;
     Ses_UDP_Pack.elements[0].len = sizeof(int32);
@@ -2298,8 +2306,11 @@ void Session_UDP_Read(int sk, int dmy, void * dmy_p)
     	Ses_UDP_Pack.elements[i+2].buf = frag_buf[i]+sizeof(udp_header);
     }
 
-    received_bytes = DL_recv(sk, &Ses_UDP_Pack);  
+    received_bytes = DL_recvfrom(sk, &Ses_UDP_Pack, &recvfrom_address,
+	    &recvfrom_port );
     received_bytes -= (2*sizeof(int32));
+
+    /* TODO: do/can these two Ses_Send_ERR send an error to all Multicast clients, which probably would be a bad thing? */
 
     u_hdr = (udp_header*)frag_buf[0];
     stdhash_find(&Sessions_ID, &it, &sess_id);
@@ -2311,13 +2322,29 @@ void Session_UDP_Read(int sk, int dmy, void * dmy_p)
     }
 
     ses = *((Session **)stdhash_it_val(&it));
+
+    /* Hack -- TODO needs to be done correctly. The client must send
+     * udp packets to the server so that the udp protocol can work
+     * through firewalls. The server sends udp packets to the client
+     * on the address and port from which this packet was sent (from
+     * the NAT). The packets are identified based on the port that
+     * they use, 0. A new packet type should be created and handled
+     * explicity. */
+    if ( u_hdr->dest_port == 0 ) {
+    	Alarm(PRINT,"Session_UDP_Read() Initial UDP packet, source address="IPF","
+	    " port=%d sess_id=%d rnd_num=%d\n",
+	    IP(recvfrom_address),recvfrom_port,sess_id,rnd_num);
+	ses->udp_addr = recvfrom_address;
+	ses->udp_port = recvfrom_port;
+	return;
+    }
+
     if(ses->rnd_num != rnd_num) {
 	/* The session is gone */
 	Alarm(PRINT, "The session is gone\n");
 	Ses_Send_ERR(u_hdr->source, u_hdr->source_port);
 	return;
     }
-
 
     /* This is valid data for this session. It should be processed */
     /* Replace the session data, with the packet received, and process it */

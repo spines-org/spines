@@ -1,58 +1,32 @@
 include ../Makefile.general
 
+.PHONY: all clean distclean
+
 VPATH=@srcdir@
 top_srcdir=@top_srcdir@
 
-CPPFLAGS=-I../util -I../stdutil/src -I$(top_srcdir) -I$(top_srcdir)/util -I$(top_srcdir)/daemon -I$(top_srcdir)/libspines -I$(top_srcdir)/stdutil/src @CPPFLAGS@
-
-OBJECTS= ../util/alarm.o ../util/events.o ../util/data_link.o ../util/memory.o \
-	  node.o link.o network.o reliable_datagram.o state_flood.o \
-          link_state.o protocol.o hello.o kernel_routing.o route.o udp.o \
-	  reliable_udp.o realtime_udp.o session.o reliable_session.o \
-	  multicast.o dijkstra.o spines.o
+OBJECTS=node.o link.o network.o reliable_datagram.o state_flood.o \
+        link_state.o protocol.o hello.o kernel_routing.o route.o udp.o \
+	reliable_udp.o realtime_udp.o session.o reliable_session.o \
+	multicast.o spines.o
 
 ifeq (1, $(WIRELESS_SUPPORT))
 	LOCAL_CFLAGS += -DSPINES_WIRELESS
 	OBJECTS += wireless.o
 endif
 
-#----- SSL Support ------#
-SSL_INCLUDE=/usr/include
-SSL_LIB=/usr/lib
-SSL_BIN_PATH=/usr/bin
-SSL_VERSION := $(shell LD_LIBRARY_PATH=$(SSL_LIB) $(SSL_BIN_PATH)/openssl version | cut -d " " -f 2)
-SSL_SUPPORT := $(shell expr $(SSL_VERSION) \>= 0.9.8)
-SSL_SUPPORT := 0
-#------------------------ UP TO HERE -----------------------#
-
-ifeq (1,$(SSL_SUPPORT))
-	LOCAL_CFLAGS += -DSPINES_SSL -I$(SSL_INCLUDE) -L$(SSL_LIB) 
-else
-	LOCAL_CFLAGS +=
-endif
-
 all: spines 
 
-STDLIB= ../stdutil/lib/libstdutil.a
-
-spines: $(OBJECTS) $(STDLIB)
-ifeq (1,$(SSL_SUPPORT))
-	echo "with OPENSSL version $(SSL_VERSION)"
-	$(CC) -o spines $(OBJECTS) $(STDLIB) $(LIBS) $(EXTRALIBS) -L$(SSL_LIB) -lssl -lcrypto -ldl
-else
-	echo "without OPENSSL (version $(SSL_VERSION) is too old)"
-	$(CC) -o spines $(OBJECTS) $(LIBS) $(STDLIB) $(EXTRALIBS) -ldl
-endif
-
+spines: $(OBJECTS)
+	$(CC) $(LDFLAGS) -o spines $(OBJECTS) $(LIBS) $(EXTRALIBS)
 
 clean:
-	rm -f *~
 	rm -f *.o
 	rm -f *.to
-	rm -f core
-
-distclean: clean
 	rm -f spines
 	rm -f spines.exe
-	rm -f Makefile 
 
+distclean: clean
+	rm -f *~
+	rm -f core*
+	rm -f config.h Makefile 

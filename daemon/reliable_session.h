@@ -1,6 +1,6 @@
 /*
  * Spines.
- *     
+ *
  * The contents of this file are subject to the Spines Open-Source
  * License, Version 1.0 (the ``License''); you may not use
  * this file except in compliance with the License.  You may obtain a
@@ -10,15 +10,15 @@
  *
  * or in the file ``LICENSE.txt'' found in this distribution.
  *
- * Software distributed under the License is distributed on an AS IS basis, 
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License 
- * for the specific language governing rights and limitations under the 
+ * Software distributed under the License is distributed on an AS IS basis,
+ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+ * for the specific language governing rights and limitations under the
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir and Claudiu Danilov.
+ *  Yair Amir, Claudiu Danilov and John Schultz.
  *
- * Copyright (c) 2003 - 2009 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2013 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -29,14 +29,13 @@
  *
  */
 
-
 #ifndef REL_SESSION_H
 #define REL_SESSION_H
 
 #include "session.h"
 
-int Init_Reliable_Session(Session *ses, int32 address, int16u port);  
-int Init_Reliable_Connect(Session *ses, int32 address, int16u port);
+int Init_Reliable_Session(Session *ses, Node_ID address, int16u port);  
+int Init_Reliable_Connect(Session *ses, Node_ID address, int16u port);
 void Close_Reliable_Session(Session* ses);
 int Process_Reliable_Session_Packet(Session *ses);
 int Deliver_Rel_UDP_Data(char *buf, int16u len, int32u type);

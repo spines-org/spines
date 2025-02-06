@@ -1,6 +1,6 @@
 /*
  * Spines.
- *     
+ *
  * The contents of this file are subject to the Spines Open-Source
  * License, Version 1.0 (the ``License''); you may not use
  * this file except in compliance with the License.  You may obtain a
@@ -10,15 +10,15 @@
  *
  * or in the file ``LICENSE.txt'' found in this distribution.
  *
- * Software distributed under the License is distributed on an AS IS basis, 
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License 
- * for the specific language governing rights and limitations under the 
+ * Software distributed under the License is distributed on an AS IS basis,
+ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+ * for the specific language governing rights and limitations under the
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir and Claudiu Danilov.
+ *  Yair Amir, Claudiu Danilov and John Schultz.
  *
- * Copyright (c) 2003 - 2009 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2013 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -29,18 +29,22 @@
  *
  */
 
-
 #ifndef	NET_TYPES
 #define	NET_TYPES
 
-#include "util/data_link.h"
+#include "arch.h"
+#include "spu_data_link.h"
 
+/* Dont forget that 0x80000080 is kept for endians */
 
+#define         ENDIAN_TYPE             0x80000080
 
-/*      Dont forget that 0x80000080 is kept for endians */
+#define         Get_endian(t)           ((t) & ENDIAN_TYPE)
+#define         Set_endian(t)           (((t) & ~ENDIAN_TYPE) | ARCH_ENDIAN)
+#define         Same_endian(t)          (((t) & ENDIAN_TYPE) == ARCH_ENDIAN)
+#define         Clear_endian(t)         ((t) & ~ENDIAN_TYPE)
 
 /* First byte */
-
 #define         RELIABLE_TYPE           0x40000000
 /* Unreliable msgs will not have 1 on the second bit */   
 
@@ -55,10 +59,8 @@
 #define		GROUP_STATE_TYPE	0x02000000
 #define         ROUTE_MASK              0x0f000000
 
-
 /* Second byte */
 /* Nothing here yet... */
-
 
 /* Third byte */
 #define         ECN_DATA_T1             0x00000100
@@ -73,74 +75,81 @@
 
 #define         ACK_INTERVAL_MASK       0x0000f000 
 
-
 /* Fourth byte */
-
 #define         LINK_ACK_TYPE           0x00000001
 #define         UDP_DATA_TYPE           0x00000002
 #define         REL_UDP_DATA_TYPE       0x00000003
 #define         REALTIME_DATA_TYPE      0x00000004
 #define         REALTIME_NACK_TYPE      0x00000005
-#define         RESERVED1               0x00000006  /* SC1 */
-#define         RESERVED2               0x00000007  /* LC_ARP */
-#define         RESERVED3               0x00000008  /* LC_ARP */
+#define         RESERVED_TYPE0          0x00000006
+#define         RESERVED_TYPE1          0x00000007
+#define         RESERVED_TYPE2          0x00000008  /* SC2 */
+#define         RESERVED_TYPE3          0x00000009  /* SC2 */
+
 #define         DATA_MASK               0x0000007f
 
-
-
 /* Type macros */
-#define		Is_reliable(type)	(type & RELIABLE_TYPE)
-#define		Is_hello(type)	        ((type & HELLO_MASK)==HELLO_TYPE)
-#define		Is_hello_req(type)	((type & HELLO_MASK)==HELLO_REQ_TYPE)
-#define		Is_hello_ping(type)	((type & HELLO_MASK)==HELLO_PING_TYPE)
-#define		Is_hello_discnct(type)	((type & HELLO_MASK)==HELLO_DISCNCT_TYPE)
-#define		Is_hello_close(type)	((type & HELLO_MASK)==HELLO_CLOSE_TYPE)
+#define		Is_reliable(t)       (((t) & RELIABLE_TYPE) != 0)
 
-#define		Is_link_state(type)	((type & ROUTE_MASK) == LINK_STATE_TYPE)
-#define		Is_group_state(type)	((type & ROUTE_MASK) == GROUP_STATE_TYPE)
+#define         Is_hello_type(t)     (((t) & HELLO_MASK) != 0)
+#define		Is_hello(t)          (((t) & HELLO_MASK) == HELLO_TYPE)
+#define		Is_hello_req(t)      (((t) & HELLO_MASK) == HELLO_REQ_TYPE)
+#define		Is_hello_ping(t)     (((t) & HELLO_MASK) == HELLO_PING_TYPE)
+#define		Is_hello_discnct(t)  (((t) & HELLO_MASK) == HELLO_DISCNCT_TYPE)
+#define		Is_hello_close(t)    (((t) & HELLO_MASK) == HELLO_CLOSE_TYPE)
 
-#define		Is_udp_data(type)	((type & DATA_MASK) == UDP_DATA_TYPE)
-#define		Is_rel_udp_data(type)	((type & DATA_MASK) == REL_UDP_DATA_TYPE)
-#define		Is_realtime_data(type)	((type & DATA_MASK) == REALTIME_DATA_TYPE)
-#define		Is_realtime_nack(type)	((type & DATA_MASK) == REALTIME_NACK_TYPE)
-#define		Is_link_ack(type)	((type & DATA_MASK) == LINK_ACK_TYPE)
+#define		Is_link_state(t)     (((t) & ROUTE_MASK) == LINK_STATE_TYPE)
+#define		Is_group_state(t)    (((t) & ROUTE_MASK) == GROUP_STATE_TYPE)
 
+#define		Is_udp_data(t)       (((t) & DATA_MASK) == UDP_DATA_TYPE)
+#define		Is_rel_udp_data(t)   (((t) & DATA_MASK) == REL_UDP_DATA_TYPE)
+#define		Is_realtime_data(t)  (((t) & DATA_MASK) == REALTIME_DATA_TYPE)
+#define		Is_realtime_nack(t)  (((t) & DATA_MASK) == REALTIME_NACK_TYPE)
+#define		Is_link_ack(t)       (((t) & DATA_MASK) == LINK_ACK_TYPE)
 
-/* IP Address Class Check */
-#define		Is_mcast_addr(x)	((x & 0xF0000000) == 0xE0000000)
-#define		Is_acast_addr(x)	((x & 0xF0000000) == 0xF0000000)
+#define         SPINES_TTL_MAX  255
 
+typedef int32          Spines_ID;  /* a logical Spines ID -- can be a node id, a group id or a network interface id */
+typedef Spines_ID      Node_ID;
+typedef Spines_ID      Group_ID;
+typedef Spines_ID      Interface_ID;
 
-#define         SPINES_TTL_MAX  255;
+typedef int16u         Link_State_LTS;  /* NOTE: must be an unsigned type: see Link_State_LTS_cmp */
 
-/*This goes in front of each packet (any kind), as it is sent on the network */
+/* Spines ID Class Check */
 
+#ifndef Is_mcast_addr
+#  define  Is_mcast_addr(x) (((x) & 0xF0000000) == 0xE0000000)
+#  define  Is_acast_addr(x) (((x) & 0xF0000000) == 0xF0000000)
+#  define  Is_node_addr(x)  (!Is_mcast_addr(x) && !Is_acast_addr(x))
+#endif
 
+/* This goes in front of each packet (any kind), as it is sent on the network */
 typedef	struct	dummy_packet_header {
-    int32u          type;      /* type of the message */
-    int32           sender_id; /* Sender of this network packet, and NOT
-			          the originator of the message */
-    int16u          data_len;  /* Length of the data */
-    int16u          ack_len;   /* Length of the acknowledgement tail */
-    int16u          seq_no;    /* Sequence number of the packet for link loss_rate */
-    int16u          dummy;     /* Nothing yet... */
+    int32u          type;          /* type of the message */
+    Node_ID         sender_id;     /* Sender of this network packet, and NOT
+			              the originator of the message */
+    int32u          ctrl_link_id;  /* sender's control link "session" identifier */
+    int16u          data_len;      /* Length of the data */
+    int16u          ack_len;       /* Length of the acknowledgement tail */
+    int16u          seq_no;        /* Sequence number of the packet for link loss_rate */
 } packet_header;
 
 typedef	char       packet_body[MAX_PACKET_SIZE-sizeof(packet_header)];
 
-
-/* elements are arranged in decending order for byte alligned issues */
+/* elements are arranged in for tight packing + byte alignment issues */
 typedef	struct	dummy_udp_pkt_header {
-    int32           source;
-    int32           dest;
-    int16u          source_port;
-    int16u          dest_port;
-    int16u          len;
-    int16u          seq_no;
-    int16u          sess_id;
-    char            frag_num;   /* For fragmented packets: total num of fragments */
-    char            frag_idx;   /* Fragment index */
-    int32u          ttl;        /* used for both unicast and multicast packets */
+    Node_ID           source;
+    Spines_ID         dest;
+    int16u            source_port;
+    int16u            dest_port;
+    int16u            len;
+    int16u            seq_no;
+    int16u            sess_id;
+    char              frag_num;   /* For fragmented packets: total num of fragments */
+    char              frag_idx;   /* Fragment index */
+    unsigned char     ttl;        /* used for both unicast and multicast packets */
+    unsigned char     routing;
 } udp_header;
 
 typedef struct dummy_rel_udp_pkt_add {
@@ -167,45 +176,41 @@ typedef	struct	dummy_hello_packet {
                                  /* (from 0 to LOSS_RATE_SCALE for 0% to 100%) */
 } hello_packet;
 
-
 typedef	struct	dummy_link_state_packet {
-    int32 	    source;
+    Node_ID 	    source;
     int16u	    num_edges;
     int16           src_data; /* Data about the source itself. 
 				 Not used yet */
 } link_state_packet;
 
-
 typedef	struct	dummy_edge_cell_packet {
-    int32           dest;
+    Node_ID         dest;
     int32           timestamp_sec;
     int32           timestamp_usec;
     int16           cost;
     int16 	    age;
+    Link_State_LTS  lts;
 } edge_cell_packet;
 
 typedef	struct	dummy_group_state_packet {
-    int32 	    source;
+    Node_ID 	    source;
     int16u	    num_cells;
     int16           src_data; /* Data about the source itself. 
 				 Not used yet */
 } group_state_packet;
 
-
 typedef	struct	dummy_group_cell_packet {
-    int32           dest; /* This is actually the multicast address */
+    Group_ID        dest;  /* This is actually the multicast address */
     int32           timestamp_sec;
     int32           timestamp_usec;
     int16           flags;
     int16 	    age;
 } group_cell_packet;
 
-
 typedef struct dummy_reliable_tail {
     int32u          seq_no;            /* seq no of this reliable message */ 
     int32u          cummulative_ack;   /* cummulative in order ack */
 } reliable_tail;
-
 
 typedef struct dummy_reliable_ses_tail {
     int32u          seq_no;            /* seq no of this reliable message */ 
@@ -213,11 +218,10 @@ typedef struct dummy_reliable_ses_tail {
     int32u          adv_win;           /* advertised window for flow control */
 } reliable_ses_tail;
 
-
 /* join acknowledgement */
 typedef struct dummy_reliable_mcast_ack {
     int32           type;	    /* the type of the message */
-    int32u          mcast_address;  /* the group address */
+    Group_ID        mcast_address;  /* the group address */
     int32           timestamp_sec;  /* time stamp of request */
     int32           timestamp_usec;
     int32           flags;          /* flags of the group state */
@@ -227,25 +231,23 @@ typedef struct dummy_reliable_mcast_ack {
     int32u          next_seq_no;    /* the next seq no that will be sent */
 } reliable_mcast_ack;
 
-
 /* data acknowledgement */
 typedef struct dummy_reliable_mcast_data_ack {
     int32           type;	    /* the type of the message */
     int32u          seq_no;         /* Sequence number */
-    int32           group;          /* The group for which the g_aru is sent */
+    Group_ID        group;          /* The group for which the g_aru is sent */
     int32u          g_aru;          /* The cummulative ack for the group */
     int16u	    num_nacks;	    /* number of nacks */
-/* A list of unsigned ints follows this structure. Each of these is a nack. The
- * number of nacks is equivalent to num_nacks */
+  /* A list of unsigned ints follows this structure. Each of these is a nack. The
+   * number of nacks is equivalent to num_nacks */
 } reliable_mcast_data_ack;
 
 /* congestion ack */
 typedef struct dummy_reliable_mcast_cg_ack {
     int32	    type;	    /* type of the message */    
     int32u          seq_no;         /* Sequence number */
-    int32           group;          /* The group for which the ack is sent */
-    int32           new_acker;      /* New congestion acker (if it changed) */
+    Group_ID        group;          /* The group for which the ack is sent */
+    Node_ID         new_acker;      /* New congestion acker (if it changed) */
 } reliable_mcast_cg_ack;
-
 
 #endif	/* NET_TYPES */

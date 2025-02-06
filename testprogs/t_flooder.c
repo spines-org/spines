@@ -1,6 +1,6 @@
 /*
  * Spines.
- *     
+ *
  * The contents of this file are subject to the Spines Open-Source
  * License, Version 1.0 (the ``License''); you may not use
  * this file except in compliance with the License.  You may obtain a
@@ -10,15 +10,15 @@
  *
  * or in the file ``LICENSE.txt'' found in this distribution.
  *
- * Software distributed under the License is distributed on an AS IS basis, 
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License 
- * for the specific language governing rights and limitations under the 
+ * Software distributed under the License is distributed on an AS IS basis,
+ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+ * for the specific language governing rights and limitations under the
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir and Claudiu Danilov.
+ *  Yair Amir, Claudiu Danilov and John Schultz.
  *
- * Copyright (c) 2003 - 2009 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2013 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -29,11 +29,14 @@
  *
  */
 
-
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <math.h>
+#include <errno.h>
+#include <assert.h>
+
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -42,13 +45,6 @@
 #include <netdb.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
-#include <errno.h>
-#include <assert.h>
-
-
-#ifndef socklen_t
-#define socklen_t int
-#endif 
 
 static int  Num_bytes;
 static int  Rate;
@@ -122,12 +118,12 @@ int main( int argc, char *argv[] )
     struct sockaddr_in host;
     struct sockaddr_in name;
     struct sockaddr_in remote;
-    int remote_addr_sz;
+    socklen_t remote_addr_sz;
     struct hostent     h_ent;
 
     unsigned char * p_ip;
 
-    pkt_stats* history;  /* array of size Num_pkts */
+    pkt_stats* history = NULL;  /* array of size Num_pkts */
     int        *pkt_size, *pkts_sending, *pkt_no, *pkt_ts_s, *pkt_ts_us;
     int        num_out_of_order, duplicates, num_lost;
     double     avg_latency, jitter, min_latency, max_latency;
@@ -488,9 +484,9 @@ int main( int argc, char *argv[] )
 	}
 	
 	if(verbose_mode == 1) {
-	  printf("%d\t%d\t%d\t%d\r\n", ntohl(*pkt_size), ntohl(*pkts_sending), ntohl(*pkt_no), oneway_time);
+	  printf("%d\t%d\t%d\t%lld\r\n", ntohl(*pkt_size), ntohl(*pkts_sending), ntohl(*pkt_no), oneway_time);
 	  if(fileflag == 1) {
-	    fprintf(f1, "%d\t%d\t%d\t%d\r\n", ntohl(*pkt_size), ntohl(*pkts_sending), ntohl(*pkt_no), oneway_time);
+	    fprintf(f1, "%d\t%d\t%d\t%lld\r\n", ntohl(*pkt_size), ntohl(*pkts_sending), ntohl(*pkt_no), oneway_time);
 	    fflush(f1);
 	  }       
 	}

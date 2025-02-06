@@ -1,6 +1,6 @@
 /*
  * Spines.
- *     
+ *
  * The contents of this file are subject to the Spines Open-Source
  * License, Version 1.0 (the ``License''); you may not use
  * this file except in compliance with the License.  You may obtain a
@@ -10,15 +10,15 @@
  *
  * or in the file ``LICENSE.txt'' found in this distribution.
  *
- * Software distributed under the License is distributed on an AS IS basis, 
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License 
- * for the specific language governing rights and limitations under the 
+ * Software distributed under the License is distributed on an AS IS basis,
+ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+ * for the specific language governing rights and limitations under the
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir and Claudiu Danilov.
+ *  Yair Amir, Claudiu Danilov and John Schultz.
  *
- * Copyright (c) 2003 - 2009 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2013 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -77,17 +77,26 @@
 #define SES_CLIENT_OFF      2
 #define SES_CLIENT_ORPHAN   3
 
-#define MAX_BUFF_SESS      50
+#define MAX_BUFF_SESS     500
 #define MAX_PKT_SEQ     10000
-#define MAX_SPINES_MSG   1404 /* (packet_body ) 1456 - ( (udp_header) 24 + (rel_ses_pkt_add) 8 + (reliable_ses_tail) 12 + (reliable_tail) 8 ) = 1456 - 52 */
+
+/*#define MAX_SPINES_MSG 1400 */ /* (packet_body ) 1456 - ( (udp_header) 28 + (rel_ses_pkt_add) 8 + (reliable_ses_tail) 12 + (reliable_tail) 8 ) = 1456 - 56 */
+
+/* NOTE: Need to be careful here.  The MTU has some dependence on what
+   link and end-to-end protocols are used.  The above line seems to
+   assume reliable link w/ a reliable end-to-end session would have
+   the highest header overhead.  If we were to add additional
+   protocols that could have more header overhead, then we'd need to
+   use that one (basically we need the worst case of all the possible
+   protocol combinations)  
+*/
+
+#define MAX_SPINES_MSG (MAX_PACKET_SIZE /* ethernet - IP - UDP */ - sizeof(packet_header) - (sizeof(udp_header) + sizeof(rel_udp_pkt_add) + sizeof(reliable_ses_tail) + sizeof(reliable_tail)))
 
 #define MAX_CTRL_SK_REQUESTS 10
 
-
 #include "stdutil/stdcarr.h"
-#include "util/scatter.h"
 #include "link.h" /* For Reliable_Data */
-
 
 typedef struct Frag_Packet_d {
     sys_scatter scat;
@@ -95,7 +104,7 @@ typedef struct Frag_Packet_d {
     int16u sess_id;
     int16u seq_no;
     int16u snd_port;
-    int32 sender;
+    Node_ID sender;
     int32 timestamp_sec;
     struct Frag_Packet_d *next;
     struct Frag_Packet_d *prev;
@@ -152,7 +161,6 @@ typedef struct Session_d {
     int recv_fd_flag;
     int fd;
 } Session;
-
 
 void Session_Flooder_Send(int sesid, void *dummy);
 

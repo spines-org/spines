@@ -1,4 +1,4 @@
-/* Copyright (c) 2000-2009, The Johns Hopkins University
+/* Copyright (c) 2000-2012, The Johns Hopkins University
  * All rights reserved.
  *
  * The contents of this file are subject to a license (the ``License'').
@@ -505,21 +505,25 @@ STDINLINE static stdcode stdhash_low_insert(stdhash *h, stdit *it, const stdit *
 
     search = stdhash_low_find(h, overwrite, key, &hcode);
 
-    if (STDHASH_POS_EMPTY(search)) {  /* found a truly empty hole: create+insert a new node */
+    if (STDHASH_POS_EMPTY(search)) {  /* if we found a truly empty hole: create+insert a new node */
 
       if ((*search = (stdhash_node*) malloc(STDHASH_NODE_SIZE(h->ksize, h->vsize))) == NULL) {
 	ret = STDENOMEM;
 	goto stdhash_low_insert_end;
       }
     
-      ++h->num_nodes;                 /* increased # of nodes in table */
-    }                                 /* else found a useable node */
+      ++h->num_nodes;                 /* increased # of nodes in and size of table */
+      ++h->size;
 
-    /* update the table's meta information */
+    } else if (!overwrite) {          /* else if !overwrite -> we found an inactive node we can reuse */
+      STDSAFETY_CHECK(STDHASH_POS_INACTIVE(search));
+      ++h->size;
 
-    ++h->size;
+    } else {                          /* else we found and are overwriting an existing node; num_nodes and size don't change */
+      STDSAFETY_CHECK(!STDHASH_POS_INACTIVE(search));
+    }
 
-    if (search < h->begin) {  /* insert was before begin */
+    if (search < h->begin) {          /* if insert was before begin */
       h->begin = search;
     }
 

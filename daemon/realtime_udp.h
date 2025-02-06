@@ -1,6 +1,6 @@
 /*
  * Spines.
- *     
+ *
  * The contents of this file are subject to the Spines Open-Source
  * License, Version 1.0 (the ``License''); you may not use
  * this file except in compliance with the License.  You may obtain a
@@ -10,15 +10,15 @@
  *
  * or in the file ``LICENSE.txt'' found in this distribution.
  *
- * Software distributed under the License is distributed on an AS IS basis, 
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License 
- * for the specific language governing rights and limitations under the 
+ * Software distributed under the License is distributed on an AS IS basis,
+ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+ * for the specific language governing rights and limitations under the
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir and Claudiu Danilov.
+ *  Yair Amir, Claudiu Danilov and John Schultz.
  *
- * Copyright (c) 2003 - 2009 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2013 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -29,8 +29,6 @@
  *
  */
 
-
-
 #ifndef RT_UDP_H
 #define RT_UDP_H
 
@@ -40,12 +38,16 @@
 
 #define HISTORY_TIME 100000 /* 100 milliseconds */
 
-void Process_RT_UDP_data_packet(int32 sender_id, char *buff_p, 
-			     int16u data_len, int16u ack_len, int32u type, int mode);
+void Process_RT_UDP_data_packet(Link *lk, char *buff_p, 
+				int16u data_len, int16u ack_len, int32u type, int mode);
+
 int  Forward_RT_UDP_Data(Node* next_hop, char *buff, int16u buf_len);
-void Clean_RT_history(Node *neighbor);
+
+void Clean_RT_history(Link *lk);
 void Send_RT_Nack(int linkid, void* dummy); 
 void Send_RT_Retransm(int linkid, void* dummy); 
-void Process_RT_nack_packet(int32 sender, char *buf, int16u ack_len, 
+
+void Process_RT_nack_packet(Link *lk, char *buf, int16u ack_len, 
 			    int32u type, int mode);
+
 #endif

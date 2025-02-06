@@ -1,6 +1,6 @@
 /*
  * Spines.
- *     
+ *
  * The contents of this file are subject to the Spines Open-Source
  * License, Version 1.0 (the ``License''); you may not use
  * this file except in compliance with the License.  You may obtain a
@@ -10,15 +10,15 @@
  *
  * or in the file ``LICENSE.txt'' found in this distribution.
  *
- * Software distributed under the License is distributed on an AS IS basis, 
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License 
- * for the specific language governing rights and limitations under the 
+ * Software distributed under the License is distributed on an AS IS basis,
+ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+ * for the specific language governing rights and limitations under the
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir and Claudiu Danilov.
+ *  Yair Amir, Claudiu Danilov and John Schultz.
  *
- * Copyright (c) 2003 - 2009 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2013 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -28,7 +28,6 @@
  *    Nilo Rivera
  *
  */
-
 
 #ifndef SPINES_LIB_H
 #define SPINES_LIB_H
@@ -59,11 +58,18 @@ extern "C" {
 #define     UDP_LINKS               0x00000000
 #define     RELIABLE_LINKS          0x00000001
 #define     SOFT_REALTIME_LINKS     0x00000002
-#define     RESERVED_LINKS1         0x00000003 /* SC1 */
-#define     RESERVED_LINKS2         0x00000004 /* LC_ARP */
-#define     TCP_IP_LINKS            0x00000005 /* LC_ARP */
+#define     RESERVED_LINKS1         0x00000003 /* MN */
+#define     RESERVED_LINKS2         0x00000004 /* SC2 */
+#define     TCP_IP_LINKS            0x00000005 
+#define     RESERVED_LINKS_BITS     0x0000000f
+
 #define     UDP_CONNECT             0x00000010
 
+#define MIN_WEIGHT_ROUTING          0x00000000
+#define BEST_EFFORT_FLOOD_ROUTING   0x00000100
+#define RELIABLE_FLOOD_ROUTING      0x00000200
+#define RESERVED_ROUTING_BITS       0x00000f00
+#define ROUTING_BITS_SHIFT          8
 
 #define     SEND_GROUP              0x1000
 #define     RECV_GROUP              0x2000
@@ -87,16 +93,18 @@ extern "C" {
 
 #define     SP_ERROR_VERSION_MISMATCH   7845
 #define     SP_ERROR_LIB_ALREADY_INITED 7846
-#define     SP_ERROR_INPUT_ERR          7846
-#define     SP_ERROR_DAEMON_COMM_ERR    7847
-#define     SP_ERROR_MAX_CONNECTIONS    7848
+#define     SP_ERROR_INPUT_ERR          7847
+#define     SP_ERROR_DAEMON_COMM_ERR    7848
+#define     SP_ERROR_MAX_CONNECTIONS    7849
 
 #define     MAX_COUNT               64
 
 /* IP Address Class Check */
-#define     Is_mcast_addr(x)        ((x & 0xF0000000) == 0xE0000000)
-#define     Is_acast_addr(x)        ((x & 0xF0000000) == 0xF0000000)
-
+#ifndef Is_mcast_addr
+#  define Is_mcast_addr(x) (((x) & 0xF0000000) == 0xE0000000)
+#  define Is_acast_addr(x) (((x) & 0xF0000000) == 0xF0000000)
+#  define Is_node_addr(x)  (!Is_mcast_addr(x) && !Is_acast_addr(x))
+#endif
 
 typedef struct Lib_Client_d {
     int tcp_sk;
@@ -116,9 +124,8 @@ typedef struct Lib_Client_d {
     int virtual_local_port;  /* stored in host byte order */
     int ip_ttl;              /* ttl to stamp all unicast "DATA" UDP packets */ 
     int mcast_ttl;           /* ttl to stamp all multicast "DATA" UDP packets */
+    int routing;
 } Lib_Client;
-
-
 
 typedef struct spines_trace_d {
     int count;
@@ -126,8 +133,6 @@ typedef struct spines_trace_d {
     int distance[MAX_COUNT];
     int cost[MAX_COUNT];
 } spines_trace;
-
-
 
 /* PUBLIC INTERFACE */
 
@@ -152,6 +157,12 @@ int  spines_ioctl(int s, int  level,  int  optname,  void  *optval,
 		  socklen_t optlen);
 int  spines_getsockname(int sk, struct sockaddr *name, socklen_t *nlen);
 
+/* Enhanced recvfrom function that returns the destination address -- this
+ * corresponds to the multicast group to which the packet was sent This is a
+ * hack just to get things working April 24, 2009. */
+int  spines_recvfrom_dest(int s, void *buf, size_t len, int flags, 
+		     struct sockaddr *from, socklen_t *fromlen, unsigned int *dest );
+
 /* END PUBLIC INTERFACE */
 
 int spines_flood_send(int sockfd, int address, int port, int rate, int size, int num_pkt);
@@ -161,14 +172,12 @@ int spines_socket_internal(int domain, int type, int protocol,
 int spines_sendto_internal(int s, const void *msg, size_t len, int flags, 
                            const struct sockaddr *to, socklen_t tolen, int force_tcp);
 int spines_recvfrom_internal(int s, void *buf, size_t len, int flags, 
-                             struct sockaddr *from, socklen_t *fromlen, int force_tcp);
+                             struct sockaddr *from, socklen_t *fromlen, int force_tcp, unsigned int *dest);
 
-int spines_setlink(int sk, const struct sockaddr *addr, 
+int spines_setlink(int sk, int remote_interf_id, int local_interf_id,
                    int bandwidth, int latency, float loss, float burst);
+
 int spines_get_client(int sk);
-
-
-
 
 #ifdef __cplusplus
 }

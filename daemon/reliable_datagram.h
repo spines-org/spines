@@ -1,6 +1,6 @@
 /*
  * Spines.
- *     
+ *
  * The contents of this file are subject to the Spines Open-Source
  * License, Version 1.0 (the ``License''); you may not use
  * this file except in compliance with the License.  You may obtain a
@@ -10,15 +10,15 @@
  *
  * or in the file ``LICENSE.txt'' found in this distribution.
  *
- * Software distributed under the License is distributed on an AS IS basis, 
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License 
- * for the specific language governing rights and limitations under the 
+ * Software distributed under the License is distributed on an AS IS basis,
+ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+ * for the specific language governing rights and limitations under the
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir and Claudiu Danilov.
+ *  Yair Amir, Claudiu Danilov and John Schultz.
  *
- * Copyright (c) 2003 - 2009 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2013 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -28,7 +28,6 @@
  *    Nilo Rivera
  *
  */
-
 
 #ifndef RELIABLE_DATAGRAM_H
 #define RELIABLE_DATAGRAM_H
@@ -40,7 +39,7 @@ void Try_to_Send(int linkid, void* dummy);
 void Send_Ack(int linkid, void* dummy);
 void Reliable_timeout(int linkid, void *dummy); 
 void Send_Nack_Retransm(int linkid, void *dummy); 
-void Process_ack_packet(int32 sender, char *buf, int16u ack_len, int32u type, int mode);
-int Process_Ack(int16 linkid, char *buff, int16u ack_len, int32u type);
+void Process_ack_packet(Link *lk, char *buf, int16u ack_len, int32u type, int mode);
+int  Process_Ack(int16 linkid, char *buff, int16u ack_len, int32u type);
 
 #endif

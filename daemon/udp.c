@@ -1,6 +1,6 @@
 /*
  * Spines.
- *     
+ *
  * The contents of this file are subject to the Spines Open-Source
  * License, Version 1.0 (the ``License''); you may not use
  * this file except in compliance with the License.  You may obtain a
@@ -10,15 +10,15 @@
  *
  * or in the file ``LICENSE.txt'' found in this distribution.
  *
- * Software distributed under the License is distributed on an AS IS basis, 
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License 
- * for the specific language governing rights and limitations under the 
+ * Software distributed under the License is distributed on an AS IS basis,
+ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+ * for the specific language governing rights and limitations under the
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir and Claudiu Danilov.
+ *  Yair Amir, Claudiu Danilov and John Schultz.
  *
- * Copyright (c) 2003 - 2009 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2013 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -29,21 +29,19 @@
  *
  */
 
-
-
 #include <stdlib.h>
 
 #ifdef ARCH_PC_WIN95
-#include <winsock2.h>
+#  include <winsock2.h>
 #endif
 
-#include "util/arch.h"
-#include "util/alarm.h"
-#include "util/sp_events.h"
-#include "util/memory.h"
-#include "util/data_link.h"
-#include "stdutil/src/stdutil/stdhash.h"
-#include "stdutil/src/stdutil/stdcarr.h"
+#include "arch.h"
+#include "spu_alarm.h"
+#include "spu_events.h"
+#include "spu_memory.h"
+#include "spu_data_link.h"
+#include "stdutil/stdhash.h"
+#include "stdutil/stdcarr.h"
 
 #include "objects.h"
 #include "net_types.h"
@@ -63,7 +61,8 @@
 
 /* Global vriables */
 
-extern int32     My_Address;
+extern Node     *This_Node;
+extern Node_ID   My_Address;
 extern stdhash   All_Nodes;
 extern Link*     Links[MAX_LINKS];
 extern int       network_flag;
@@ -77,8 +76,7 @@ extern int       Security;
 
 static const sp_time zero_timeout  = {     0,    0};
 
-
-void	Flip_udp_hdr( udp_header *udp_hdr )
+void Flip_udp_hdr(udp_header *udp_hdr)
 {
     udp_hdr->source	  = Flip_int32( udp_hdr->source );
     udp_hdr->dest	  = Flip_int32( udp_hdr->dest );
@@ -87,40 +85,33 @@ void	Flip_udp_hdr( udp_header *udp_hdr )
     udp_hdr->len	  = Flip_int16( udp_hdr->len );
     udp_hdr->seq_no	  = Flip_int16( udp_hdr->seq_no );
     udp_hdr->sess_id	  = Flip_int16( udp_hdr->sess_id );
-    udp_hdr->ttl          = Flip_int32( udp_hdr->ttl );
 }
 
-void	Copy_udp_header( udp_header *from_udp_hdr, udp_header *to_udp_hdr )
+void Copy_udp_header(udp_header *from_udp_hdr, udp_header *to_udp_hdr)
 {
-    to_udp_hdr->source	  = from_udp_hdr->source;
-    to_udp_hdr->dest	  = from_udp_hdr->dest;
+    to_udp_hdr->source	    = from_udp_hdr->source;
+    to_udp_hdr->dest	    = from_udp_hdr->dest;
     to_udp_hdr->source_port = from_udp_hdr->source_port;
-    to_udp_hdr->dest_port = from_udp_hdr->dest_port;
-    to_udp_hdr->len	  = from_udp_hdr->len;
-    to_udp_hdr->seq_no	  = from_udp_hdr->seq_no;
-    to_udp_hdr->sess_id	  = from_udp_hdr->sess_id;
-    to_udp_hdr->frag_num  = from_udp_hdr->frag_num;
-    to_udp_hdr->frag_idx  = from_udp_hdr->frag_idx;
-    to_udp_hdr->ttl       = from_udp_hdr->ttl;
+    to_udp_hdr->dest_port   = from_udp_hdr->dest_port;
+    to_udp_hdr->len	    = from_udp_hdr->len;
+    to_udp_hdr->seq_no	    = from_udp_hdr->seq_no;
+    to_udp_hdr->sess_id	    = from_udp_hdr->sess_id;
+    to_udp_hdr->frag_num    = from_udp_hdr->frag_num;
+    to_udp_hdr->frag_idx    = from_udp_hdr->frag_idx;
+    to_udp_hdr->ttl         = from_udp_hdr->ttl;
+    to_udp_hdr->routing     = from_udp_hdr->routing;
 }
 
 /***********************************************************/
-/* void Process_udp_data_packet(int32 sender_id,           */
-/*                              char *buff,                */
-/*                              int16u data_len,           */
-/*			        int32u type, int mode)     */
-/*                                                         */
 /* Processes a UDP data packet                             */
-/*                                                         */
 /*                                                         */
 /* Arguments                                               */
 /*                                                         */
-/* sender_id: IP of the node that gave me the message      */
+/* lk:        link upon which this packet was recvd        */
 /* buff:      a buffer containing the message              */
 /* data_len:  length of the data in the packet             */
 /* type:      type of the packet                           */
 /* mode:      mode of the link the packet arrived on       */
-/*                                                         */
 /*                                                         */
 /* Return Value                                            */
 /*                                                         */
@@ -128,129 +119,32 @@ void	Copy_udp_header( udp_header *from_udp_hdr, udp_header *to_udp_hdr )
 /*                                                         */
 /***********************************************************/
 
-void Process_udp_data_packet(int32 sender_id, char *buff, int16u data_len, 
-			     int32u type, int mode)
+void Process_udp_data_packet(Link *lk, char *buff, int16u data_len, int32u type, int mode)
 {
-    udp_header *hdr;
-    Node *next_hop, *nd;
-    stdit ngb_it, grp_it, st_it, src_it;
-    Group_State *g_state;
-    State_Chain *s_chain_grp;
-    int ret;
-    stdhash *neighbors;
+  /* NOTE: lk can be NULL -> self delivery */
+
+  udp_header *hdr = (udp_header*) buff;
     
-    /* Process the packet */
-    hdr = (udp_header*)buff;
+  if (!Same_endian(type)) {
+    Flip_udp_hdr(hdr);
+  }
 
-    if(!Same_endian(type))
-	Flip_udp_hdr(hdr);
-
-    /* decrement the TTL */
-    if(hdr->ttl != 0) {
-        hdr->ttl--;
-    } else {  
-        /* the ttl value in this function should never be 0, becuase we should never be sending out packets of ttl 0 */
-        Alarm(EXIT, "Process_udp_data_packet(): processing a packet with TTL of 0, not allowed.\n");
-    }
-
-
-    if(hdr->len + sizeof(udp_header) == data_len) {	
-	if(!Is_mcast_addr(hdr->dest) && !Is_acast_addr(hdr->dest)) {
-	    /* This is unicast */
-	   
-	    /* This could be a resent multicast message. TODO Should we do
-	     * something differently, or is it adequate to use port numbers
-	     * to identify a resent multicast message? */
-	   
-	    /* Is this for me? */
-	    if(hdr->dest == My_Address) {
-		ret = Deliver_UDP_Data(buff, data_len, 0);
-		return;
-	    }
-	    
-	    /* Nope, it's for smbd else. See where we should forward it */
-	    next_hop = Get_Route(My_Address, hdr->dest);
-            /* only forwad if ttl allows it */
-            if ((next_hop != NULL) && (hdr->ttl > 0)) {
-		ret = Forward_UDP_Data(next_hop, buff, data_len);
-		return;
-	    }
-	    else {
-		return;
-	    }
-	}
-	else if (Unicast_Only != 1) { 
-	    /* This is multicast or anycast */
-	    if(Find_State(&All_Groups_by_Node, My_Address, hdr->dest) != NULL) {
-		/* Hey, I joined this group !*/
-		Deliver_UDP_Data(buff, data_len, 0);
-	    }
-	    stdhash_find(&All_Groups_by_Name, &grp_it, &hdr->dest);
-	    if(!stdhash_is_end(&All_Groups_by_Name, &grp_it)) {
-		/* Send Ack -- TEMPORARY */
-		s_chain_grp = *((State_Chain **)stdhash_it_val(&grp_it));
-		stdhash_begin(&s_chain_grp->states, &st_it);
-		if(!stdhash_is_end(&s_chain_grp->states, &st_it)) {
-		    g_state = *((Group_State **)stdhash_it_val(&st_it));
-		    if ((g_state->flags & SENDRECV_GROUP) != 0) {
-			stdhash_find(&All_Nodes, &src_it, &hdr->source);
-			if(!stdhash_is_end(&All_Nodes, &src_it)) {
-			    nd = *((Node **)stdhash_it_val(&src_it));
-#if 0
-			    stdhash_begin(&nd->routes, &rt_it);
-			    while(!stdhash_is_end(&nd->routes, &rt_it)) {
-				route = *((Route **)stdhash_it_val(&rt_it));
-				if (route->forwarder != 0) {
-				    stdhash_find(&Neighbors, &ngb_it, &route->forwarder->address);
-				    if(stdhash_is_end(&Neighbors, &ngb_it)) {
-					stdhash_insert(&Neighbors, &ngb_it, &route->forwarder->address, &route->forwarder);
-				    }
-				}
-			        stdhash_it_next(&rt_it);
-			    }
-#endif
-		        }
-		    }
-		}
-	    }
-	    neighbors = Get_Mcast_Neighbors(hdr->source, hdr->dest);
-
-            /* only forward if ttl allows it */
-            if ((neighbors != NULL) && (hdr->ttl > 0)) {
-		stdhash_begin(neighbors, &ngb_it);
-		while(!stdhash_is_end(neighbors, &ngb_it)) {
-		    next_hop = *((Node **)stdhash_it_val(&ngb_it));
-		    ret = Forward_UDP_Data(next_hop, buff, data_len);
-		    stdhash_it_next(&ngb_it);
-		}
-	    }
-	    return;
-	}
-    }
-    else {
-	Alarm(PRINT, "Process_udp_data: Packed data... not available yet %d :: %d\n",
-	      hdr->len + sizeof(udp_header), data_len);
-	return;
-    }
+  if (hdr->len + sizeof(udp_header) != data_len) {
+    Alarm(PRINT, "Process_udp_data_packet: Packed data not available yet!\r\n");
+    return;
+  }
+  
+  Deliver_and_Forward_Data(buff, data_len, mode, lk);
 }
 
-
-
 /***********************************************************/
-/* int Forward_UDP_data((Node *next_hop, char *buff,       */
-/*                       int16u buf_len)                   */
-/*                                                         */
-/*                                                         */
-/*                                                         */
 /* Forward a UDP data packet                               */
-/*                                                         */
 /*                                                         */
 /* Arguments                                               */
 /*                                                         */
 /* next_hop:  the next node on the path                    */
 /* buff:      buffer containing the message                */
 /* buf_len:   length of the packet                         */
-/*                                                         */
 /*                                                         */
 /* Return Value                                            */
 /*                                                         */
@@ -260,64 +154,42 @@ void Process_udp_data_packet(int32 sender_id, char *buff, int16u data_len,
 
 int Forward_UDP_Data(Node *next_hop, char *buff, int16u buf_len)
 {
-    Link *lk;
-    packet_header hdr;
-    sys_scatter scat;
-    int ret;
+  Link         *lk;
+  packet_header hdr;
+  sys_scatter   scat;
+  int           ret;
 
+  if (next_hop == This_Node) {
+    Process_udp_data_packet(NULL, buff, buf_len, UDP_DATA_TYPE, UDP_LINK);
+    return BUFF_EMPTY;
+  }
+
+  if ((lk = Get_Best_Link(next_hop->nid, UDP_LINK)) == NULL) {
+    return BUFF_DROP;
+  }
     
-    if(next_hop->address == My_Address) {
-	Process_udp_data_packet(My_Address, buff, buf_len, 
-				 Set_endian(UDP_DATA_TYPE), UDP_LINK);
+  scat.num_elements    = 2;
+  scat.elements[0].len = sizeof(packet_header);
+  scat.elements[0].buf = (char*) &hdr;
+  scat.elements[1].len = buf_len;
+  scat.elements[1].buf = buff;
+    
+  hdr.type             = UDP_DATA_TYPE;
+  hdr.type             = Set_endian(hdr.type);
+
+  hdr.sender_id        = My_Address;
+  hdr.ctrl_link_id     = lk->leg->ctrl_link_id;
+  hdr.data_len         = buf_len;
+  hdr.ack_len          = 0;
+  hdr.seq_no           = Set_Loss_SeqNo(lk->leg);
 	
-	return(BUFF_EMPTY);
-    }
+  if(network_flag == 1) {
+    ret = Link_Send(lk, &scat);
 
-    lk = next_hop->link[UDP_LINK];
-    if(lk == NULL) {
-	return(BUFF_DROP);
+    if (ret < 0) {
+      return BUFF_DROP;
     }
+  }
     
-    scat.num_elements = 2;
-    scat.elements[0].len = sizeof(packet_header);
-    scat.elements[0].buf = (char *) &hdr;
-    scat.elements[1].len = buf_len;
-    scat.elements[1].buf = buff;
-    
-    hdr.type    = UDP_DATA_TYPE;
-    hdr.type    = Set_endian(hdr.type);
-
-    hdr.sender_id = My_Address;
-    hdr.data_len  = buf_len;
-    hdr.ack_len   = 0;
-    hdr.seq_no    = Set_Loss_SeqNo(lk->other_side_node);
-	
-    if(network_flag == 1) {
-#ifdef SPINES_SSL
-        if (!Security) {
-#endif
-	    ret = DL_send(lk->chan,
-			  next_hop->address,
-			  lk->port, 
-			  &scat );
-#ifdef SPINES_SSL
-	} else {
-	    ret = DL_send_SSL(lk->chan,
-			      lk->link_node_id, 
-			      next_hop->address,
-			      lk->port,        
-			      &scat );
-	}
-#endif
-	if(ret < 0) {
-	    return(BUFF_DROP);
-	}
-    }
-    
-    return(BUFF_EMPTY);
+  return BUFF_EMPTY;
 }
-
-
-
-
-

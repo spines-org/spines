@@ -1,35 +1,29 @@
 include ../Makefile.general
 
+.PHONY: all clean distclean
+
 VPATH=@srcdir@
 top_srcdir=@top_srcdir@
 
-CPPFLAGS=-I../util -I../stdutil/src -I$(top_srcdir) -I$(top_srcdir)/util -I$(top_srcdir)/daemon -I$(top_srcdir)/libspines -I$(top_srcdir)/stdutil/src @CPPFLAGS@
+all: libspines.a
 
-UTIL_O= ../util/alarm.o ../util/events.o ../util/data_link.o ../util/memory.o
-UTIL_TO= ../util/alarm.to ../util/events.to ../util/data_link.to ../util/memory.to
-
-all: spines_lib.a spines_tlib.a 
-
-spines_lib.a: $(UTIL_O) spines_lib.o ../stdutil/lib/libstdutil-nothread-release.a
-	$(AR) rv $@ spines_lib.o $(UTIL_O) 
-	$(AR) x ../stdutil/lib/libstdutil-nothread-release.a
-	$(AR) rv $@ std*.o
+libspines.a: spines_lib.o ../libspread-util/lib/libspread-util.a ../stdutil/lib/libstdutil.a
+	$(AR) x ../libspread-util/lib/libspread-util.a
+	$(AR) x ../stdutil/lib/libstdutil.a
+	$(AR) rv $@ *.o *.to
 	$(RANLIB) $@
 
-spines_tlib.a: $(UTIL_TO) spines_lib.to ../stdutil/lib/libstdutil-threaded-release.a
-	$(AR) rv $@ spines_lib.to $(UTIL_TO) 
-	$(AR) x ../stdutil/lib/libstdutil-threaded-release.a
-	$(AR) rv $@ std*.to
+libspines-core.a: spines_lib.o
+	$(AR) rv $@ spines_lib.o
 	$(RANLIB) $@
 
 clean:
-	rm -f *~
 	rm -f *.o
 	rm -f *.to
 
 distclean: clean
-	rm -f spines_lib.a
-	rm -f spines_tlib.a
-	rm -f Makefile 
-
-
+	rm -f *~
+	rm -f core*
+	rm -f libspines.a
+	rm -f libspines-core.a
+	rm -f Makefile

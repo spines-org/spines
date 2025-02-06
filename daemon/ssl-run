@@ -1,3 +1,0 @@
-# example of how to run with secure links
-# the keys are located in ssl-key directory
-LD_LIBRARY_PATH=~/local/lib ./spines -secure -pub 02.pem -priv testkey2.pem -cacert cacert.pem -pass test2 -a 128.220.221.11

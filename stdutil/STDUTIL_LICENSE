@@ -1,11 +1,11 @@
-/* Copyright (c) 2000-2009, The Johns Hopkins University
+/* Copyright (c) 2000-2012, The Johns Hopkins University
  * All rights reserved.
  * 
  * The Original Software is:
  *     The StdUtil Library
  * 
  * Contributors:
- *     Creator - John Lane Schultz (jschultz@cnds.jhu.edu)
+ *     Creator - John Lane Schultz (jschultz@spreadconcepts.com)
  *     The Center for Networking and Distributed Systems
  *         (CNDS - http://www.cnds.jhu.edu)
  * 
@@ -30,8 +30,6 @@
  *     Department of Computer Science
  *     The Johns Hopkins University
  *     3400 N. Charles St., MD 21218
- * 
- *     or email director [at] cnds.jhu.edu.
  * 
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS 
  * ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT 

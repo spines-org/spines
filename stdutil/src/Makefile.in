@@ -21,13 +21,13 @@ buildtoolsdir=$(top_srcdir)/buildtools
 
 ############################################# FLAGS ###########################################
 
-CFLAGS=@CFLAGS@
-CPPFLAGS=@CPPFLAGS@ -I./ -I$(srcdir)
+CFLAGS=@CFLAGS@ -I../include -I$(srcdir)/../include
+CPPFLAGS=@CPPFLAGS@ -I../include -I$(srcdir)/../include
 LDFLAGS=@LDFLAGS@
 LIBS=@LIBS@
 
-SHCFLAGS=@SHCFLAGS@
-SHCPPFLAGS=@SHCPPFLAGS@ -I./ -I$(srcdir)
+SHCFLAGS=@SHCFLAGS@ -I../include -I$(srcdir)/../include
+SHCPPFLAGS=@SHCPPFLAGS@ -I../include -I$(srcdir)/../include
 SHLDFLAGS=@SHLDFLAGS@
 SHLIBS=@SHLIBS@
 

@@ -1,6 +1,6 @@
 /*
  * Spines.
- *     
+ *
  * The contents of this file are subject to the Spines Open-Source
  * License, Version 1.0 (the ``License''); you may not use
  * this file except in compliance with the License.  You may obtain a
@@ -10,15 +10,15 @@
  *
  * or in the file ``LICENSE.txt'' found in this distribution.
  *
- * Software distributed under the License is distributed on an AS IS basis, 
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License 
- * for the specific language governing rights and limitations under the 
+ * Software distributed under the License is distributed on an AS IS basis,
+ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+ * for the specific language governing rights and limitations under the
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir and Claudiu Danilov.
+ *  Yair Amir, Claudiu Danilov and John Schultz.
  *
- * Copyright (c) 2003 - 2009 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2013 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -29,26 +29,22 @@
  *
  */
 
-
-#ifndef	ARCH_PC_WIN95
-
-#include <netdb.h>
-#include <sys/socket.h>
-
-#else
-
-#include <winsock2.h>
-
-#endif
-
 #include <stdlib.h>
 #include <string.h>
-#include "util/arch.h"
-#include "util/alarm.h"
-#include "util/sp_events.h"
-#include "util/data_link.h"
-#include "util/memory.h"
-#include "stdutil/src/stdutil/stdhash.h"
+
+#ifndef	ARCH_PC_WIN95
+#  include <netdb.h>
+#  include <sys/socket.h>
+#else
+#  include <winsock2.h>
+#endif
+
+#include "arch.h"
+#include "spu_alarm.h"
+#include "spu_events.h"
+#include "spu_data_link.h"
+#include "spu_memory.h"
+#include "stdutil/stdhash.h"
 
 #include "objects.h"
 #include "net_types.h"
@@ -59,30 +55,13 @@
 #include "reliable_datagram.h"
 #include "protocol.h"
 
-/* Global variables */
-
-extern int32 My_Address;
-extern stdhash   All_Nodes;
-extern Link* Links[MAX_LINKS];
-extern int network_flag;
-extern int16 Link_Sessions_Blocked_On;
-extern int Minimum_Window;
-extern int Fast_Retransmit;
-extern int Stream_Fairness;
-extern int Wireless;
-
-extern int Security;
-
+#include "spines.h"
 
 /* Local consts */
 
 static const sp_time zero_timeout  = {     0,    0};
 
-
 /***********************************************************/
-/* int Reliable_Send_Msg(int16 linkid, char *buff,         */
-/*                       int16u buff_len, int32u pack_type)*/
-/*                                                         */
 /* Reliable_Send_Msg() takes the given packet_body buffer  */
 /* and tries to send it reliably, while giving back        */
 /* an empty packet_body buffer to the upper function.      */
@@ -96,11 +75,9 @@ static const sp_time zero_timeout  = {     0,    0};
 /* buff_len:  length of the buffer                         */
 /* pack_type: type of the packet                           */
 /*                                                         */
-/*                                                         */
 /* Return Value                                            */
 /*                                                         */
-/* (int) No. of bytes sent                                 */
-/*                                                         */
+/* # of bytes sent                                         */
 /***********************************************************/
 
 int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_type) 
@@ -137,10 +114,10 @@ int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_typ
     r_tail->seq_no = r_data->seq_no++;
     r_tail->cummulative_ack = r_data->recv_tail;
 
-
     /* First try to send whatever is in the buffer in front of us, if possible */    
-    if(r_data->flags & CONNECTED_LINK)
+    if(r_data->flags & CONNECTED_LINK) {
 	Send_Much(linkid);
+    }
     
     /*
      *    Alarm(DEBUG, "!!! linkid: %d; head: %d; tail: %d; win_size: %5.3f; max_win: %d\n",
@@ -204,7 +181,7 @@ int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_typ
 	}
 	
 	return(0);
-    }   
+    }
 
     /* If I got here it means that I have some space in the window, 
      * so I can go ahead and send the packet */
@@ -281,41 +258,28 @@ int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_typ
     }
 
 
-    scat->num_elements = 2; 
+    scat->num_elements    = 2; 
     scat->elements[0].len = sizeof(packet_header);
-    scat->elements[0].buf = (char *) hdr;
+    scat->elements[0].buf = (char*) hdr;
     scat->elements[1].len = buff_len + ack_len;  
     scat->elements[1].buf = buff;
 
     /* Preparing a packet header */
-    hdr->type = RELIABLE_TYPE | pack_type;
-    hdr->type = Set_endian(hdr->type);
-    hdr->sender_id     = My_Address;
-    hdr->data_len      = buff_len; 
-    hdr->ack_len       = ack_len;
-    hdr->seq_no         = Set_Loss_SeqNo(lk->other_side_node);
+    hdr->type             = RELIABLE_TYPE | pack_type;
+    hdr->type             = Set_endian(hdr->type);
+
+    hdr->sender_id        = My_Address;
+    hdr->ctrl_link_id     = lk->leg->ctrl_link_id;
+    hdr->data_len         = buff_len; 
+    hdr->ack_len          = ack_len;
+    hdr->seq_no           = Set_Loss_SeqNo(lk->leg);
 
     /* Sending the data */
     if(network_flag == 1) {
-#ifdef SPINES_SSL
-	if (!Security) {
-#endif
-	    ret = DL_send(Links[linkid]->chan, 
-			  Links[linkid]->other_side_node->address,
-			  Links[linkid]->port, 
-			  scat);
-#ifdef SPINES_SSL
-	} else {
-	    ret = DL_send_SSL(Links[linkid]->chan,
-			      Links[linkid]->link_node_id,
-			      Links[linkid]->other_side_node->address,
-			      Links[linkid]->port, 
-			      scat);
-        }
-#endif
-	
-        Alarm(DEBUG, "Sent: data: %d; ack: %d; hdr: %d; total: %d\n",
-              buff_len, ack_len, sizeof(packet_header), ret);
+      ret = Link_Send(lk, scat);
+
+      Alarm(DEBUG, "Sent: data: %d; ack: %d; hdr: %d; total: %d\n",
+	    buff_len, ack_len, sizeof(packet_header), ret);
     }
     else {
         ret = 0;
@@ -345,8 +309,9 @@ int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_typ
     timeout_val.sec += timeout_val.usec/1000000;
     timeout_val.usec = timeout_val.usec%1000000;
 
-    if(timeout_val.sec > (DEAD_LINK_CNT-1))
+    if(timeout_val.sec > (DEAD_LINK_CNT-1)) {
 	timeout_val.sec = (DEAD_LINK_CNT-1);
+    }
 
     E_queue(Reliable_timeout, (int)linkid, NULL, timeout_val);
     r_data->scheduled_timeout = 1;
@@ -354,24 +319,13 @@ int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_typ
     return ret;
 }
 
-
-
 /***********************************************************/
-/* void Send_Much(int16 linkid)                            */
-/*                                                         */
 /* Tries to send anything in the buffer (if there is room  */
 /* available in the window)                                */
-/*                                                         */
 /*                                                         */
 /* Arguments                                               */
 /*                                                         */
 /* linkid:    ID of the link to send on                    */
-/*                                                         */
-/*                                                         */
-/* Return Value                                            */
-/*                                                         */
-/* NONE                                                    */
-/*                                                         */
 /***********************************************************/
 
 void Send_Much(int16 linkid) 
@@ -537,39 +491,23 @@ void Send_Much(int16 linkid)
 		}
 	    }
 	}
-
-
 	
 	/* Send the packet */
 	
 	/* Preparing a packet header */
-	hdr.type      = RELIABLE_TYPE | pack_type;
-	hdr.type      = Set_endian(hdr.type);
-	hdr.sender_id = My_Address;
-	hdr.data_len  = data_len; 
-	hdr.ack_len   = ack_len;
-	hdr.seq_no    = Set_Loss_SeqNo(lk->other_side_node);
+	hdr.type         = RELIABLE_TYPE | pack_type;
+	hdr.type         = Set_endian(hdr.type);
+	hdr.sender_id    = My_Address;
+	hdr.ctrl_link_id = lk->leg->ctrl_link_id;
+	hdr.data_len     = data_len; 
+	hdr.ack_len      = ack_len;
+	hdr.seq_no       = Set_Loss_SeqNo(lk->leg);
 	    
 	scat.elements[1].len = data_len + ack_len;    
 	scat.elements[1].buf = send_buff;
 
         /* Sending the data */
-#ifdef SPINES_SSL		
-	if (!Security) {
-#endif
-		ret = DL_send(Links[linkid]->chan, 
-			      Links[linkid]->other_side_node->address,
-			      Links[linkid]->port, 
-			      &scat);
-#ifdef SPINES_SSL
-	} else {
-		ret = DL_send_SSL(Links[linkid]->chan, 
-			  Links[linkid]->link_node_id,
-			  Links[linkid]->other_side_node->address,
-			  Links[linkid]->port, 
-			  &scat);
-	}
-#endif
+	ret = Link_Send(Links[linkid], &scat);
 
 	Alarm(DEBUG, "Sent: data: %d; ack: %d; hdr: %d; total: %d\n",
 	      data_len, ack_len, sizeof(packet_header), ret);
@@ -619,23 +557,13 @@ void Send_Much(int16 linkid)
     r_data->scheduled_timeout = 1;
 }
 
-
 /***********************************************************/
-/* void Send_Ack(int16 linkid, void* dummy)                */
-/*                                                         */
 /* Sends an ACK                                            */
-/*                                                         */
 /*                                                         */
 /* Arguments                                               */
 /*                                                         */
 /* linkid:    ID of the link to send on                    */
 /* dummy:     Not used                                     */
-/*                                                         */
-/*                                                         */
-/* Return Value                                            */
-/*                                                         */
-/* NONE                                                    */
-/*                                                         */
 /***********************************************************/
 
 void Send_Ack(int linkid, void* dummy) 
@@ -721,54 +649,30 @@ void Send_Ack(int linkid, void* dummy)
     scat.elements[1].buf = send_buff;
 	
     /* Preparing a packet header */
-    hdr.type      = LINK_ACK_TYPE;
-    hdr.type      = Set_endian(hdr.type);
-    hdr.sender_id = My_Address;
-    hdr.data_len  = 0; 
-    hdr.ack_len   = ack_len;
-    hdr.seq_no    = Set_Loss_SeqNo(lk->other_side_node);
+    hdr.type         = LINK_ACK_TYPE;
+    hdr.type         = Set_endian(hdr.type);
+    hdr.sender_id    = My_Address;
+    hdr.ctrl_link_id = lk->leg->ctrl_link_id;
+    hdr.data_len     = 0; 
+    hdr.ack_len      = ack_len;
+    hdr.seq_no       = Set_Loss_SeqNo(lk->leg);
 
     /* Sending the ack*/
     if(network_flag == 1) {
-#ifdef SPINES_SSL	    
-        if (!Security) {
-#endif
-	    ret = DL_send(Links[linkid]->chan, 
-			  Links[linkid]->other_side_node->address,
-			  Links[linkid]->port, 
-			  &scat);
-#ifdef SPINES_SSL
-        } else {
-	    ret = DL_send_SSL(Links[linkid]->chan, 
-			      Links[linkid]->link_node_id,
-			      Links[linkid]->other_side_node->address,
-			      Links[linkid]->port,
-			      &scat);
-        }
-#endif
-        Alarm(DEBUG, "Sent: data: %d; ack: %d; hdr: %d; total: %d\n",
-              data_len, ack_len, sizeof(packet_header), ret);
+      ret = Link_Send(Links[linkid], &scat);
+
+      Alarm(DEBUG, "Sent: data: %d; ack: %d; hdr: %d; total: %d\n",
+	    data_len, ack_len, sizeof(packet_header), ret);
     }
 }
 
-
-
 /***********************************************************/
-/* void Reliable_Timeout(int linkid, void* dummy)          */
-/*                                                         */
 /* Handles a timeout                                       */
-/*                                                         */
 /*                                                         */
 /* Arguments                                               */
 /*                                                         */
 /* linkid:    ID of the link to send on                    */
 /* dummy:     Not used                                     */
-/*                                                         */
-/*                                                         */
-/* Return Value                                            */
-/*                                                         */
-/* NONE                                                    */
-/*                                                         */
 /***********************************************************/
 
 void Reliable_timeout(int linkid, void *dummy) 
@@ -788,7 +692,6 @@ void Reliable_timeout(int linkid, void *dummy)
     int ret;
     int32u i, cur_seq;
     sp_time timeout_val, sum_time, tmp_time, now;
-
 
     now = E_get_time();
 
@@ -864,7 +767,6 @@ void Reliable_timeout(int linkid, void *dummy)
 	Alarm(DEBUG, "Ack optimization successfull !!!\n");
     }
 
-
     /* Allocating the new scatter and header for the reliable messages */
     
     if((scat = (sys_scatter*) new(SYS_SCATTER))==NULL) {
@@ -878,7 +780,6 @@ void Reliable_timeout(int linkid, void *dummy)
     scat->elements[0].len = sizeof(packet_header);
     scat->elements[0].buf = (char *) hdr;
 	
-
     /* If we got up to here, we do have smthg in the window. */
 
     for(cur_seq = r_data->tail; cur_seq < r_data->head; cur_seq++) {
@@ -890,8 +791,6 @@ void Reliable_timeout(int linkid, void *dummy)
 	seq_no    = r_data->window[cur_seq%MAX_WINDOW].seq_no;
 
 	r_data->window[cur_seq%MAX_WINDOW].resent = 1;
-
-
 	
 	if(send_buff == NULL)
 	    Alarm(DEBUG, "!!!! ");
@@ -901,8 +800,7 @@ void Reliable_timeout(int linkid, void *dummy)
 	r_tail = (reliable_tail*)(send_buff + data_len);
 	Alarm(DEBUG, "((( tail: %d; seq_no: %d; data_len: %d, ack_len: %d\n",
 	      r_data->tail, r_tail->seq_no, data_len, ack_len);
-	
-	
+		
 	/* Set the cummulative ack */
 	r_tail->cummulative_ack = r_data->recv_tail;
 	r_tail->seq_no = seq_no;
@@ -949,36 +847,23 @@ void Reliable_timeout(int linkid, void *dummy)
 	/* Send the packet */
 	
 	/* Preparing a packet header */
-	hdr->type      = RELIABLE_TYPE | pack_type;
-	hdr->type      = Set_endian(hdr->type);
-	hdr->sender_id = My_Address;
-	hdr->data_len  = data_len; 
-	hdr->ack_len   = ack_len;
-	hdr->seq_no    = Set_Loss_SeqNo(lk->other_side_node);
+	hdr->type         = RELIABLE_TYPE | pack_type;
+	hdr->type         = Set_endian(hdr->type);
+	hdr->sender_id    = My_Address;
+	hdr->ctrl_link_id = lk->leg->ctrl_link_id;
+	hdr->data_len     = data_len; 
+	hdr->ack_len      = ack_len;
+	hdr->seq_no       = Set_Loss_SeqNo(lk->leg);
 	
 	scat->elements[1].len = data_len + ack_len;    
 	scat->elements[1].buf = send_buff;
 	
 	/* Sending the data */
         if(network_flag == 1) {
-#ifdef SPINES_SSL
-	    if (!Security) {
-#endif
-	        ret = DL_send(Links[linkid]->chan, 
-			      Links[linkid]->other_side_node->address,
-			      Links[linkid]->port, 
-			      scat);
-#ifdef SPINES_SSL
-	    } else {
-	        ret = DL_send_SSL(Links[linkid]->chan, 
-				  Links[linkid]->link_node_id,
-				  Links[linkid]->other_side_node->address,
-				  Links[linkid]->port, 
-				  scat);
-	    }
-#endif
-            Alarm(DEBUG, "Sent: data: %d; ack: %d; hdr: %d; total: %d\n",
-                  data_len, ack_len, sizeof(packet_header), ret);
+	  ret = Link_Send(Links[linkid], scat);
+
+	  Alarm(DEBUG, "Sent: data: %d; ack: %d; hdr: %d; total: %d\n",
+		data_len, ack_len, sizeof(packet_header), ret);
         }
     }
 
@@ -1004,8 +889,8 @@ void Reliable_timeout(int linkid, void *dummy)
     if(r_data->timeout_multiply > 100)
 	r_data->timeout_multiply = 100;
 
-    Alarm(DEBUG, "\n\n! ! timeout_multiply: %d\n\n", r_data->timeout_multiply);
-    Alarm(PRINT, "\n\n! ! timeout_multiply: %d\n\n", r_data->timeout_multiply);
+    Alarm(DEBUG, "\n! ! timeout_multiply: %d\n", r_data->timeout_multiply);
+    Alarm(PRINT, "Reliable_timeout: Current timeout_multiply: %d\n", r_data->timeout_multiply);
 
     timeout_val.sec  *= r_data->timeout_multiply;
     timeout_val.usec *= r_data->timeout_multiply;
@@ -1021,24 +906,13 @@ void Reliable_timeout(int linkid, void *dummy)
     E_queue(Reliable_timeout, (int)linkid, NULL, timeout_val);
 }
 
-
-
 /***********************************************************/
-/* void Send_Nack_Retransm(int16 linkid, void* dummy)      */
-/*                                                         */
 /* Answers to a NACK                                       */
-/*                                                         */
 /*                                                         */
 /* Arguments                                               */
 /*                                                         */
 /* linkid:    ID of the link to send on                    */
 /* dummy:     Not used                                     */
-/*                                                         */
-/*                                                         */
-/* Return Value                                            */
-/*                                                         */
-/* NONE                                                    */
-/*                                                         */
 /***********************************************************/
 
 void Send_Nack_Retransm(int linkid, void *dummy) 
@@ -1060,7 +934,6 @@ void Send_Nack_Retransm(int linkid, void *dummy)
     int j, ret;
     int32u i;
     sp_time sum_time, tmp_time, now;
-
     
     now = E_get_time();
 
@@ -1076,7 +949,6 @@ void Send_Nack_Retransm(int linkid, void *dummy)
     if(!(r_data->flags & CONNECTED_LINK))
 	Alarm(EXIT, "Send_Nack_Retransm: Link not valid yet\n");
     
-
     /* First see if we have anything in the window to send */
     if((r_data->nack_len == 0)||(r_data->nack_buff == NULL)) {
 	Alarm(DEBUG, "Send_Nack_Retransm: Oops, nothing to resend here\n");
@@ -1121,7 +993,6 @@ void Send_Nack_Retransm(int linkid, void *dummy)
 	stream_window = r_data->window_size;
     }
 
-
     if(r_data->cong_flag == 1) {
 	/* Congestion control */
 	r_data->ssthresh = (unsigned int)(r_data->window_size - stream_window/2);
@@ -1138,7 +1009,6 @@ void Send_Nack_Retransm(int linkid, void *dummy)
 	r_data->cong_flag = 1;
     }
 
-
     /* If there is already an ack to be sent on this link, cancel it, 
        as these packets will contain the ack info. */
     if(r_data->scheduled_ack == 1) {
@@ -1146,7 +1016,6 @@ void Send_Nack_Retransm(int linkid, void *dummy)
 	E_dequeue(Send_Ack, (int)linkid, NULL);
 	Alarm(DEBUG, "Ack optimization successfull !!!\n");
     }
-
 
     /* Allocating the new scatter and header for the reliable messages */
     
@@ -1159,8 +1028,7 @@ void Send_Nack_Retransm(int linkid, void *dummy)
     scat->num_elements = 2; /* For now there are only two elements in 
 			       the scatter */
     scat->elements[0].len = sizeof(packet_header);
-    scat->elements[0].buf = (char *) hdr;
-	
+    scat->elements[0].buf = (char *) hdr;	
 
     /* Check each nack individually */
 	
@@ -1175,13 +1043,10 @@ void Send_Nack_Retransm(int linkid, void *dummy)
 	send_buff = r_data->window[nack_seq%MAX_WINDOW].buff;
 	seq_no    = r_data->window[nack_seq%MAX_WINDOW].seq_no;
 
-
 	r_data->window[nack_seq%MAX_WINDOW].resent = 1;
-
-
-	r_tail = (reliable_tail*)(send_buff + data_len);
 	
 	/* Set the cummulative ack */
+	r_tail = (reliable_tail*)(send_buff + data_len);
 	r_tail->cummulative_ack = r_data->recv_tail;
 	r_tail->seq_no = seq_no;
 
@@ -1226,45 +1091,29 @@ void Send_Nack_Retransm(int linkid, void *dummy)
 	    }
 	}
 
-
-
 	/* Send the packet */
 	
 	/* Preparing a packet header */
-	hdr->type      = RELIABLE_TYPE | pack_type;
-	hdr->type      = Set_endian(hdr->type);
-	hdr->sender_id = My_Address;
-	hdr->data_len  = data_len; 
-	hdr->ack_len   = ack_len;
-        hdr->seq_no     = Set_Loss_SeqNo(lk->other_side_node);
+	hdr->type         = RELIABLE_TYPE | pack_type;
+	hdr->type         = Set_endian(hdr->type);
+	hdr->sender_id    = My_Address;
+	hdr->ctrl_link_id = lk->leg->ctrl_link_id;
+	hdr->data_len     = data_len; 
+	hdr->ack_len      = ack_len;
+        hdr->seq_no       = Set_Loss_SeqNo(lk->leg);
 	
 	scat->elements[1].len = data_len + ack_len;    
 	scat->elements[1].buf = send_buff;
 	
 	/* Sending the data */
         if(network_flag == 1) {
-#ifdef SPINES_SSL
-	    if (!Security) {
-#endif
-	        ret = DL_send(Links[linkid]->chan,
-			      Links[linkid]->other_side_node->address,
-			      Links[linkid]->port, 
-			      scat);
-#ifdef SPINES_SSL
-	    } else {
+	  ret = Link_Send(Links[linkid], scat);
 
-	        ret = DL_send_SSL(Links[linkid]->chan, 
-				  Links[linkid]->link_node_id,
-				  Links[linkid]->other_side_node->address,
-				  Links[linkid]->port, 
-				  scat);
-	    }
-#endif
-            Alarm(DEBUG, "^^^NACK answered: %d; len: %d; j: %d\n", 
-                  nack_seq, r_data->nack_len, j);
-            
-            Alarm(DEBUG, "Sent: data: %d; ack: %d; hdr: %d; total: %d\n",
-                  data_len, ack_len, sizeof(packet_header), ret);
+	  Alarm(DEBUG, "^^^NACK answered: %d; len: %d; j: %d\n", 
+		nack_seq, r_data->nack_len, j);
+          
+	  Alarm(DEBUG, "Sent: data: %d; ack: %d; hdr: %d; total: %d\n",
+		data_len, ack_len, sizeof(packet_header), ret);
         }
     }
 
@@ -1276,14 +1125,8 @@ void Send_Nack_Retransm(int linkid, void *dummy)
     r_data->nack_len = 0;
 }
 
-
-
 /***********************************************************/
-/* int Process_Ack(int16 linkid, char *buff,               */
-/*                  int16u ack_len, int32u type)           */
-/*                                                         */
 /* Processes an ACK                                        */
-/*                                                         */
 /*                                                         */
 /* Arguments                                               */
 /*                                                         */
@@ -1291,7 +1134,6 @@ void Send_Nack_Retransm(int linkid, void *dummy)
 /* buff:      buffer cointaining the ACK                   */
 /* ack_len:   length of the ACK                            */
 /* type:      type of the packet, cointaining endianess    */
-/*                                                         */
 /*                                                         */
 /* Return Value                                            */
 /*                                                         */
@@ -1347,7 +1189,6 @@ int Process_Ack(int16 linkid, char *buff, int16u ack_len, int32u type)
 	E_queue(Send_Nack_Retransm, (int)linkid, NULL, zero_timeout);
     }
 
-
     /* Check the cummulative acknowledgement */
     r_tail = (reliable_tail*)buff;
 
@@ -1366,7 +1207,6 @@ int Process_Ack(int16 linkid, char *buff, int16u ack_len, int32u type)
 
         return(0);
     }
-
 
     if(r_tail->cummulative_ack > r_data->tail) {
 	if(r_tail->cummulative_ack%10 == 0) {
@@ -1396,7 +1236,6 @@ int Process_Ack(int16 linkid, char *buff, int16u ack_len, int32u type)
 	    else
 		Alarm(EXIT, "Process_Ack(): Reliability failure\n");
 
-
 	    if((Stream_Fairness == 1)&&
 	       ((r_data->window[r_data->tail%MAX_WINDOW].pack_type & UDP_DATA_TYPE)||
 		(r_data->window[r_data->tail%MAX_WINDOW].pack_type & REL_UDP_DATA_TYPE))){
@@ -1425,7 +1264,6 @@ int Process_Ack(int16 linkid, char *buff, int16u ack_len, int32u type)
 	    else {
 		stream_window = r_data->window_size;
 	    }
-
 	    
 	    r_data->tail++;
 
@@ -1457,7 +1295,7 @@ int Process_Ack(int16 linkid, char *buff, int16u ack_len, int32u type)
     }
 
     /* Reset the timeout slowly */
-    //r_data->timeout_multiply = 1;
+    /*r_data->timeout_multiply = 1;*/
 
     /* NILO : NEW CODE */
     r_data->timeout_multiply *= (float)(7.0/8.0);
@@ -1465,7 +1303,6 @@ int Process_Ack(int16 linkid, char *buff, int16u ack_len, int32u type)
         r_data->timeout_multiply = 1;
     }
     /* NILO : END NEW CODE */
-
 
     /* Cancel the previous timeout */
     if(r_data->scheduled_timeout == 1) {
@@ -1547,19 +1384,13 @@ int Process_Ack(int16 linkid, char *buff, int16u ack_len, int32u type)
     return(1);
 }
 
-
 void Try_to_Send(int linkid, void* dummy) 
 {
     Send_Much((int16)linkid);
 }
 
-
 /***********************************************************/
-/* void Process_ack_packet(int32 sender, char *buff,       */
-/*                  int16u ack_len, int32u type, int mode) */
-/*                                                         */
 /* Processes an ACK packet                                 */
-/*                                                         */
 /*                                                         */
 /* Arguments                                               */
 /*                                                         */
@@ -1568,49 +1399,15 @@ void Try_to_Send(int linkid, void* dummy)
 /* ack_len:   length of the ACK                            */
 /* type:      type of the packet, cointaining endianess    */
 /* mode:      mode of the link                             */
-/*                                                         */
-/*                                                         */
-/* Return Value                                            */
-/*                                                         */
-/* NONE                                                    */
-/*                                                         */
 /***********************************************************/
                                                          
-
-void Process_ack_packet(int32 sender, char *buf, int16u ack_len, int32u type, int mode)
+void Process_ack_packet(Link *lk, char *buf, int16u ack_len, int32u type, int mode)
 {
-    stdit it;
-    Node *sender_node;
-    Link *lk = NULL;
-    int32 sender_ip = sender;
+  if (lk->r_data == NULL) { 
+    Alarm(EXIT, "Process_ack_packet: ack packet for non-reliable link?!\r\n");
+  }
 
-    /* Check if we knew about the sender of thes message */
-    stdhash_find(&All_Nodes, &it, &sender_ip);
-    if(stdhash_is_end(&All_Nodes, &it)) { /* I had no idea about the sender node */
-	/* This guy should first send hello messages to setup 
-	   the link, etc. The only reason for getting this ack
-	   is that I crashed, recovered, and the sender didn't even notice. 
-	   Hello protocol will take care to make it a neighbor if needed */
-	
-	return;
-    }
-
-    /* First, get the other side node */
-    sender_node = *((Node **)stdhash_it_val(&it));
-    
-    /* See if we have a valid link to this guy, and take care about the acks.
-     * If we don't have a link, ignore the ack. */
-    if(sender_node->node_id >= 0) {
-	/* Ok, this node is a neighbor. Let's see the link to it */
-	lk = sender_node->link[mode];
-
-	if(lk != NULL) {
-	    if(lk->r_data != NULL) { 
-		if(lk->r_data->flags & CONNECTED_LINK) {
-		    Process_Ack(lk->link_id, buf, ack_len, type);
-		}
-	    }
-	}
-    } 
+  if (lk->r_data->flags & CONNECTED_LINK) {
+    Process_Ack(lk->link_id, buf, ack_len, type);
+  }
 }   
-

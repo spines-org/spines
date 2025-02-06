@@ -1,6 +1,6 @@
 /*
  * Spines.
- *     
+ *
  * The contents of this file are subject to the Spines Open-Source
  * License, Version 1.0 (the ``License''); you may not use
  * this file except in compliance with the License.  You may obtain a
@@ -10,15 +10,15 @@
  *
  * or in the file ``LICENSE.txt'' found in this distribution.
  *
- * Software distributed under the License is distributed on an AS IS basis, 
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License 
- * for the specific language governing rights and limitations under the 
+ * Software distributed under the License is distributed on an AS IS basis,
+ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+ * for the specific language governing rights and limitations under the
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir and Claudiu Danilov.
+ *  Yair Amir, Claudiu Danilov and John Schultz.
  *
- * Copyright (c) 2003 - 2009 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2013 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -29,31 +29,31 @@
  *
  */
 
-
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include <stdlib.h>
-
-#ifndef ARCH_PC_WIN95
-#include <unistd.h>
-#include <sys/time.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h> 
-#include <netdb.h>
-#include <sys/ipc.h>
-#include <sys/shm.h>
-#else
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#endif
-
 #include <errno.h>
 #include <math.h>
 #include <assert.h>
+#include <limits.h>
+
+#ifndef ARCH_PC_WIN95
+#  include <unistd.h>
+#  include <sys/time.h>
+#  include <sys/types.h>
+#  include <sys/socket.h>
+#  include <netinet/in.h> 
+#  include <netdb.h>
+#  include <sys/ipc.h>
+#  include <sys/shm.h>
+#else
+#  include <winsock2.h>
+#  include <ws2tcpip.h>
+#endif
+
 #include "spines_lib.h"
-#include "util/sp_events.h"
-#include "util/alarm.h"
+#include "spu_events.h"
+#include "spu_alarm.h"
 
 static int  Num_bytes;
 static int  Rate;
@@ -71,6 +71,7 @@ static int  Protocol;
 static int  Group_Address;
 static int  ttl;
 static int  report_latency_stats;
+static int  enforce_ordering;
 static int  verbose_mode;
 static int  reliable_connect;
 
@@ -84,13 +85,20 @@ typedef struct pkt_stats_imp {
   int             sent_seq_no;
   sp_time         sent_timestamp;
   sp_time         recvd_timestamp;
-  int             transmition_latency;
-  int             recvd_pkt_cnt;
-  int             recvd_out_of_order; /* 0 false or 1 true */
-
+  sp_time         delvd_timestamp;
+  int             latency;
+  int             recvd_pkt_ind;
 
 } pkt_stats;
- 
+
+int pkt_stats_lat_cmp(const void *left, const void *right)
+{
+  const pkt_stats *l = (const pkt_stats*) left;
+  const pkt_stats *r = (const pkt_stats*) right;
+
+  return (l->latency < r->latency ? -1 : l->latency != r->latency);
+}
+
 void isleep(int usec)
 {
   int diff;
@@ -100,18 +108,17 @@ void isleep(int usec)
   diff = 0;
   
   while(diff < usec) {
-    if(usec - diff > 1) {
+
+    if(usec - diff > 11000) {
 #ifdef ARCH_PC_WIN95
-	  Sleep(1);
+      Sleep(1);
 #else
       usleep(1);
 #endif
     }
 
-    now = E_get_time();
-    diff = now.sec - start.sec;
-    diff *= 1000000;
-    diff += now.usec - start.usec;
+    now  = E_get_time();
+    diff = (now.sec - start.sec) * 1000000 + (now.usec - start.usec);
   }
 }
 
@@ -123,13 +130,13 @@ int main( int argc, char *argv[] )
   char results_str[1024];
   int  i, j, ret;
   sp_time t1, t2;
-  sp_time start, now, report_time;
+  sp_time start = { 0, 0 } , now, report_time;
 
 #ifdef ARCH_PC_WIN95
   WSADATA		WSAData;
 #endif
 
-  long long int duration_now, int_delay, oneway_time;
+  long long int duration_now, int_delay;
   double rate_now;
   int sent_packets = 0;
   long elapsed_time;
@@ -142,19 +149,17 @@ int main( int argc, char *argv[] )
   struct hostent  *host_ptr;
   char   machine_name[256];
   
-  pkt_stats* history = 0; /* array of size Num_pkts */
-  int        *pkt_size, *pkts_sending, *pkt_no, *pkt_ts_s, *pkt_ts_us;
-  int        num_out_of_order, duplicates, num_lost;
-  double     avg_latency, jitter, min_latency, max_latency;
-  long long int running_latency;
-  int        last_seq;
-  double     running_std_dev, now_loss;
-  
+ pkt_stats* history = NULL;  /* array of size Num_pkts */
+ int        *pkt_size, *pkts_sending, *pkt_no, *pkt_ts_s, *pkt_ts_us;
+ int        num_out_of_order, duplicates, num_lost, latency;
+ double     loss_pct;
+ int        tail, head;
+
  #ifdef	ARCH_PC_WIN95    
-  ret = WSAStartup( MAKEWORD(1,1), &WSAData );
-  if( ret != 0 ) {
+ ret = WSAStartup( MAKEWORD(1,1), &WSAData );
+ if( ret != 0 ) {
     Alarm( EXIT, "sp_uflooder error: winsock initialization error %d\n", ret );
-  }
+ }
 #endif	/* ARCH_PC_WIN95 */
 
   Usage(argc, argv);
@@ -208,13 +213,14 @@ int main( int argc, char *argv[] )
   pkt_no       = (int*)(buf + 2*sizeof(int));
   pkt_ts_s     = (int*)(buf + 3*sizeof(int));
   pkt_ts_us    = (int*)(buf + 4*sizeof(int));
-
   
   /*  !!!!!!!!!! SENDER CODE !!!!!!!!!!!!!!  */
 
   if(Send_Flag == 1) {
     host.sin_family = AF_INET;
     host.sin_port   = htons(sendPort);
+
+    printf("Sender calling spines_socket w/ Protocol = %d\r\n", Protocol);
     
     sk = spines_socket(PF_SPINES, SOCK_DGRAM, Protocol, NULL);
 
@@ -357,12 +363,12 @@ int main( int argc, char *argv[] )
       fprintf(f1, "\r\nSender: Avg transmit rate: %5.3f\r\n\r\n", rate_now);
     }
 
-    /* flushs the buffers, or at least gives it time to complete the OS level sends */
-#ifdef	ARCH_PC_WIN95 
+#ifdef  ARCH_PC_WIN95
     Sleep(1);
 #else
     sleep(1);
 #endif
+
     spines_close(sk);
 
   }
@@ -385,6 +391,8 @@ int main( int argc, char *argv[] )
     } else {
       printf("Un-reliable connecting to Spines daemon\r\n");
     }
+
+    printf("Receiver calling spines_socket w/ Protocol = %d\r\n", Protocol);
 
     sk = spines_socket(PF_INET, SOCK_DGRAM, Protocol, NULL);
     if(sk <= 0) {
@@ -411,199 +419,237 @@ int main( int argc, char *argv[] )
       }	    
     }
     
-    last_seq         = 0;
-    recv_count       = 0;
-    first_pkt_flag   = 1;
-    duplicates       = 0;
-    oneway_time      = 0;
-    min_latency      = 0;
-    max_latency      = 0;
-    num_out_of_order = 0;
-    num_lost         = 0;
-    running_latency  = 0;
-    running_std_dev  = 0;
-    num_lost         = 0;
+    first_pkt_flag = 1;
+    duplicates     = 0;
+    recv_count     = 0;
+    tail           = -1;
+    head           = -1;
 
     while(1) {	    
-      ret = spines_recvfrom(sk, buf, sizeof(buf), 0, NULL, 0);
-      t2 = E_get_time();
 
-      if(ret <= 0) {
-	printf("Disconnected by spines...\n");
-	exit(0);
+      ret = spines_recvfrom(sk, buf, sizeof(buf), 0, NULL, 0);
+      t2  = E_get_time();
+
+      if (ret < 5 * (int) sizeof(int)) {
+	exit((printf("Disconnected by spines... %d\n", ret), -1));
       }
-      if(ret != ntohl(*pkt_size)) {
-	printf("corrupted packet... ret: %d; msg_size: %d\n", ret, ntohl(*pkt_size));
-	exit(0);
+
+      *pkt_size     = ntohl(*pkt_size);
+      *pkts_sending = ntohl(*pkts_sending);
+      *pkt_no       = ntohl(*pkt_no);
+      *pkt_ts_s     = ntohl(*pkt_ts_s);
+      *pkt_ts_us    = ntohl(*pkt_ts_us);
+  
+      if (ret != *pkt_size) {
+	exit((printf("corrupted packet... ret: %d; msg_size: %d\n", ret, *pkt_size), -1));
       }
       
-      if(ntohl(*pkt_no) == -1) {
-	/* todo */
-	/*	if(wait_for_stragglers == 1 && stragger_timer_started == 1) {
-	  straggler_timer_started = 1;
-	  //start timer
-	  continue;
-
-	} else {
-	  break;
-	}
-	*/
+      if (*pkt_no == -1) {
 	break;
       }
 
       if (first_pkt_flag) {
-	start = E_get_time();       /* we calc start time as local clock when first packet arrives */
-	                            /* alternatively we could take the time stamp time on the first packet, but if clock skew, this is bad */
-	Num_bytes = ret;
 	first_pkt_flag = 0;
-	Num_pkts = ntohl(*pkts_sending); 
+	start          = t2;
+	Num_bytes      = ret;
+	Num_pkts       = *pkts_sending; 
 	assert(Num_pkts > 0);
-	if(report_latency_stats == 1) {
-	  history = (pkt_stats*) calloc(Num_pkts + 1, sizeof(pkt_stats));
+	
+	if (report_latency_stats == 1 && (history = (pkt_stats*) calloc(Num_pkts + 1, sizeof(pkt_stats))) == NULL) {
+	  exit((printf("history allocation failed!\n"), -1));
 	}
-	last_seq = -1;
-      }     
+      }
 
-      if(report_latency_stats == 1) {
-	if(history[ntohl(*pkt_no)].sent_seq_no != 0) { 
-	  duplicates++; 
-	  printf("pkt_no %d is a duplicate!\r\n", ntohl(*pkt_no));
+      if (*pkt_size != Num_bytes) {
+	exit((printf("wrong packet size %d; should be %d!\n", ret, Num_bytes), -1));
+      }
+
+      if (*pkt_no >= Num_pkts) {
+	exit((printf("pkt_no (%d) too high; should be < %d!\n", *pkt_no, Num_pkts), -1));
+      }
+
+      if ((latency = (t2.sec - *pkt_ts_s) * 1000000 + (t2.usec - *pkt_ts_us)) < 0) {
+	exit((printf("ERROR: latency is negative (%d us); clocks are not synchronized tightly enough!\r\n", latency), -1));
+      }
+          
+      if (report_latency_stats) {
+
+	if (history[*pkt_no].sent_seq_no != 0) { 
+	  ++duplicates;
 	  continue;
 	}
-      }
 
-      t2 = E_get_time();
-      if(ret != ntohl(*pkt_size)) {
-	printf("corrupted packet...%d:%d\n", ret, ntohl(*pkt_size));
-	exit(0);
-      }
-      
-      if(report_latency_stats == 1) {
-	if(ntohl(*pkt_no) != last_seq + 1) {
-	  history[ntohl(*pkt_no)].recvd_out_of_order = 1;
+	history[*pkt_no].sent_pkt_size       = *pkt_size;
+	history[*pkt_no].sent_total_count    = *pkts_sending;
+	history[*pkt_no].sent_seq_no         = *pkt_no;
+	history[*pkt_no].sent_timestamp.sec  = *pkt_ts_s;
+	history[*pkt_no].sent_timestamp.usec = *pkt_ts_us;
+	history[*pkt_no].recvd_timestamp     = t2;
+	history[*pkt_no].latency             = latency;
+	history[*pkt_no].recvd_pkt_ind       = recv_count;
+
+	if (enforce_ordering) {
+
+	  if (*pkt_no > head) {
+	    head = *pkt_no;
+	  }
+	
+	  if (*pkt_no == tail + 1) {
+
+	    for (i = *pkt_no; i <= head && history[i].sent_pkt_size != 0; ++i) {
+	      history[i].delvd_timestamp = t2;
+	      history[i].latency         = (t2.sec - history[i].sent_timestamp.sec) * 1000000 + (t2.usec - history[i].sent_timestamp.usec);
+
+	      if (verbose_mode) {
+		printf("%ld.%06ld\t%d\t%d\t%d\t%d\r\n", t2.sec, t2.usec, *pkt_no, latency, *pkt_size, *pkts_sending);
+	    
+		if (fileflag) {
+		  fprintf(f1, "%ld.%06ld\t%d\t%d\t%d\t%d\r\n", t2.sec, t2.usec, *pkt_no, latency, *pkt_size, *pkts_sending);
+		}       
+	      }
+	    }
+
+	    tail = i - 1;
+	  }
+
+	} else {
+	  history[*pkt_no].delvd_timestamp = t2;
+
+	  if (verbose_mode) {
+	    printf("%ld.%06ld\t%d\t%d\t%d\t%d\r\n", t2.sec, t2.usec, *pkt_no, latency, *pkt_size, *pkts_sending);
+	    
+	    if (fileflag) {
+	      fprintf(f1, "%ld.%06ld\t%d\t%d\t%d\t%d\r\n", t2.sec, t2.usec, *pkt_no, latency, *pkt_size, *pkts_sending);
+	    }       
+	  }
 	}
-      }
-      
-      last_seq = ntohl(*pkt_no);
 
-       if(report_latency_stats == 1) {
-	oneway_time = (t2.sec - ntohl(*pkt_ts_s));
-	oneway_time *= 1000000; 
-	oneway_time += t2.usec - ntohl(*pkt_ts_us);
-	if(oneway_time < 0) {
-	  printf("ERROR: One Way calculated latency is negative (%lld), and probably indicated the clocks are not synchronized\r\n", oneway_time);
-	}
-      }
-      recv_count++;
-      
-      if(report_latency_stats == 1) {
-	history[ntohl(*pkt_no)].sent_pkt_size          = ntohl(*pkt_size);
-	history[ntohl(*pkt_no)].sent_total_count       = ntohl(*pkts_sending);
-	history[ntohl(*pkt_no)].sent_seq_no            = ntohl(*pkt_no);
-	history[ntohl(*pkt_no)].sent_timestamp.sec  = ntohl(*pkt_ts_s);
-	history[ntohl(*pkt_no)].sent_timestamp.usec = ntohl(*pkt_ts_us);
-	history[ntohl(*pkt_no)].recvd_timestamp        = t2;
-	history[ntohl(*pkt_no)].transmition_latency    = oneway_time;
-	history[ntohl(*pkt_no)].recvd_pkt_cnt          = recv_count;
-      }
+      } else if (verbose_mode) {
+	printf("%ld.%06ld\t%d\t%d\t%d\t%d\r\n", t2.sec, t2.usec, *pkt_no, latency, *pkt_size, *pkts_sending);
 
-      if(verbose_mode == 1) {
-	printf("%d\t%d\t%d\t%d\r\n", ntohl(*pkt_size), ntohl(*pkts_sending), ntohl(*pkt_no), oneway_time);
-	if(fileflag == 1) {
-	  fprintf(f1, "%d\t%d\t%d\t%d\r\n", ntohl(*pkt_size), ntohl(*pkts_sending), ntohl(*pkt_no), oneway_time);
-	  fflush(f1);
+	if (fileflag) {
+	  fprintf(f1, "%ld.%06ld\t%d\t%d\t%d\t%d\r\n", t2.sec, t2.usec, *pkt_no, latency, *pkt_size, *pkts_sending);
 	}       
       }
-    
+
+      ++recv_count;
     }
 
-    if(verbose_mode == 1) {
+    now = E_get_time();
+
+    if (verbose_mode) {
       printf("\r\n");
-      if(fileflag == 1) {
+
+      if (fileflag) {
 	fprintf(f1, "\r\n");
 	fflush(f1);
       }       
     }
     
-    /* if no packet received, report as such */
-    if(recv_count == 0) {
+    /* if no packet received, report it */
+
+    if (recv_count == 0) {
       printf("sp_uflooder Receiver: No Data Packets Received\r\n\r\n");
-      if(fileflag == 1) {
+
+      if (fileflag) {
 	fprintf(f1, "sp_uflooder Receiver: No Data Packets Received\r\n\r\n");
-	fflush(f1);
+	fclose(f1);
       } 
-      return(0);
+
+      return 0;
     }  
     
-    now = E_get_time();
-    duration_now  = now.sec - start.sec;
-    duration_now *= 1000000; 
-    duration_now += now.usec - start.usec;
+    duration_now = (now.sec - start.sec) * 1000000 + (now.usec - start.usec);
+    rate_now     = (double) Num_bytes * recv_count * 8 * 1000 / duration_now;
     
-    rate_now = (double)Num_bytes * recv_count * 8 * 1000;
-    rate_now = rate_now/duration_now;
-    
-    if(report_latency_stats == 1) {
-      /* lets calc more results */
-      running_latency   = 0;
-      num_out_of_order  = 0;
-      jitter            = 0;
-      min_latency       = 2147483647;
-      max_latency       = 0;
-      avg_latency       = 0;
-      running_std_dev   = 0;
-      now_loss          = 0;
+    if (report_latency_stats) {
+
+      double lat_mean      = 0.0;
+      double prev_lat_mean = 0.0;
+      double lat_kvar      = 0.0;
+      double jitter        = 0.0;
       
-      for(i=0; i<Num_pkts; i++) {
+      double lat_min;
+      double lat_01;
+      double lat_05;
+      double lat_10;
+      double lat_25;
+      double lat_med;
+      double lat_75;
+      double lat_90;
+      double lat_95;
+      double lat_99;
+      double lat_max;
+
+      num_lost         = 0;
+      num_out_of_order = 0;
+      
+      for (i = 0; i < Num_pkts; ++i) {
 	
-	if(history[i].sent_pkt_size == 0) {        /* detect lost packets */
-	  num_lost++;
-	  
-	} else {
-	  num_out_of_order += history[i].recvd_out_of_order;   /* detect out of order */
-	  
-	  /* calc the avg, min, and max latency */
-	  running_latency += history[i].transmition_latency;
-	  
-	  if(history[i].transmition_latency < min_latency) { min_latency = history[i].transmition_latency; }
-	  if(history[i].transmition_latency > max_latency) { max_latency = history[i].transmition_latency; }
+	if (history[i].sent_pkt_size == 0) {            /* detect lost packets */
+	  ++num_lost;
+	  history[i].latency = INT_MAX;
+	  continue;
 	}
-      }
-      
-      avg_latency = running_latency / recv_count;
-      assert(avg_latency > 0);
-      
-      /* calculate the jitter (standard deviation) */
-      
-      if(recv_count > 1) {
-	for(i=1; i<=Num_pkts; i++) { 
-	  if(history[i].sent_pkt_size != 0) {
-	    running_std_dev += ((avg_latency - history[i].transmition_latency) * (avg_latency - history[i].transmition_latency));
-	  }
+
+	if (history[i].recvd_pkt_ind > i - num_lost) {  /* detect out of order */
+	  ++num_out_of_order;
 	}
-	
-	running_std_dev = running_std_dev / (recv_count - 1);
-	running_std_dev = sqrt(running_std_dev);
-	
-      } else {
-	running_std_dev = 0;  /* no std dev on sample of 1 */
+
+	/* compute mean and k-variance */
+
+	lat_mean      += (history[i].latency - prev_lat_mean) / (i - num_lost + 1);
+	lat_kvar      += (history[i].latency - prev_lat_mean) * (history[i].latency - lat_mean);
+	prev_lat_mean  = lat_mean;
       }
-      
-      now_loss = 100 * ((double)num_lost / (double)Num_pkts);
-    }
-    
-    if(report_latency_stats == 1) {
+
+      /* compute jitter and loss % */
+
+      assert(i - num_lost == recv_count);
+      lat_mean /= 1000.0;
+      jitter   = sqrt(lat_kvar / (recv_count - 1)) / 1000.0;
+      loss_pct = 100.0 * num_lost / Num_pkts;
+
+      /* compute min, median, max and other percentiles */
+
+      qsort(history, Num_pkts, sizeof(pkt_stats), pkt_stats_lat_cmp);
+
+      lat_min = history[(int) ((recv_count - 1) * 0.00 + 0.5)].latency / 1000.0;
+      lat_01  = history[(int) ((recv_count - 1) * 0.01 + 0.5)].latency / 1000.0;
+      lat_05  = history[(int) ((recv_count - 1) * 0.05 + 0.5)].latency / 1000.0;
+      lat_10  = history[(int) ((recv_count - 1) * 0.10 + 0.5)].latency / 1000.0;
+      lat_25  = history[(int) ((recv_count - 1) * 0.25 + 0.5)].latency / 1000.0;
+      lat_med = history[(int) ((recv_count - 1) * 0.50 + 0.5)].latency / 1000.0;
+      lat_75  = history[(int) ((recv_count - 1) * 0.75 + 0.5)].latency / 1000.0;
+      lat_90  = history[(int) ((recv_count - 1) * 0.90 + 0.5)].latency / 1000.0;
+      lat_95  = history[(int) ((recv_count - 1) * 0.95 + 0.5)].latency / 1000.0;
+      lat_99  = history[(int) ((recv_count - 1) * 0.99 + 0.5)].latency / 1000.0;
+      lat_max = history[(int) ((recv_count - 1) * 1.00 + 0.5)].latency / 1000.0;
+
       sprintf(results_str, 
 	      "sp_uflooder Receiver:\r\n"
-	      "- Num Pkts Received:\t%d out of %d\r\n"
-	      "- Pkt Size:\t%d\r\n"
-	      "- Pkts Out of Order:\t%d\r\n"
-	      "- Duplicate Packets:\t%d\r\n"
-	      "- Throughput:\t%f kbs\r\n" 
-	      "- Detected Loss (pct): %.2f\r\n"
-	      "- Latency (ms) (Avg Min Max):\t%.2f \t %.2f \t %.2f\r\n"
-	      "- Jitter (ms): \t%.2f\r\n\r\n",
-	      recv_count, Num_pkts, Num_bytes, num_out_of_order, duplicates, rate_now, now_loss, avg_latency/1000, (double)(min_latency/1000), (double)(max_latency/1000), running_std_dev/1000);
+	      "- Num Pkts Received: \t%d\tout of\t%d\r\n"
+	      "- Loss Rate (%%):    \t%.3f\r\n"
+	      "- Pkt Size:          \t%d\r\n"
+	      "- Throughput (kbps): \t%.3f\r\n"
+	      "- Mean Latency (ms): \t%.3f\r\n"
+	      "- Jitter (ms):       \t%.3f\r\n"
+	      "- Min  Latency (ms): \t%.3f\r\n"
+	      "- 1%%  Latency (ms): \t%.3f\r\n"
+	      "- 5%%  Latency (ms): \t%.3f\r\n"
+	      "- 10%% Latency (ms): \t%.3f\r\n"
+	      "- 25%% Latency (ms): \t%.3f\r\n"
+	      "- Med. Latency (ms): \t%.3f\r\n"
+	      "- 75%% Latency (ms): \t%.3f\r\n"
+	      "- 90%% Latency (ms): \t%.3f\r\n"
+	      "- 95%% Latency (ms): \t%.3f\r\n"
+	      "- 99%% Latency (ms): \t%.3f\r\n"
+	      "- Max  Latency (ms): \t%.3f\r\n"
+	      "- Pkts Out of Order: \t%d\r\n"
+	      "- Duplicate Packets: \t%d\r\n",
+	      recv_count, Num_pkts, loss_pct, Num_bytes, rate_now, lat_mean, jitter,
+	      lat_min, lat_01, lat_05, lat_10, lat_25, lat_med, lat_75, lat_90, lat_95, lat_99, lat_max,
+	      num_out_of_order, duplicates);
       
     } else {
       sprintf(results_str, 
@@ -613,7 +659,9 @@ int main( int argc, char *argv[] )
 	      "- Throughput:\t%f kbs\r\n\r\n",
 	      recv_count, Num_pkts, Num_bytes, rate_now);
     }
+
     printf("%s", results_str);
+
     if(fileflag == 1) {
       fprintf(f1, "%s", results_str);
     }
@@ -627,7 +675,7 @@ int main( int argc, char *argv[] )
   
 #ifdef ARCH_PC_WIN95
   Sleep(1000);
-#else 
+#else
   usleep(1000000);  /* sleep 1 sec */
 #endif
 
@@ -660,7 +708,6 @@ static  void    Usage(int argc, char *argv[])
   report_latency_stats  = 0;
   verbose_mode          = 0;
   reliable_connect      = 1;
-  tmp                   = 0;
   
   while( --argc > 0 ) {
     argv++;
@@ -706,17 +753,24 @@ static  void    Usage(int argc, char *argv[])
       verbose_mode = 1;
     } else if( !strncmp( *argv, "-q", 2 ) ){
       report_latency_stats = 1;
+
+    } else if( !strncmp( *argv, "-O", 3 ) ){
+      enforce_ordering = 1;
+
     } else if( !strncmp( *argv, "-P", 2 ) ){
-      if(sscanf(argv[1], "%d", (int*)&tmp ) < 1 || (tmp < 0) || (tmp > 2)) {
+
+      if(sscanf(argv[1], "%d", &tmp) < 1 || tmp < 0 || tmp > 2) {
 	Alarm(EXIT, "Bad Protocol %d specified through -P option!\r\n", tmp);
       }
+
       Protocol |= tmp;
       argc--; argv++;
+
     } else if( !strncmp( *argv, "-f", 2 ) ){
       sscanf(argv[1], "%s", filename );
       fileflag = 1;
       argc--; argv++;
-    } else{
+    } else {
       printf( "Usage: sp_uflooder\n"
 	      "\t[-o <address>    ] : address where spines runs, default localhost\n"
 	      "\t[-p <port number>] : port where spines runs, default is 8100\n"
@@ -725,16 +779,17 @@ static  void    Usage(int argc, char *argv[])
 	      "\t[-r <port number>] : to receive packets on, default is 8400\n"
 	      "\t[-a <address>    ] : address to send packets to\n"
 	      "\t[-j <mcast addr> ] : multicast address to join\n"
-	      "\t[-t <ttl number> ] : set a ttl on the packets, default is 255\n"
+	      "\t[-t <ttl number> ] : set a ttl on the packets, defualt is 255\n"
 	      "\t[-b <size>       ] : size of the packets (in bytes)\n"
 	      "\t[-R <rate>       ] : sending rate (in 1000's of bits per sec)\n"
 	      "\t[-n <rounds>     ] : number of packets\n"
 	      "\t[-f <filename>   ] : file where to save statistics\n"
-	      "\t[-P <0, 1 or 2>  ] : overlay links (0: UDP; 1: Reliable; 2: Realtime)\n"
+	      "\t[-P <0, 1, 2>    ] : overlay links (0: UDP; 1: Reliable; 2: Realtime)\n"
 	      "\t[-v              ] : print verbose\n"
+	      "\t[-O              ] : enforce ordering for timing\n"
 	      "\t[-q              ] : report latency stats (required tight clock sync)\n"
 	      "\t[-s              ] : sender flooder\n");
-      exit( 0 );
+      exit(0);
     }
   }
 

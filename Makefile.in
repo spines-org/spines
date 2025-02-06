@@ -1,5 +1,7 @@
-SUBDIRS=stdutil util daemon libspines testprogs controlprogs
-INSTALLSUBDIRS=daemon libspines testprogs controlprogs util
+.PHONY: all clean distclean mrproper veryclean install uninstallall uninstall
+
+SUBDIRS=stdutil libspread-util libspines daemon testprogs controlprogs
+INSTALLSUBDIRS=stdutil libspread-util libspines daemon testprogs controlprogs
 
 all: $(SUBDIRS) 
 	for dir in $(SUBDIRS); do \
@@ -11,16 +13,13 @@ clean:
 		( $(MAKE) -C $$dir clean); \
 	done
 
-	rm -f core
-	rm -rf autom4te.cache
-
 distclean: 
 	for dir in $(SUBDIRS); do \
 		( $(MAKE) -C $$dir distclean); \
 	done
-	rm -f config.cache config.log core
+	rm -f config.*
 	rm -rf autom4te.cache
-	rm -f Makefile config.h config.status *~
+	rm -f Makefile Makefile.general
 
 mrproper: distclean
 

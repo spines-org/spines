@@ -1,6 +1,6 @@
 /*
  * Spines.
- *     
+ *
  * The contents of this file are subject to the Spines Open-Source
  * License, Version 1.0 (the ``License''); you may not use
  * this file except in compliance with the License.  You may obtain a
@@ -10,15 +10,15 @@
  *
  * or in the file ``LICENSE.txt'' found in this distribution.
  *
- * Software distributed under the License is distributed on an AS IS basis, 
- * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License 
- * for the specific language governing rights and limitations under the 
+ * Software distributed under the License is distributed on an AS IS basis,
+ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+ * for the specific language governing rights and limitations under the
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir and Claudiu Danilov.
+ *  Yair Amir, Claudiu Danilov and John Schultz.
  *
- * Copyright (c) 2003 - 2009 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2013 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -28,7 +28,6 @@
  *    Nilo Rivera
  *
  */
-
 
 #include <stdio.h>
 #include <string.h>
@@ -512,7 +511,7 @@ static  void    Usage(int argc, char *argv[])
 		    "\t[-d <port number>] : to send packets on, default is 8400",
 		    "\t[-r <port number>] : to receive packets on, default is 8400",
 		    "\t[-a <address>    ] : address to send packets to",
-		    "\t[-j <mcast addr> ] : multicas address to join",
+		    "\t[-j <mcast addr> ] : multicast address to join",
 		    "\t[-b <size>       ] : size of the packets (in bytes)",
 		    "\t[-R <rate>       ] : sending rate (in 1000's of bits per sec)",
 		    "\t[-n <rounds>     ] : number of packets",

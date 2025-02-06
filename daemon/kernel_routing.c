@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir and Claudiu Danilov.
+ *  Yair Amir, Claudiu Danilov and John Schultz.
  *
- * Copyright (c) 2003 - 2009 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2013 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -29,19 +29,19 @@
  *
  */
 
-
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <netinet/in.h>
 #include <dlfcn.h>
 
-#include "util/arch.h"
-#include "util/alarm.h"
-#include "util/sp_events.h"
-#include "util/memory.h"
-#include "stdutil/src/stdutil/stdhash.h"
-#include "stdutil/src/stdutil/stddll.h"
+#include "arch.h"
+#include "spu_alarm.h"
+#include "spu_events.h"
+#include "spu_memory.h"
+#include "stdutil/stdhash.h"
+#include "stdutil/stddll.h"
 
 #include "objects.h"
 #include "link.h"
@@ -54,14 +54,14 @@
 
 
 /* Global Variables */
-extern int32    My_Address;
-extern int16    Port;
-extern stdhash  All_Nodes;
-extern stdhash  All_Groups_by_Name;
-extern stdhash  All_Groups_by_Node;
-extern int16    KR_Flags;
-extern int32    Discovery_Address[MAX_DISCOVERY_ADDR];
-extern int16    Num_Discovery_Addresses;
+extern Spines_ID My_Address;
+extern int16       Port;
+extern stdhash     All_Nodes;
+extern stdhash     All_Groups_by_Name;
+extern stdhash     All_Groups_by_Node;
+extern int16       KR_Flags;
+extern Spines_ID Discovery_Address[MAX_DISCOVERY_ADDR];
+extern int16      Num_Discovery_Addresses;
 
 /* Local Variables */
 char    *KR_Client_Device_Name;
@@ -125,7 +125,7 @@ void KR_Init()
 
     /* KR_Table is used to store all nexthop for a destination, and to be able to 
        compare new routes to old ones, so that we only change routes when necessary */
-    stdhash_construct(&KR_Table, sizeof(int32), sizeof(stdhash*),
+    stdhash_construct(&KR_Table, sizeof(Spines_ID), sizeof(stdhash*),
                                        NULL, NULL, 0);
 
     /* Try to load iproute library for fast kernel-route table changes */
@@ -191,14 +191,14 @@ void KR_Init()
  * Figure out the routing mcast tree for a anycast/multicast group,  
  * and update routing table if different than previous entry 
  */
-void KR_Set_Group_Route(int32 group_destination, void *dummy)
+void KR_Set_Group_Route(Group_ID group_destination, void *dummy)
 {
     Node *nd;
     stdhash *neighbors;
     stdit nd_it;
     Group_State *g_state;
     int member, route_changed;
-    int32 client_ip;
+    Spines_ID client_ip;
     sp_time start, stop;
 
     start = E_get_time();
@@ -219,7 +219,7 @@ void KR_Set_Group_Route(int32 group_destination, void *dummy)
     if (!(KR_Flags & KR_CLIENT_WITHOUT_EDGE)) {
         if((g_state = (Group_State*)Find_State(&All_Groups_by_Node, My_Address, group_destination)) != NULL) 
         {
-            if((g_state->flags & ACTIVE_GROUP)) {
+            if((g_state->status & ACTIVE_GROUP)) {
                 member = 1;
             }
         }
@@ -249,12 +249,12 @@ void KR_Set_Group_Route(int32 group_destination, void *dummy)
             while(!stdhash_is_end(&All_Nodes, &nd_it)) {
                 /* TODO: What if node is not up ...use Find_Route? */ 
                 nd = *((Node **)stdhash_it_val(&nd_it)); 
-                neighbors = Get_Mcast_Neighbors(nd->address, group_destination);
+                neighbors = Get_Mcast_Neighbors(nd->nid, group_destination);
                 client_ip = KR_TO_CLIENT_UCAST_IP(group_destination);
-                route_changed = KR_Register_Route(client_ip, IP4(nd->address), 
+                route_changed = KR_Register_Route(client_ip, IP4(nd->nid), 
                                                   NULL, neighbors, member);
                 if (route_changed) {
-                    KR_Set_Table_Route(client_ip, IP4(nd->address));
+                    KR_Set_Table_Route(client_ip, IP4(nd->nid));
                 }
                 stdhash_it_next(&nd_it);
             }
@@ -277,7 +277,7 @@ void KR_Set_Group_Route(int32 group_destination, void *dummy)
  * Add route table changes to KR_Table.  
  * Returns true if the route entries changed for this destination/tableid 
  */
-int KR_Register_Route(int32 destination, int table_id, Node *nd, stdhash *neighbors, int member)  
+int KR_Register_Route(Spines_ID destination, int table_id, Node *nd, stdhash *neighbors, int member)  
 {
     Node *next_hop;
     int32 update;
@@ -311,7 +311,7 @@ int KR_Register_Route(int32 destination, int table_id, Node *nd, stdhash *neighb
         stdhash_begin(neighbors, &ngb_it);
         while(!stdhash_is_end(neighbors, &ngb_it)) {
             next_hop = *((Node **)stdhash_it_val(&ngb_it));
-            kre.next_hop = next_hop->address;
+            kre.next_hop = next_hop->nid;
             kre.dev = next_hop->device_name;
             stddll_push_back(new_routes, &kre);
             stdhash_it_next(&ngb_it);
@@ -319,7 +319,7 @@ int KR_Register_Route(int32 destination, int table_id, Node *nd, stdhash *neighb
     }
 
     if (nd != NULL) {
-        kre.next_hop = nd->address;
+        kre.next_hop = nd->nid;
         kre.dev = nd->device_name;
         stddll_push_back(new_routes, &kre);
     }
@@ -340,7 +340,7 @@ int KR_Register_Route(int32 destination, int table_id, Node *nd, stdhash *neighb
         if ((krtid_hash = (stdhash*) new(STDHASH_OBJ)) == NULL) {
             Alarm(EXIT, "KR_Register_Route(): cannot allocate memory\n");
         }
-        stdhash_construct(krtid_hash, sizeof(int32), sizeof(stddll*),
+        stdhash_construct(krtid_hash, sizeof(Spines_ID), sizeof(stddll*),
                                        NULL, NULL, 0);
         stdhash_insert(&KR_Table, &krt_it, &destination, &krtid_hash);
     } else {
@@ -404,7 +404,7 @@ int KR_Register_Route(int32 destination, int table_id, Node *nd, stdhash *neighb
 /* 
  * Make changes in the kernel, based on global KR_Table entry
  */
-void KR_Set_Table_Route(int32 destination, int table_id) 
+void KR_Set_Table_Route(Spines_ID destination, int table_id) 
 {
     stdit krt_it, krtid_it, kr_routes_it;
     stdhash *krtid_hash;
@@ -456,7 +456,7 @@ void KR_Set_Table_Route(int32 destination, int table_id)
 }
 
 /* Delete entry for specified destination */
-void KR_Delete_Table_Route(int32 destination, int table_id) 
+void KR_Delete_Table_Route(Spines_ID destination, int table_id) 
 {
     if (destination == 0) {
         if (KR_Original_Default_GW != 0) {
@@ -475,7 +475,7 @@ void KR_Delete_Table_Route(int32 destination, int table_id)
     IPROUTE_EXECUTE(cmd);
 }
 
-void KR_Create_Overlay_Node(int32 address) 
+void KR_Create_Overlay_Node(Spines_ID address) 
 {
     if (KR_Flags & KR_CLIENT_MCAST_PATH) {
         sprintf(cmd, "%s -D PREROUTING -t mangle -m u32 --u32 \"2&0xFFFF=%d\" -j MARK --set-mark %d",
@@ -503,7 +503,7 @@ void KR_Create_Overlay_Node(int32 address)
     }
 }
 
-void KR_Delete_Overlay_Node(int32 address) 
+void KR_Delete_Overlay_Node(Spines_ID address) 
 {
     /* TODO: Delete from KR_Table */
     sprintf(cmd, "%s route delete "IPF" ", CMD_ip, IP(address));
@@ -540,12 +540,12 @@ void KR_Update_All_Routes()
     stdhash_begin(&All_Nodes, &nd_it);
     while(!stdhash_is_end(&All_Nodes, &nd_it)) {
         nd = *((Node **)stdhash_it_val(&nd_it));
-        if(nd->address != My_Address) {
-            route = Find_Route(My_Address, nd->address);
+        if(nd->nid != My_Address) {
+            route = Find_Route(My_Address, nd->nid);
             if(route != NULL && route->forwarder != NULL) {
                 /* Get device name for next hop if necessary */
                 if (route->forwarder->device_name == NULL && (KR_Flags & KR_CLIENT_MCAST_PATH)) {
-                    sprintf(cmd, "%s route get "IPF" | %s dev | %s -e 's/.* dev \\([^ ]*\\).*/\\1/'", CMD_ip, IP(nd->address), CMD_grep, CMD_sed);
+                    sprintf(cmd, "%s route get "IPF" | %s dev | %s -e 's/.* dev \\([^ ]*\\).*/\\1/'", CMD_ip, IP(nd->nid), CMD_grep, CMD_sed);
                     output = KR_Get_Command_Output(cmd);
                     if (output == NULL) {
                         Alarm(PRINT, "KR: Cannot get device name\n\t%s -- NULL", cmd);
@@ -554,19 +554,19 @@ void KR_Update_All_Routes()
                 }
                 /* Now make route changes */
                 if (KR_Flags & KR_OVERLAY_NODES) {
-                    route_changed = KR_Register_Route(nd->address, 0, route->forwarder, NULL, 0);
+                    route_changed = KR_Register_Route(nd->nid, 0, route->forwarder, NULL, 0);
                     if (route_changed) {
-                        KR_Set_Table_Route(nd->address, 0);
+                        KR_Set_Table_Route(nd->nid, 0);
                     }
                 }
             }
             else {
                 if (KR_Flags & KR_OVERLAY_NODES) {
-                    route_changed = KR_Register_Route(nd->address, 0, NULL, NULL, 0);
+                    route_changed = KR_Register_Route(nd->nid, 0, NULL, NULL, 0);
                     if (route_changed) {
-                        KR_Set_Table_Route(nd->address, 0);
+                        KR_Set_Table_Route(nd->nid, 0);
                         if (KR_Flags & KR_CLIENT_MCAST_PATH) {
-                            sprintf(cmd, "%s route flush table %d", CMD_ip, IP4(nd->address));
+                            sprintf(cmd, "%s route flush table %d", CMD_ip, IP4(nd->nid));
                             IPROUTE_EXECUTE(cmd);
                         }
                     }
@@ -669,7 +669,7 @@ void KR_Print_Routes(FILE *fp)
     stdhash *krtid_hash;
     stddll *kr_routes;
     stdit krt_it, krtid_it, kr_routes_it;
-    int32 ip_addr, table_id;
+    Spines_ID ip_addr, table_id;
 
     sprintf(cmd, "\n\n--- KERNEL ROUTE TABLE --- ROUTE TIME [%d] [%d],\n\n", KR_route_time, KR_group_time);
     Alarm(PRINT, "%s", cmd);
@@ -677,14 +677,14 @@ void KR_Print_Routes(FILE *fp)
 
     stdhash_begin(&KR_Table, &krt_it);
     while(!stdhash_is_end(&KR_Table, &krt_it)) {
-        ip_addr = *(int32 *)stdhash_it_key(&krt_it);
+        ip_addr = *(Spines_ID *)stdhash_it_key(&krt_it);
         krtid_hash = *((stdhash**)stdhash_it_val(&krt_it));
         sprintf(cmd, " "IPF"\n", IP(ip_addr));
         Alarm(PRINT, "%s", cmd);
         if (fp != NULL) fprintf(fp, "%s", cmd);
         stdhash_begin(krtid_hash, &krtid_it);
         while(!stdhash_is_end(krtid_hash, &krtid_it)) {
-            table_id = *(int32 *)stdhash_it_key(&krtid_it);
+            table_id = *(Spines_ID *)stdhash_it_key(&krtid_it);
             kr_routes = *((stddll**)stdhash_it_val(&krtid_it));
             stddll_begin(kr_routes, &kr_routes_it);
             if (stddll_is_end(kr_routes, &kr_routes_it)) {

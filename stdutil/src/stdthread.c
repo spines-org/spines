@@ -1,4 +1,4 @@
-/* Copyright (c) 2000-2009, The Johns Hopkins University
+/* Copyright (c) 2000-2012, The Johns Hopkins University
  * All rights reserved.
  *
  * The contents of this file are subject to a license (the ``License'').
@@ -537,11 +537,11 @@ STDINLINE static stdcode stdmutex_fast_drop(stdmutex *mut)
  * stdmutex_fast_cond_wait: Wait on a condition protected by a fast mutex.
  ***********************************************************************************************/
 
-STDINLINE static stdcode stdmutex_fast_cond_wait(stdmutex *mut, stdcond *cond)
+STDINLINE static stdcode stdmutex_fast_cond_timedwait(stdmutex *mut, stdcond *cond, const stdtime *abs_time)
 #  if defined(_WIN32)
 {
   /* NOTE: this WIN32 code works for both fast and recursive mutexes:
-     the WIN32 stdmutex_rcrsv_cond_wait is a call through to this fcn
+     the WIN32 stdmutex_rcrsv_cond_timedwait is a call through to this fcn
   */
 
   stdcode        ret = STDESUCCESS;
@@ -556,22 +556,29 @@ STDINLINE static stdcode stdmutex_fast_cond_wait(stdmutex *mut, stdcond *cond)
 
   STDSAFETY_CHECK(mut->mut_type == STDMUTEX_FAST || mut->mut_type == STDMUTEX_RCRSV);
 
+  /* NOTE: we can't implement timedwaits on windows yet */
+
+  if (abs_time != NULL) {
+    ret = STDENOSYS;
+    goto stdmutex_fast_cond_timedwait_end;
+  }
+
   /* check for recursive mutexes that owner only has one lock */
 
   if (mut->mut_type == STDMUTEX_RCRSV) {
 
     if ((ret = stdmutex_is_owner(mut, &grab_cnt)) != STDESUCCESS) {
-      goto stdmutex_fast_cond_wait_end;
+      goto stdmutex_fast_cond_timedwait_end;
     }
 
     if (grab_cnt == 0) {
       ret = STDEPERM;
-      goto stdmutex_fast_cond_wait_end;
+      goto stdmutex_fast_cond_timedwait_end;
     }
 
     if (grab_cnt != 1) {
       ret = STDEBUSY;
-      goto stdmutex_fast_cond_wait_end;
+      goto stdmutex_fast_cond_timedwait_end;
     }
   }
 
@@ -585,26 +592,26 @@ STDINLINE static stdcode stdmutex_fast_cond_wait(stdmutex *mut, stdcond *cond)
 
   if (DuplicateHandle(curr_proc, curr_thread, curr_proc, &dup_handle, 0, TRUE, DUPLICATE_SAME_ACCESS) == 0) {
     ret = (stdcode) GetLastError();
-    goto stdmutex_fast_cond_wait_end;
+    goto stdmutex_fast_cond_timedwait_end;
   }
 
   /* allocate a node to put in the condition's linked list of sleeping threads */
 
   if ((my_link = (stdcond_link*) malloc(sizeof(stdcond_link))) == NULL) {
     ret = STDENOMEM;
-    goto stdmutex_fast_cond_wait_malloc;
+    goto stdmutex_fast_cond_timedwait_malloc;
   }
 
   /* grab the condition's internal lock */
 
   if ((ret = stdmutex_impl_grab(&cond->lock, STDTRUE)) != STDESUCCESS) {
-    goto stdmutex_fast_cond_wait_grab_cond;
+    goto stdmutex_fast_cond_timedwait_grab_cond;
   }
 
   /* drop mut */
 
   if ((ret = stdmutex_drop(mut)) != STDESUCCESS) {
-    goto stdmutex_fast_cond_wait_drop_mut;
+    goto stdmutex_fast_cond_timedwait_drop_mut;
   }
 
   reacquire = STDTRUE;  /* try to reacquire mut at end of this fcn */
@@ -613,14 +620,14 @@ STDINLINE static stdcode stdmutex_fast_cond_wait(stdmutex *mut, stdcond *cond)
 
   if ((prev_priority = GetThreadPriority(curr_thread)) == THREAD_PRIORITY_ERROR_RETURN) {
     ret = (stdcode) GetLastError();
-    goto stdmutex_fast_cond_wait_ThreadPriority;
+    goto stdmutex_fast_cond_timedwait_ThreadPriority;
   }
 
   /* bump up priority so that waker thread can never infinitely loop in a wake call (see below) */
 
   if (SetThreadPriority(curr_thread, THREAD_PRIORITY_HIGHEST) == 0) {
     ret = (stdcode) GetLastError();
-    goto stdmutex_fast_cond_wait_ThreadPriority;
+    goto stdmutex_fast_cond_timedwait_ThreadPriority;
   }
 
   /* link onto end of sleepers list */
@@ -665,22 +672,22 @@ STDINLINE static stdcode stdmutex_fast_cond_wait(stdmutex *mut, stdcond *cond)
     ret = (stdcode) GetLastError();
   }
 
-  goto stdmutex_fast_cond_wait_end;
+  goto stdmutex_fast_cond_timedwait_end;
 
   /* error handling and return */
 
- stdmutex_fast_cond_wait_ThreadPriority:
- stdmutex_fast_cond_wait_drop_mut:
+ stdmutex_fast_cond_timedwait_ThreadPriority:
+ stdmutex_fast_cond_timedwait_drop_mut:
   stdmutex_impl_drop(&cond->lock);
 
- stdmutex_fast_cond_wait_grab_cond:
+ stdmutex_fast_cond_timedwait_grab_cond:
   free(my_link);
 
- stdmutex_fast_cond_wait_malloc:
+ stdmutex_fast_cond_timedwait_malloc:
   CloseHandle(dup_handle);
   STDSAFETY_CHECK(ret != STDESUCCESS);
 
- stdmutex_fast_cond_wait_end:
+ stdmutex_fast_cond_timedwait_end:
   if (reacquire) {
     ret |= stdmutex_grab(mut);
   }
@@ -689,9 +696,22 @@ STDINLINE static stdcode stdmutex_fast_cond_wait(stdmutex *mut, stdcond *cond)
 }
 #  else
 {
+  stdcode         ret;
+  struct timespec timeout;
+
   STDSAFETY_CHECK(mut->mut_type == STDMUTEX_FAST);
 
-  return pthread_cond_wait(cond, &mut->mut.fast);
+  if (abs_time == NULL) {
+    ret = pthread_cond_wait(cond, &mut->mut.fast);
+
+  } else {
+    timeout.tv_sec  = abs_time->sec;
+    timeout.tv_nsec = abs_time->nano;
+
+    ret = pthread_cond_timedwait(cond, &mut->mut.fast, &timeout);
+  }
+
+  return ret;
 }
 #  endif
 
@@ -894,59 +914,70 @@ STDINLINE static stdcode stdmutex_rcrsv_drop(stdmutex *mut)
 }
 
 /************************************************************************************************
- * stdmutex_rcrsv_cond_wait: Atomically unlock a 'mut' and wait on 'cond.'
+ * stdmutex_rcrsv_cond_timedwait: Atomically unlock a 'mut' and wait on 'cond' or until abs_time
  ***********************************************************************************************/
 
-STDINLINE static stdcode stdmutex_rcrsv_cond_wait(stdmutex *mut, stdcond *cond)                                           
+STDINLINE static stdcode stdmutex_rcrsv_cond_timedwait(stdmutex *mut, stdcond *cond, const stdtime *abs_time)
 #  if defined(_WIN32)
 {
   /* NOTE: the WIN32 code works for both fast and recursive mutexes: 
-     currently stdmutex_rcrsv_cond_wait is just a call through
+     currently stdmutex_rcrsv_cond_timedwait is just a call through
   */
 
-  return stdmutex_fast_cond_wait(mut, cond);
+  return stdmutex_fast_cond_timedwait(mut, cond);
 }
 #  else
 {
   stdcode          ret;
   stdmutex_rcrsv * rmut = &mut->mut.rcrsv;
+  struct timespec  timeout;
 
   STDSAFETY_CHECK(mut->mut_type == STDMUTEX_RCRSV);
 
   if ((ret = stdmutex_impl_grab(&rmut->outer_lock, STDTRUE)) != STDESUCCESS) {
-    goto stdmutex_rcrsv_cond_wait_end;
+    goto stdmutex_rcrsv_cond_timedwait_end;
   }
 
   if (mut->mut_type != STDMUTEX_RCRSV || rmut->owner_cnt < 0 || rmut->num_waiting < 0) {
     ret = STDEINVAL;
-    goto stdmutex_rcrsv_cond_wait_drop;
+    goto stdmutex_rcrsv_cond_timedwait_drop;
   }
 
   if (rmut->owner_cnt == 0 || !stdthread_eq(rmut->owner_id, stdthread_self())) {
     ret = STDEPERM;
-    goto stdmutex_rcrsv_cond_wait_drop;
+    goto stdmutex_rcrsv_cond_timedwait_drop;
   }
 
   if (rmut->owner_cnt != 1) {
     ret = STDEBUSY;
-    goto stdmutex_rcrsv_cond_wait_drop;
+    goto stdmutex_rcrsv_cond_timedwait_drop;
   }
 
   ++rmut->num_waiting;
   rmut->owner_cnt = 0;
 
   stdmutex_impl_drop(&rmut->outer_lock);
-  pthread_cond_wait(cond, &rmut->inner_lock);
+
+  if (abs_time == NULL) {
+    ret = pthread_cond_wait(cond, &rmut->inner_lock);
+
+  } else {
+    timeout.tv_sec  = abs_time->sec;
+    timeout.tv_nsec = abs_time->nano;
+
+    ret = pthread_cond_timedwait(cond, &rmut->inner_lock, &timeout);
+  }
+
   stdmutex_impl_grab(&rmut->outer_lock, STDTRUE);
 
   --rmut->num_waiting;
   rmut->owner_cnt = 1;
   rmut->owner_id  = stdthread_self();
 
- stdmutex_rcrsv_cond_wait_drop:
+ stdmutex_rcrsv_cond_timedwait_drop:
   stdmutex_impl_drop(&rmut->outer_lock);
 
- stdmutex_rcrsv_cond_wait_end:
+ stdmutex_rcrsv_cond_timedwait_end:
   return ret;
 }
 #  endif
@@ -1195,45 +1226,27 @@ STDINLINE stdcode stdcond_wake_all(stdcond * cond)
 
 STDINLINE stdcode stdcond_wait(stdcond *cond, stdmutex *mut)
 {
-  stdcode ret = STDEINVAL;
-
-  switch (mut->mut_type) {
-
-  case STDMUTEX_FAST:
-    ret = stdmutex_fast_cond_wait(mut, cond);
-    break;
-
-  case STDMUTEX_RCRSV:
-    ret = stdmutex_rcrsv_cond_wait(mut, cond);
-    break;
-
-  case STDMUTEX_NULL:
-    ret = STDESUCCESS;
-    break;
-  }
-
-  return ret;
+  return stdcond_timedwait(cond, mut, NULL);
 }
 
-#if 0  /* comment out stdcond_wait_timed */							   
-
 /************************************************************************************************
- * stdcond_wait_timed:
+ * stdcond_timedwait:
  ***********************************************************************************************/
 
-STDINLINE stdcode stdcond_wait_timed(stdcond *  cond, 
-                                     stdmutex * mut)
+STDINLINE stdcode stdcond_timedwait(stdcond *       cond, 
+				    stdmutex *      mut,
+				    const stdtime * abs_time)
 {
   stdcode ret = STDEINVAL;
 
   switch (mut->mut_type) {
 
   case STDMUTEX_FAST:
-    ret = stdmutex_fast_cond_wait_timed(mut, cond);
+    ret = stdmutex_fast_cond_timedwait(mut, cond, abs_time);
     break;
 
   case STDMUTEX_RCRSV:
-    ret = stdmutex_rcrsv_cond_wait_timed(mut, cond);
+    ret = stdmutex_rcrsv_cond_timedwait(mut, cond, abs_time);
     break;
 
   case STDMUTEX_NULL:
@@ -1243,89 +1256,6 @@ STDINLINE stdcode stdcond_wait_timed(stdcond *  cond,
 
   return ret;
 }							   
-
-/************************************************************************************************
- * stdcond_wait_timed:
- ***********************************************************************************************/
-
-STDINLINE stdcode stdcond_wait_timed(stdcond *cond, stdmutex *mut, const stdtime *abs_time)
-#  if defined(_WIN32)
-{
-  /* TODO: figure out how + implement me! */
-  return ENOSYS;
-}
-#  else
-{
-  /* TODO: needs work; make it look like stdmutex_*_cond_wait */
-  struct timespec timeout;
-  stdmutex_impl * mut_impl = NULL;
-  long        grab_cnt = 0;
-  stdcode         ret;
-
-  timeout.tv_sec  = abs_time->m_Sec;
-  timeout.tv_nsec = abs_time->m_Nsec;
-
-  if ((ret = stdmutex_is_owner(mut, &grab_cnt)) != STDESUCCESS) {
-    assert(STDFALSE /* stdcond_wait_timed: user race condition on mut, protect calls to fini! */);
-    goto stdcond_wait_timed_fail;
-  }
-
-  if (grab_cnt == 0) {
-    assert(STDFALSE /* stdcond_wait_timed: user doesn't own mut! */);
-    ret = EPERM;
-    goto stdcond_wait_timed_EPERM;
-  }
-
-  if (grab_cnt != 1) {
-    assert(STDFALSE /* stdcond_wait: recursive mutex must have a grab_cnt of 1! */);
-    ret = EINVAL;
-    goto stdcond_wait_timed_EINVAL;
-  }
-
-  switch (mut->mut_type) {
-  case STDMUTEX_FAST:
-    {
-      stdmutex_fast * fmut = &mut->m_Mutex.m_Fast;
-
-      fmut->owner_cnt = 0;
-      mut_impl         = &fmut->m_Lock;
-    }
-    break;
-
-  case STDMUTEX_RCRSV:
-    {
-      stdmutex_rcrsv * rmut = &mut->mut.rcrsv;
-
-      rmut->owner_cnt = 0;
-      mut_impl         = &rmut->inner_lock;
-    }
-    break;
-
-  default:
-    assert(STDFALSE);
-    ret = EINVAL;
-    goto stdcond_wait_timed_EINVAL;
-  }
-
-  if ((ret = pthread_cond_timedwait(cond, mut_impl, &timeout)) != STDESUCCESS) {
-    goto stdcond_wait_timed_pcond_timedwait;
-  }
-
-  assert(ret == STDESUCCESS);
-  goto stdcond_wait_timed_end;
-
-  /* error handling and return */
-
- stdcond_wait_timed_pcond_timedwait:
- stdcond_wait_timed_EINVAL:
- stdcond_wait_timed_fail:
-  assert(ret != STDESUCCESS);
-
- stdcond_wait_timed_end:
-  return ret;
-}
-#  endif
-#endif
 
 #endif
 

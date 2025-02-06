@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir and Claudiu Danilov.
+ *  Yair Amir, Claudiu Danilov and John Schultz.
  *
- * Copyright (c) 2003 - 2009 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2013 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -29,11 +29,10 @@
  *
  */
 
-
-#include "util/arch.h"
-#include "util/alarm.h"
-#include "util/sp_events.h"
-#include "util/data_link.h"
+#include "arch.h"
+#include "spu_alarm.h"
+#include "spu_events.h"
+#include "spu_data_link.h"
 
 #include <stdlib.h>
 #include <sys/socket.h>
@@ -74,21 +73,14 @@
 #  include <dlfcn.h>
 #endif
 
+#include "stdutil/stdhash.h"
+
 #include "objects.h"
 #include "net_types.h"
 #include "node.h"
 #include "wireless.h"
-#include "stdutil/src/stdutil/stdhash.h"
 
-/* Global variables */
-extern int32    My_Address;
-extern int16u   Port;
-extern char     Wireless_if[20];
-extern int16    Num_Discovery_Addresses;
-extern int32    Discovery_Address[MAX_DISCOVERY_ADDR];
-extern stdhash  All_Nodes;
-extern int      Wireless;
-extern int      Wireless_monitor;
+#include "spines.h"
 
 /* Local variables */
 char*   (*_pcap_lookupdev) (char*);
@@ -116,6 +108,7 @@ char*   (*_pcap_geterr) (pcap_t*);
 /* NONE                                                    */
 /*                                                         */
 /***********************************************************/
+
 void Wireless_Init() 
 {
     int wireless_sk;     
@@ -192,6 +185,7 @@ void Wireless_Init()
 /* NONE                                                    */
 /*                                                         */
 /***********************************************************/
+
 void Wireless_process_pkt(int sk, int dummy_i, void *pcap_handler)
 {
     int ret, dst, temp;
@@ -266,8 +260,12 @@ void Wireless_process_pkt(int sk, int dummy_i, void *pcap_handler)
                     temp = 0;
                 }
 
-                /* TODO: RSSI may differ between mcast and ucast packets due to tx rate */
-                if((nd->flags & NEIGHBOR_NODE) && (nd->flags & CONNECTED_NODE)) {
+#if 0
+		TODO FIX ME
+
+
+                /* TODO: RSSI may differ between mcast and ucast packets due tx rate */
+                if (Is_Connected_Neighbor2(nd)) {
                     /* Connected node.  Consider only Unicast packets */
                     if (dst == My_Address) {
                         nd->w_data.rssi = (nd->w_data.rssi * 0.8) + (temp * 0.2);
@@ -289,6 +287,7 @@ void Wireless_process_pkt(int sk, int dummy_i, void *pcap_handler)
                         if (nd->w_data.retry >= 5) nd->w_data.retry-=5;
                     }
                 }
+#endif
             }
         }
     }
@@ -351,10 +350,9 @@ void Wireless_Print_Status(FILE *fp)
         Node *nd;
         Link *lk;
         Control_Data *c_data;
-        Loss_Data *l_data;
         stdit it;
         char line[256];
-        int connected, loss_rate, loss_rate2;
+        int connected, loss_rate;
 
         sprintf(line, "\n\nWireless Neighbors Status: ["IPF"]\n", IP(My_Address)); 
     	Alarm(PRINT, "%s", line); 
@@ -363,14 +361,17 @@ void Wireless_Print_Status(FILE *fp)
         while(!stdhash_is_end(&All_Nodes, &it)) {
             nd = *((Node **)stdhash_it_val(&it));
 
+#if 0
+	    TODO FIX ME
+
             /* If node has no rssi, then I can't hear it */
-            if(nd->address == My_Address || nd->w_data.rssi == 0) {
+            if(nd->nid == My_Address || nd->w_data.rssi == 0) {
  	        stdhash_it_next(&it);
                 continue;
             }
 
             /* Check if this is a connected neighbor */
-            if((nd->flags & NEIGHBOR_NODE) && (nd->flags & CONNECTED_NODE)) {
+            if(Is_Connected_Neighbor2(nd)) {
                 connected = 1;
             } else {
                 connected = 0;
@@ -382,17 +383,18 @@ void Wireless_Print_Status(FILE *fp)
                 loss_rate = -1;
             } else {
                 c_data = (Control_Data*)lk->prot_data;
-                l_data = &(c_data->l_data);
-                loss_rate = 100*(l_data->loss_rate);
-                loss_rate2 = 100*(c_data->est_loss_rate);
+                loss_rate = 100*(c_data->est_loss_rate);
             }
 
             /* Print wireless status info for this node */
             sprintf(line, IPF "   rssi: %3d;   retx: %3d;   loss: %3d;   connected:%d ", 
-                    IP(nd->address), nd->w_data.rssi, nd->w_data.retry, loss_rate, connected);
+                    IP(nd->nid), nd->w_data.rssi, nd->w_data.retry, loss_rate, connected);
             Alarm(PRINT, "%s\n", line);
             if (fp != NULL) fprintf(fp, "%s\n", line);
- 	        stdhash_it_next(&it);
+
+#endif
+
+	    stdhash_it_next(&it);
         }
     sprintf(line, "\n\n");
     Alarm(PRINT, "%s", line);

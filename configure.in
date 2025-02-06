@@ -1,9 +1,9 @@
-AC_INIT(Spines, 3.2)
+AC_INIT(Spines, 4.0)
 
 AC_CONFIG_AUX_DIR(buildtools)
-AC_CONFIG_HEADER(util/config.h)
+AC_CONFIG_HEADER(daemon/config.h)
 
-AC_CONFIG_SUBDIRS(stdutil)
+AC_CONFIG_SUBDIRS(stdutil libspread-util)
 
 AC_CANONICAL_HOST
 
@@ -40,9 +40,12 @@ AC_SUBST(LD)
 	
 # C Compiler features
 AC_C_INLINE
+
 if test "$GCC" = "yes"; then 
 	CFLAGS="$CFLAGS -Wall"
 fi
+
+CFLAGS="$CFLAGS -D_REENTRANT"
 
 # Allow user to specify flags
 AC_ARG_WITH(cflags,
@@ -96,22 +99,16 @@ AC_PTHREAD_FREEBSD
 AC_SUBST(THLDFLAGS)
  LDFLAGS=$OLDLDFLAGS
 
- OLDLIBS=$LIBS
- LIBS=
 AC_CHECK_LIB(pthread, pthread_create, , )
 AC_CHECK_LIB(thread, thr_create, , )
 AC_CHECK_LIB(posix4, sem_wait, , )
- THLIBS=$LIBS
-AC_SUBST(THLIBS)
-dnl    Check for pthread functions
 AC_CHECK_FUNCS(pthread_atfork)
- LIBS=$OLDLIBS
-
 AC_CHECK_LIB(nsl, gethostbyaddr, , )
 AC_CHECK_LIB(socket, socket, , )
 AC_CHECK_LIB(posix4, sem_wait, , )
-
 AC_CHECK_LIB(m, sqrt)
+AC_CHECK_LIB(rt, clock_gettime, , )
+AC_CHECK_LIB(dl, dladdr, , )
 
 AC_FUNC_STRFTIME
 
@@ -615,22 +612,6 @@ if test "x$ac_cv_libc_defines_sys_nerr" = "xyes" ; then
 	AC_DEFINE(HAVE_SYS_NERR, 1, sys_nerr function)
 fi
 
-
-# CD: Removed Spread Versioning #
-#for i in `grep "SP_....._VERSION" ${srcdir}/daemon/spread_params.h | sed -e 's/#define//g' -e 's/[ 	]//g' -e 's/VERSION/VERSION=/g;'`
-#do
-#  eval $i
-#done
-#AC_MSG_CHECKING([Check Spread's major version])
-#AC_MSG_RESULT($SP_MAJOR_VERSION)
-#AC_SUBST(SP_MAJOR_VERSION)
-#AC_MSG_CHECKING([Check Spread's minor version])
-#AC_MSG_RESULT($SP_MINOR_VERSION)
-#AC_SUBST(SP_MINOR_VERSION)
-#AC_MSG_CHECKING([Check Spread's patch version])
-#AC_MSG_RESULT($SP_PATCH_VERSION)
-#AC_SUBST(SP_PATCH_VERSION)
-
 # Options from here on. Some of these are preset by platform above
 
 AC_ARG_WITH(catman,
@@ -723,40 +704,30 @@ AH_BOTTOM(
 
 AC_EXEEXT
 
-LIBSPSO=none
-LIBSPCORESO=none
-LIBTSPCORESO=none
 case "$host" in
 *-*-darwin*)
 	SHCC=$CC
-	SHCFLAGS="$CFLAGS -fPIC"
+	CFLAGS="$CFLAGS -fPIC"
+	SHCFLAGS=$CFLAGS
 	SHCPPFLAGS="$CPPFLAGS"
 	SHLD="$CC -dynamiclib"
 	SHLDFLAGS="$SHLDFLAGS $LDFLAGS"
 	SHLIBS=$LIBS	
 	SHLDCONVERTSTATIC=
 	SHLDCONVERTSTATICEND=
-	LIBSPSO="libspread.dylib"
-	LIBSPCORESO="libspread-core.dylib"
-	LIBTSPCORESO="libtspread-core.dylib"
         ;;
 mips-sgi-irix*)
-	LIBSPSO=none
-	LIBSPCORESO=none
-	LIBTSPCORESO=none
 	;;
 *-*-*)
 	SHCC=$CC
-	SHCFLAGS="$CFLAGS -fPIC"
+	CFLAGS="$CFLAGS -fPIC"
+	SHCFLAGS=$CFLAGS
 	SHCPPFLAGS="$CPPFLAGS"
 	SHLD="$CC -shared"
 	SHLDFLAGS="$SHLDFLAGS $LDFLAGS"
 	SHLIBS=$LIBS
 	SHLDCONVERTSTATIC="-Wl,-whole-archive"
 	SHLDCONVERTSTATICEND="-Wl,-no-whole-archive"
-	LIBSPSO="libspread.so"
-	LIBSPCORESO="libspread-core.so"
-	LIBTSPCORESO="libtspread-core.so"
 	;;
 esac
 
@@ -766,9 +737,6 @@ AC_SUBST(SHCPPFLAGS)
 AC_SUBST(SHLD)
 AC_SUBST(SHLDFLAGS)
 AC_SUBST(SHLIBS)
-AC_SUBST(LIBSPSO)
-AC_SUBST(LIBSPCORESO)
-AC_SUBST(LIBTSPCORESO)
 AC_SUBST(SHLDCONVERTSTATIC)
 AC_SUBST(SHLDCONVERTSTATICEND)
 
@@ -776,39 +744,9 @@ if test ! "$srcdir" = "." ; then
    AC_LINK_FILES(stdutil/Makefile, stdutil/Makefile)
 fi
 
-AC_OUTPUT(Makefile Makefile.general daemon/Makefile libspines/Makefile testprogs/Makefile controlprogs/Makefile util/Makefile)
+AC_OUTPUT(Makefile Makefile.general daemon/Makefile libspines/Makefile testprogs/Makefile controlprogs/Makefile)
 
 # Print summary of options
-
-# CD: Removed Spread status print #
-# Someone please show me a better way :)
-#A=`eval echo ${prefix}` ; A=`eval echo ${A}`
-#B=`eval echo ${bindir}` ; B=`eval echo ${B}`
-#C=`eval echo ${sbindir}` ; C=`eval echo ${C}`
-#D=`eval echo ${sysconfdir}` ; D=`eval echo ${D}`
-#E=`eval echo ${libdir}` ; E=`eval echo ${E}`
-#F=`eval echo ${mandir}/${mansubdir}X` ; F=`eval echo ${F}`
-#G=`eval echo ${piddir}` ; G=`eval echo ${G}`
-#H=`eval echo ${LIBSPSO}`; H=`eval echo ${H}`
-#Hb=`eval echo ${LIBSPCORESO}`; Hb=`eval echo ${Hb}`
-#I=`eval echo ${LIBTSPCORESO}`; I=`eval echo ${I}`
-#J=`eval echo ${includedir}`; J=`eval echo ${J}`
-#K=`eval echo ${docdir}`; K=`eval echo ${K}`
-
-#echo ""
-#echo "Spread has been configured with the following options:"
-#echo "                         User binaries: $B"
-#echo "                       System binaries: $C"
-#echo "                   Configuration files: $D"
-#echo "                        User libraries: $E"
-#echo "                 Shared Spread Library: $H"
-#echo "            Shared Spread Core Library: $Hb"
-#echo "Shared Thread-safe Spread Core Library: $I"
-#echo "                          Header files: $J"
-#echo "                          Manual pages: $F"
-#echo "                         Documentation: $K"
-#echo "                              PID file: $G"
-#echo "                        Manpage format: $MANTYPE"
 
 echo ""
 

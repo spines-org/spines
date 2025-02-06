@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir and Claudiu Danilov.
+ *  Yair Amir, Claudiu Danilov and John Schultz.
  *
- * Copyright (c) 2003 - 2009 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2013 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -60,23 +60,21 @@
 
 /* Keep track of routes to optimize number of system calls */
 typedef struct dummy_kr_entry {
-    int32 next_hop;  
+    Spines_ID next_hop;  
     char *dev;   
 } KR_Entry;
 
-
 void  KR_Init();
-void  KR_Set_Group_Route(int32 group_destination, void *dummy);
-void  KR_Set_Table_Route(int32 destination, int table_id);
-void  KR_Delete_Table_Route(int32 destination, int table_id);
-void  KR_Create_Overlay_Node(int32 address);
-void  KR_Delete_Overlay_Node(int32 address);
+void  KR_Set_Group_Route(Group_ID group_destination, void *dummy);
+void  KR_Set_Table_Route(Spines_ID destination, int table_id);
+void  KR_Delete_Table_Route(Spines_ID destination, int table_id);
+void  KR_Create_Overlay_Node(Spines_ID address);
+void  KR_Delete_Overlay_Node(Spines_ID address);
 void  KR_Set_Default_Route();
 void  KR_Delete_Default_Route();
 void  KR_Update_All_Routes();
 char* KR_Get_Command_Output(char *cmd);
-int   KR_Register_Route(int32 destination, int table_id, Node *nd, stdhash *neighbors, int member);
+int   KR_Register_Route(Spines_ID destination, int table_id, Node *nd, stdhash *neighbors, int member);
 void  KR_Print_Routes(FILE *fp);
-
 
 #endif

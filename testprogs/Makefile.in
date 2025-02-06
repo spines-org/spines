@@ -1,42 +1,49 @@
 include ../Makefile.general
 
+.PHONY: all clean distclean
+
 VPATH=@srcdir@
 top_srcdir=@top_srcdir@
 
-CPPFLAGS=-I../util -I$(top_srcdir) -I$(top_srcdir)/util -I$(top_srcdir)/libspines @CPPFLAGS@
+TESTPROGS=sp_tflooder sp_uflooder sp_xcast sp_ping sping t_flooder new_t_flooder u_flooder g_flooder mcast_recv
 
-TESTPROGS= sp_tflooder sp_uflooder sp_xcast sp_ping sping t_flooder u_flooder
+all: $(TESTPROGS)
 
-all: $(TESTPROGS) 
+sp_ping: sp_ping.o $(LIBSPINES_LIB_FILE)
+	$(CC) $(LDFLAGS) -o sp_ping sp_ping.o $(LIBS)
 
-sp_ping: sp_ping.o ../libspines/spines_lib.a
-	$(CC) -o sp_ping sp_ping.o ../libspines/spines_lib.a $(LIBS)
+sp_tflooder: sp_tflooder.o $(LIBSPINES_LIB_FILE)
+	$(CC) $(LDFLAGS) -o sp_tflooder sp_tflooder.o $(LIBS)
 
-sp_tflooder: sp_tflooder.o ../libspines/spines_lib.a
-	$(CC) -o sp_tflooder sp_tflooder.o ../libspines/spines_lib.a  $(LIBS) 
+sp_uflooder: sp_uflooder.o $(LIBSPINES_LIB_FILE)
+	$(CC) $(LDFLAGS) -o sp_uflooder sp_uflooder.o $(LIBS)
 
-sp_uflooder: sp_uflooder.o ../libspines/spines_lib.a
-	$(CC) -o sp_uflooder sp_uflooder.o ../libspines/spines_lib.a $(LIBS)
-
-sp_xcast: sp_xcast.o ../libspines/spines_lib.a
-	$(CC) -o sp_xcast sp_xcast.o ../libspines/spines_lib.a $(LIBS)
+sp_xcast: sp_xcast.o $(LIBSPINES_LIB_FILE)
+	$(CC) $(LDFLAGS) -o sp_xcast sp_xcast.o $(LIBS)
 
 sping: sping.o
-	$(CC) -o sping sping.o $(LIBS)
+	$(CC) $(LDFLAGS) -o sping sping.o $(LIBS)
 
 t_flooder: t_flooder.o
-	$(CC) -o t_flooder t_flooder.o  $(LIBS)
+	$(CC) $(LDFLAGS) -o t_flooder t_flooder.o $(LIBS)
+
+new_t_flooder: new_t_flooder.o
+	$(CC) $(LDFLAGS) -o new_t_flooder new_t_flooder.o $(LIBS)
 
 u_flooder: u_flooder.o
-	$(CC) -o u_flooder u_flooder.o  $(LIBS)
+	$(CC) $(LDFLAGS) -o u_flooder u_flooder.o $(LIBS)
+
+g_flooder: g_flooder.o
+	$(CC) $(LDFLAGS) -o g_flooder g_flooder.o $(LIBS)
+
+mcast_recv: mcast_recv.o
+	$(CC) $(LDFLAGS) -o mcast_recv mcast_recv.o $(LIBS)
 
 clean:
-	rm -f *~
 	rm -f *.o
-	rm -f *.to
-	rm -f core
+	rm -f $(TESTPROGS)
 
 distclean: clean
-	rm -f $(TESTPROGS)
+	rm -f *~
+	rm -f core*
 	rm -f Makefile 
-
