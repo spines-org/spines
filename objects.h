@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 - 2007 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2008 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -78,10 +78,10 @@
 #define RELIABLE_DATA           42
 #define REALTIME_DATA           43
 
-
 #define SESSION_OBJ             51
 
 
+#define REL_MCAST_TREE_OBJ	52 
 
 #ifdef SPINES_SSL
 /* added for security part */

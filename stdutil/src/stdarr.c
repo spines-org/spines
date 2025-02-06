@@ -1,8 +1,7 @@
-/* Copyright (c) 2000-2005, The Johns Hopkins University
+/* Copyright (c) 2000-2006, The Johns Hopkins University
  * All rights reserved.
  *
- * The contents of this file are subject to a license (the ``License'')
- * that is the exact equivalent of the BSD license as of July 23, 1999. 
+ * The contents of this file are subject to a license (the ``License'').
  * You may not use this file except in compliance with the License. The
  * specific language governing the rights and limitations of the License
  * can be found in the file ``STDUTIL_LICENSE'' found in this 
@@ -25,6 +24,10 @@
 
 #include <stdutil/stderror.h>
 #include <stdutil/stdarr.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #define STDARR_IS_LEGAL(arr) ((arr)->begin <= (arr)->end && \
 			      (arr)->begin + (arr)->size * (arr)->vsize == (arr)->end && \
@@ -50,9 +53,11 @@ STDINLINE static stdcode stdarr_low_insert_space(stdarr *arr, stdarr_it *it, std
   stdsize delta = num_insert * arr->vsize;
   stdsize after = (stdsize) (arr->end - it->val);
 
-  if (nsize > arr->cap) {                                    /* nsize > arr->cap -> nsize > 0 */
-    stdsize ncap  = (nsize << 1);                            /* nsize > 0 -> ncap > 0 */
-    stdsize prior = (stdsize) (it->val - arr->begin);
+  /* reallocate if current capacity is not big enough */
+
+  if (nsize > stdarr_high_capacity(arr)) {                   /* nsize > X -> nsize > 0 */
+    stdsize ncap;
+    stdsize prior;
     stdsize asize;
     char *  mem;    
 
@@ -61,8 +66,10 @@ STDINLINE static stdcode stdarr_low_insert_space(stdarr *arr, stdarr_it *it, std
       goto stdarr_low_insert_space_end;
     }
 
+    ncap  = (nsize << 1);                                    /* nsize > 0 -> ncap > 0 */
     ncap  = STDMAX(ncap, STDARR_MIN_AUTO_ALLOC);             /* ensure minimum allocation */
     asize = ncap * arr->vsize;                               /* calc. alloc size in bytes */
+    prior = (stdsize) (it->val - arr->begin);
 
     if ((mem = (char*) realloc(arr->begin, asize)) == NULL) {
       ret = STDENOMEM;
@@ -76,7 +83,9 @@ STDINLINE static stdcode stdarr_low_insert_space(stdarr *arr, stdarr_it *it, std
     it->val    = mem + prior;                                /* relocate 'it' to insertion point */
   }
 
-  memmove(it->val + delta, it->val, after);                  /* shift mem */
+  /* shift memory to create space */
+
+  memmove(it->val + delta, it->val, after);
 
   arr->end  += delta;
   arr->size  = nsize;
@@ -98,13 +107,17 @@ STDINLINE static void stdarr_low_remove_space(stdarr *arr, stdarr_it *it, stdsiz
   char *  it_end = it->val + delta;
   stdsize after  = (stdsize) (arr->end - it_end);
 
-  memmove(it->val, it_end, after);                           /* shift mem */
+  /* shift memory to remove space */
+
+  memmove(it->val, it_end, after);
 
   arr->end  -= delta;
   arr->size  = nsize;
 
-  if ((arr->opts & STDARR_OPTS_NO_AUTO_SHRINK) == 0 &&       /* shrinking wanted */
-      nsize <= stdarr_low_capacity(arr) &&                   /* shrinking necessary */
+  /* reallocate if current capacity is too big */
+
+  if ((arr->opts & STDARR_OPTS_NO_AUTO_SHRINK) == 0 &&       /* shrinking allowed */
+      nsize <= stdarr_low_capacity(arr) &&                   /* shrinking needed */
       arr->cap != STDARR_MIN_AUTO_ALLOC) {                   /* cap not at min alloc */
 
     stdsize ncap  = (nsize << 1);
@@ -122,7 +135,6 @@ STDINLINE static void stdarr_low_remove_space(stdarr *arr, stdarr_it *it, stdsiz
 
       arr->begin = mem;                                      /* fill in new values for 'arr' */
       arr->end   = mem + prior + after;
-      arr->size  = nsize;
       arr->cap   = ncap;
 
     } else {                                                 /* ncap == 0 -> go to zero */
@@ -133,11 +145,10 @@ STDINLINE static void stdarr_low_remove_space(stdarr *arr, stdarr_it *it, stdsiz
 
       arr->begin = NULL;
       arr->end   = NULL;
-      arr->size  = 0;                                        /* implicitly already 0 */
       arr->cap   = 0;
     }
 
-    it->val = arr->begin + prior;                            /* relocate 'it' to new position */
+    it->val = arr->begin + prior;                            /* relocate 'it' to erasure point */
   }
 }
 
@@ -474,7 +485,7 @@ STDINLINE stdcode stdarr_set_capacity(stdarr *arr, stdsize num_elems)
       arr->size  = STDMIN(arr->size, num_elems);
 
       arr->begin = mem;
-      arr->end   = mem + arr->size * num_elems;
+      arr->end   = mem + arr->size * arr->vsize;
 
     } else {
 
@@ -880,3 +891,7 @@ STDINLINE stdit *stdarr_it_offset(stdit *it, stdssize offset)
 
   return it;
 }
+
+#ifdef __cplusplus
+}
+#endif

@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 - 2007 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2008 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -55,6 +55,7 @@ void Init_Routes(void) ;
 Route* Find_Route(int32 source, int32 dest); 
 void Set_Routes(int dummy_int, void *dummy);
 Node* Get_Route(int32 source, int32 dest);
+void Trace_Route(int32 src, int32 dst, spines_trace *spines_tr);
 void Print_Routes(FILE *fp); 
 
 #endif

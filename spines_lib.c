@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 - 2007 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2008 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -62,18 +62,22 @@
 #define START_UDP_PORT  20000
 #define MAX_UDP_PORT    30000
 
-#define MAX_SPINES_MSG   1430
+#define MAX_SPINES_MSG   1404 /* (packet_body ) 1456 - ( (udp_header) 24 + (rel_ses_pkt_add) 8 + (reliable_ses_tail) 12 + (reliable_tail) 8 ) = 1456 - 52 */
+
 #define MAX_APP_CLIENTS  1024
+
+#define MAX_CTRL_SOCKETS 51
 
 /* Local variables */ 
 
 static struct sockaddr spines_addr;
 static int             set_flag = 0;
+static int             Max_Client = 0;
+static int             Control_sk[MAX_CTRL_SOCKETS];
+
+static Lib_Client      all_clients[MAX_APP_CLIENTS];
 static pthread_mutex_t init_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t data_mutex;
-static Lib_Client      all_clients[MAX_APP_CLIENTS];
-static int             Max_Client = 0;
-
 
 
 void	Flip_udp_hdr( udp_header *udp_hdr )
@@ -85,6 +89,7 @@ void	Flip_udp_hdr( udp_header *udp_hdr )
     udp_hdr->len	  = Flip_int16( udp_hdr->len );
     udp_hdr->seq_no	  = Flip_int16( udp_hdr->seq_no );
     udp_hdr->sess_id	  = Flip_int16( udp_hdr->sess_id );
+    udp_hdr->ttl          = Flip_int32( udp_hdr->ttl );
 }
 
 
@@ -115,7 +120,6 @@ int spines_init(const struct sockaddr *serv_addr)
   
 
     if(Mutex_Trylock(&init_mutex) == 0 && set_flag == 0) {
-
 	if(serv_addr == NULL) {
 	    gethostname(machine_name,sizeof(machine_name)); 
 	    host_ptr = gethostbyname(machine_name);
@@ -153,7 +157,12 @@ int spines_init(const struct sockaddr *serv_addr)
 	    return(1);
 	}
     }
-    return(-1);
+
+    if (set_flag) {
+        return(1);
+    } else {
+        return(-1);
+    }
 }
 
 
@@ -190,7 +199,7 @@ int  spines_socket(int domain, int type, int protocol,
     char buf[MAX_PACKET_SIZE];
     int32 *total_len;
     int32 *msg_type;
-    int ret, sk, u_sk, client;
+    int ret, sk, u_sk, ctrl_sk, s_ctrl_sk, client;
     int val = 1;
     int32 *flag_var, *rnd_var, *port_var, *addr_var;
     struct hostent  *host_ptr;
@@ -201,8 +210,8 @@ int  spines_socket(int domain, int type, int protocol,
     struct timezone tz;
     int link_prot, connect_flag;
     int tot_bytes, recv_bytes;
+    int v_local_port;
     int32 endianess_type;
-    
 
 
     if((type != SOCK_DGRAM)&&(type != SOCK_STREAM)) {
@@ -231,14 +240,18 @@ int  spines_socket(int domain, int type, int protocol,
 
 
     sk = socket(AF_INET, SOCK_STREAM, 0);        
-    if (sk < 0) {
+    ctrl_sk = socket(AF_INET, SOCK_STREAM, 0);        
+    if (sk < 0 || ctrl_sk < 0) {
 	Alarm(PRINT, "spines_socket(): Can not initiate socket...");
 	return(-1);
     }
 
-    if (setsockopt(sk, IPPROTO_TCP, TCP_NODELAY, (char *)&val, sizeof(val))){
+    ret = setsockopt(sk, IPPROTO_TCP, TCP_NODELAY, (char *)&val, sizeof(val));
+    ret += setsockopt(ctrl_sk, IPPROTO_TCP, TCP_NODELAY, (char *)&val, sizeof(val));
+    if (ret < 0) {
 	Alarm(PRINT, "spines_socket(): Failed to set socket option TCP_NODELAY\n");
 	close(sk);
+	close(ctrl_sk);
 	return(-1);
     }
     
@@ -273,14 +286,43 @@ int  spines_socket(int domain, int type, int protocol,
 
 	host.sin_port   = htons((int16)DEFAULT_SPINES_PORT);
     }
+
     address = ntohl(host.sin_addr.s_addr);
     port = ntohs(host.sin_port);
+
+    /* Create the control socket for receiving control information.
+       Required for receiving control information without interfeering 
+       with the regular flow of data packets in the regular spines socket 
+       Never send any packet with this socket.  Only for receiving. */
     host.sin_family = AF_INET;
-    host.sin_port   = htons((int16)(ntohs(host.sin_port)+SESS_PORT));
+    host.sin_port   = htons((int16)(port+SESS_CTRL_PORT));
+
+    ret = connect(ctrl_sk, (struct sockaddr *)&host, sizeof(host));
+    if( ret < 0) {
+	Alarm(PRINT, "1 spines_socket(): Can not initiate connection to Spines @ "IPF":%hd...\n",
+            IP(address), port+SESS_CTRL_PORT);
+	return(-1);
+    }
+    recv_bytes = 0;
+    while(recv_bytes < sizeof(int32)) {
+	ret = recv(ctrl_sk, ((char*)&s_ctrl_sk)+recv_bytes, sizeof(int32)-recv_bytes, 0);
+	if(ret < 0) {
+	    Alarm(PRINT, "2 spines_socket(): Can not initiate connection to Spines @ "IPF":%hd...\n",
+                IP(address), port+SESS_CTRL_PORT);
+	    close(ctrl_sk);
+	    return(-1);	    
+	}
+	recv_bytes += ret;
+    }
+
+    /* Create Spines socket, for sending/receiving data and sending control/commands */
+    host.sin_family = AF_INET;
+    host.sin_port   = htons((int16)(port+SESS_PORT));
 
     ret = connect(sk, (struct sockaddr *)&host, sizeof(host));
     if( ret < 0) {
-	Alarm(PRINT, "1 spines_socket(): Can not initiate connection to Spines...\n");
+	Alarm(PRINT, "3 spines_socket(): Can not initiate connection to Spines @ "IPF":%hd...\n",
+            IP(address), port+SESS_PORT);
 	return(-1);
     }
 
@@ -288,8 +330,9 @@ int  spines_socket(int domain, int type, int protocol,
     if((type == SOCK_DGRAM)&&(connect_flag == UDP_CONNECT)) {
 	u_sk = socket(AF_INET, SOCK_DGRAM, 0);
 	if (u_sk < 0) {
-	    Alarm(PRINT, "spines_socket(): Can not initiate socket...");
+	    Alarm(PRINT, "4 spines_socket(): Can not initiate socket...\n");
 	    close(sk);
+	    close(ctrl_sk);
 	    return(-1);
 	}
 
@@ -298,7 +341,7 @@ int  spines_socket(int domain, int type, int protocol,
 	host_ptr = gethostbyname(machine_name);
 	
 	if(host_ptr == NULL) {
-	    Alarm(PRINT, "spines_socket(): could not get my default interface (my name is %s)\n",
+	    Alarm(PRINT, "5 spines_socket(): could not get my default interface (my name is %s)\n",
 		   machine_name );
 	    return(-1);
 	}
@@ -352,7 +395,6 @@ int  spines_socket(int domain, int type, int protocol,
 
     *msg_type = LINKS_TYPE_MSG;
 
-
     /* Send the endianess */
     endianess_type = Set_endian(0);
 
@@ -370,6 +412,13 @@ int  spines_socket(int domain, int type, int protocol,
 	return(-1);
     }
 
+    /* Send control channel received from spines daemon.  No endianess correction
+       here as this is the data I received from Spines, and is of no use to me here */
+    tot_bytes = 0;
+    while(tot_bytes < sizeof(int32)) {
+	ret = send(sk, ((char*)(&s_ctrl_sk))+tot_bytes, sizeof(int32)-tot_bytes, 0);
+	tot_bytes += ret;
+    }   
 
     /* Send the first packet */
     tot_bytes = 0;
@@ -378,7 +427,7 @@ int  spines_socket(int domain, int type, int protocol,
 	tot_bytes += ret;
     }   
     if(tot_bytes != sizeof(udp_header)+sizeof(int32)+5*sizeof(int32)) {
-	Alarm(PRINT, "2 spines_socket(): Can not initiate connection to Spines...\n");
+	Alarm(PRINT, "3 spines_socket(): Can not initiate connection to Spines...\n");
 	close(sk);
 	if(type == SOCK_DGRAM) {
 	    close(u_sk);
@@ -391,7 +440,7 @@ int  spines_socket(int domain, int type, int protocol,
     while(recv_bytes < sizeof(int32)) {
 	ret = recv(sk, ((char*)&endianess_type)+recv_bytes, sizeof(int32)-recv_bytes, 0);
 	if(ret < 0) {
-	    Alarm(PRINT, "spines_socket(): Can not initiate connection to Spines...\n");
+	    Alarm(PRINT, "4 spines_socket(): Can not initiate connection to Spines...\n");
 	    close(sk);
 	    if(type == SOCK_DGRAM) {
 		close(u_sk);
@@ -438,6 +487,7 @@ int  spines_socket(int domain, int type, int protocol,
 	return(-1);
     }
     sess_id = *(int*)buf;
+    v_local_port = *(int*)(buf + sizeof(sess_id));
 
 
     /* Update the client */
@@ -461,15 +511,26 @@ int  spines_socket(int domain, int type, int protocol,
     all_clients[client].protocol = protocol;
     all_clients[client].connect_addr = -1;
     all_clients[client].connect_port = -1;   
-    all_clients[client].rel_mcast_flag = 0;       
+    all_clients[client].virtual_local_port = v_local_port;
+    all_clients[client].ip_ttl = SPINES_TTL_MAX;
+    all_clients[client].mcast_ttl = SPINES_TTL_MAX;
     Mutex_Unlock(&data_mutex);
 
 
-    if((type == SOCK_DGRAM)&&(connect_flag == UDP_CONNECT)) {
-	return(u_sk);
-    }
 
-    return(sk);
+    if((type == SOCK_DGRAM)&&(connect_flag == UDP_CONNECT)) {
+        if (Control_sk[u_sk%MAX_CTRL_SOCKETS] != 0) {
+            Alarm(EXIT, "spines_socket(): not enough control sockets");
+        }
+        Control_sk[u_sk%MAX_CTRL_SOCKETS] = ctrl_sk;
+	return(u_sk);
+    } else {
+        if (Control_sk[sk%MAX_CTRL_SOCKETS] != 0) {
+            Alarm(EXIT, "spines_socket(): not enough control sockets");
+        }
+        Control_sk[sk%MAX_CTRL_SOCKETS] = ctrl_sk;
+        return(sk);
+    }
 }
 
 
@@ -509,7 +570,11 @@ void spines_close(int s)
     }
     Mutex_Unlock(&data_mutex);
 
+    shutdown(s, SHUT_RDWR);
     close(s);
+    shutdown(Control_sk[s%MAX_CTRL_SOCKETS], SHUT_RDWR);
+    close(Control_sk[s%MAX_CTRL_SOCKETS]);
+    Control_sk[s%MAX_CTRL_SOCKETS] = 0;
     if((type == SOCK_DGRAM)&&(connect_flag == UDP_CONNECT)) {
 	close(tcp_sk);
     }
@@ -559,13 +624,15 @@ int spines_sendto_internal(int s, const void *msg, size_t len,
     int port, address, ret;
     int sess_id, rnd_num;
     char pkt[MAX_PACKET_SIZE];
+    unsigned char l_ip_ttl, l_mcast_ttl;
     int32 *total_len;
     udp_header *hdr;
-    int client, type, tcp_sk, my_addr, my_port, srv_addr, srv_port, connect_flag, rel_mcast_flag;
+    int client, type, tcp_sk, my_addr, my_port, srv_addr, srv_port, connect_flag;
     int tot_bytes;
 
     address = ntohl(((struct sockaddr_in*)to)->sin_addr.s_addr);
     port = ntohs(((struct sockaddr_in*)to)->sin_port);
+    ret = 0;
 
     if(port == 0) {
 	Alarm(PRINT, "spines_sendto(): cannot send to port 0\n");
@@ -587,7 +654,8 @@ int spines_sendto_internal(int s, const void *msg, size_t len,
     srv_addr = all_clients[client].srv_addr;
     srv_port = all_clients[client].srv_port;
     connect_flag = all_clients[client].connect_flag;
-    rel_mcast_flag = all_clients[client].rel_mcast_flag;
+    l_ip_ttl = all_clients[client].ip_ttl;
+    l_mcast_ttl = all_clients[client].mcast_ttl;
     Mutex_Unlock(&data_mutex);
 
     if((type == SOCK_STREAM)&&(force_tcp != 1)) {
@@ -603,14 +671,21 @@ int spines_sendto_internal(int s, const void *msg, size_t len,
 	hdr->dest_port   = port;
 	hdr->len = len;
 
-	if(rel_mcast_flag == 0) {
-	    *total_len = len + sizeof(udp_header);
-	    ret = send(tcp_sk, pkt, 
-		       sizeof(int32)+sizeof(udp_header), 0); 
-	    if(ret != sizeof(int32)+sizeof(udp_header)) {
-		Alarm(PRINT, "spines_sendto(): error sending header: %d\n", ret);	    
-		return(-1);
-	    }
+        /* set the TTL of the packet */
+        if(!Is_mcast_addr(hdr->dest) && !Is_acast_addr(hdr->dest)) { 
+            /* This is unicast */
+            hdr->ttl = l_ip_ttl;
+        } else  { 
+            /* This is a multicast */
+            hdr->ttl = l_mcast_ttl;
+        }
+
+	*total_len = len + sizeof(udp_header);
+	ret = send(tcp_sk, pkt, 
+		   sizeof(int32)+sizeof(udp_header), 0); 
+	if(ret != sizeof(int32)+sizeof(udp_header)) {
+	  Alarm(PRINT, "spines_sendto(): error sending header: %d\n", ret);	    
+	  return(-1);
 	}
 	    
 	tot_bytes = 0;
@@ -631,6 +706,15 @@ int spines_sendto_internal(int s, const void *msg, size_t len,
 	u_hdr.dest   = (int32)address;
 	u_hdr.dest_port   = port;
 	u_hdr.len = len;
+
+        /* set the TTL of the packet */
+        if(!Is_mcast_addr(u_hdr.dest) && !Is_acast_addr(u_hdr.dest)) { 
+            /* This is unicast */
+            u_hdr.ttl = l_ip_ttl;
+        } else { 
+            /* This is a multicast */
+            u_hdr.ttl = l_mcast_ttl;
+        }
 
 	scat.num_elements = 4;
 	scat.elements[0].len = sizeof(int);
@@ -697,7 +781,6 @@ int  spines_recvfrom_internal(int s, void *buf, size_t len, int flags,
     int32 msg_len;
     udp_header *hdr;
     char pkt[MAX_PACKET_SIZE];
-    char *pnt;
     int32 *pkt_len;
     int total_bytes, r_add_size;
     int client, type = 0, connect_flag = 0;
@@ -784,6 +867,7 @@ int  spines_recvfrom_internal(int s, void *buf, size_t len, int flags,
 	}
 	
 	r_add_size = 0;
+
 	total_bytes = 0;    
 	while(total_bytes < *pkt_len - (int)sizeof(udp_header)-r_add_size) { 
 	    received_bytes = recv(s, buf+total_bytes, 
@@ -864,8 +948,8 @@ int spines_bind(int sockfd, struct sockaddr *my_addr,
     port = ntohs(((struct sockaddr_in*)my_addr)->sin_port);
 
     if(port == 0) {
-	Alarm(PRINT, "spines_bind(): cannot bind on port 0\n");
-	return(-1);
+        return (0);  /* POXIS dictates bind(0) to assign a random port, 
+                        which is already done in spines_socket */
     }
 
     if(my_type == SOCK_STREAM) {
@@ -911,6 +995,11 @@ int spines_bind(int sockfd, struct sockaddr *my_addr,
 	}
     }
 
+    /* on successs update the stored virtual local port */
+    Mutex_Lock(&data_mutex); {
+        all_clients[client].virtual_local_port = port;
+    } Mutex_Unlock(&data_mutex);
+
     return(0);
 }
 
@@ -928,8 +1017,7 @@ int spines_bind(int sockfd, struct sockaddr *my_addr,
 /*                                                         */
 /* s:         the socket defining the connection to Spines */
 /* level:     not currently used                           */
-/* optname:   SPINES_ADD_MEMBERSHIP or                     */
-/*            SPINES_DROP_MEMBERSHIP                       */
+/* optname:   SPINES_(OPTION)                              */
 /* optval:    a struct ip_mreq containing the multicast    */
 /*            group                                        */
 /* optlen:    the length of the optval parameter           */
@@ -943,18 +1031,23 @@ int spines_bind(int sockfd, struct sockaddr *my_addr,
 /***********************************************************/
 
 int  spines_setsockopt(int s, int  level,  int  optname,  
-		       const  void  *optval, socklen_t optlen)
+		               void  *optval, socklen_t optlen)
 {
     udp_header *u_hdr, *cmd;
     char pkt[MAX_PACKET_SIZE];
     int32 *total_len;
     int32 *type;
-    int sk, ret;
+    int sk, ret, response_expected;
     int client, my_type, tcp_sk;
 
     if( optname != SPINES_ADD_MEMBERSHIP &&
         optname != SPINES_DROP_MEMBERSHIP &&
         optname != SPINES_MULTICAST_LOOP &&
+        optname != SPINES_IP_TTL &&
+        optname != SPINES_IP_MULTICAST_TTL &&
+        optname != SPINES_TRACEROUTE &&
+        optname != SPINES_EDISTANCE &&
+        optname != SPINES_MEMBERSHIP &&
         optname != SPINES_ADD_NEIGHBOR       ) {
 	return(-1);
     }
@@ -968,6 +1061,27 @@ int  spines_setsockopt(int s, int  level,  int  optname,
     my_type = all_clients[client].type;
     tcp_sk = all_clients[client].tcp_sk;
     Mutex_Unlock(&data_mutex);
+
+    /* if the sock opt is to set the ttl, then just record it locally, no comms needed */
+    if((optname == SPINES_IP_TTL) || (optname == SPINES_IP_MULTICAST_TTL)) {
+      if(my_type == SOCK_STREAM) {
+        Alarm(PRINT, "spines_setsockopt(): TTL for STREAM sockers not supported\r\n");
+        return (-1);
+      }
+      
+      Mutex_Lock(&data_mutex); {
+        if(optname == SPINES_IP_TTL) {
+          all_clients[client].ip_ttl = *((unsigned char*) optval);
+
+        } else if(optname == SPINES_IP_MULTICAST_TTL) {
+          all_clients[client].mcast_ttl = *((unsigned char*) optval);
+        }
+
+      } Mutex_Unlock(&data_mutex);
+
+      return(0);
+    }
+
 
     if(my_type == SOCK_STREAM) {
 	/* sk = tcp_sk; */
@@ -994,6 +1108,8 @@ int  spines_setsockopt(int s, int  level,  int  optname,
     cmd->dest      = 0;
     cmd->dest_port = 0;
     cmd->len       = 0;
+
+    response_expected = 0;
     
     if(optname == SPINES_ADD_MEMBERSHIP) {
 	*type = JOIN_TYPE_MSG; 
@@ -1016,6 +1132,30 @@ int  spines_setsockopt(int s, int  level,  int  optname,
 	}
 	cmd->dest = *((char*)(optval));
     }
+    else if (optname == SPINES_TRACEROUTE) {
+        *type = TRACEROUTE_TYPE_MSG;
+        if (optlen < sizeof(spines_trace)) {
+            return(-1);
+        }
+        cmd->dest = ntohl(((struct sockaddr_in*)optval)->sin_addr.s_addr);
+        response_expected = 1;
+    }
+    else if (optname == SPINES_EDISTANCE) {
+        *type = EDISTANCE_TYPE_MSG;
+        if (optlen < sizeof(spines_trace)) {
+            return(-1);
+        }
+        cmd->dest = ntohl(((struct sockaddr_in*)optval)->sin_addr.s_addr);
+        response_expected = 1;
+    }
+    else if (optname == SPINES_MEMBERSHIP) {
+        *type = MEMBERSHIP_TYPE_MSG;
+        if (optlen < sizeof(spines_trace)) {
+            return(-1);
+        }
+        cmd->dest = ntohl(((struct sockaddr_in*)optval)->sin_addr.s_addr);
+        response_expected = 1;
+    }
     else if (optname == SPINES_ADD_NEIGHBOR) {
 	*type = ADD_NEIGHBOR_MSG; 
 	if(optlen < sizeof(struct sockaddr_in)) 
@@ -1030,37 +1170,27 @@ int  spines_setsockopt(int s, int  level,  int  optname,
     if(ret != 2*sizeof(udp_header)+2*sizeof(int32))
 	return(-1);
 
+    /* If expecting a response, wait for it in control channel */
+    if (response_expected) {
+        ret = spines_recvfrom(Control_sk[s%MAX_CTRL_SOCKETS], pkt, sizeof(pkt), 1, NULL, NULL);
+        if(ret <= 0) {
+	    return(-1);
+        }
+        /* the response is what we need to return in optval */
+        if (ret > optlen) {
+            Alarm(PRINT, "spines_lib: Returned data does not fit: %d,%d", 
+                          ret, optlen);
+            ret = optlen;
+        }
+        /* TODO: need to take care of endianess of data since client and 
+                 daemon may run in different machines....depends on option */
+        memcpy(optval, pkt, ret);
+    }
     return(0);
 }
 
-/***********************************************************/
-/* int spines_ioctl(int s, int level, int optname,    */
-/*                       const void *optval,               */
-/*                       socklen_t optlen)                 */ 
-/*                                                         */
-/* Controls spines router.                                 */
-/* Currently only allows to add a neighbor                 */
-/*                                                         */
-/* Arguments                                               */
-/*                                                         */
-/* s:         the socket defining the connection to Spines */
-/* level:     not currently used                           */
-/* optname:   SPINES_ADD_NEIGHBOR                          */
-/*            SPINES_SET_METRIC                            */
-/* optval:    a struct ip_mreq containing the multicast    */
-/*            group                                        */
-/* optlen:    the length of the optval parameter           */
-/*                                                         */
-/*                                                         */
-/* Return Value                                            */
-/*                                                         */
-/* (int)  0 if join was ok                                 */
-/*       -1 otherwise                                      */
-/*                                                         */
-/***********************************************************/
-
 int  spines_ioctl(int s, int  level,  int  optname,  
-		       const  void  *optval, socklen_t optlen)
+		          void  *optval, socklen_t optlen)
 {
     return spines_setsockopt(s, level, optname, optval, optlen);
 }
@@ -1195,7 +1325,7 @@ int  spines_send(int s, const void *msg, size_t len, int flags)
     struct sockaddr_in host;
     int ret;
     int client, type, connect_addr, connect_port;
-
+    unsigned char l_ip_ttl, l_mcast_ttl;
 
 
     Mutex_Lock(&data_mutex);
@@ -1207,6 +1337,8 @@ int  spines_send(int s, const void *msg, size_t len, int flags)
     type = all_clients[client].type;
     connect_addr = all_clients[client].connect_addr;
     connect_port = all_clients[client].connect_port;    
+    l_ip_ttl = all_clients[client].ip_ttl;
+    l_mcast_ttl = all_clients[client].mcast_ttl;
     Mutex_Unlock(&data_mutex);
 
     if(type == SOCK_DGRAM) {
@@ -1237,6 +1369,13 @@ int  spines_send(int s, const void *msg, size_t len, int flags)
     u_hdr->dest   = 0;
     u_hdr->dest_port   = 0;
     u_hdr->len    = len + sizeof(rel_udp_pkt_add);
+
+    /* set the TTL of the packet */
+    if(!Is_mcast_addr(u_hdr->dest) && !Is_acast_addr(u_hdr->dest)) { /* This is unicast */
+      u_hdr->ttl = l_ip_ttl;
+    } else { /* This is a multicast */
+      u_hdr->ttl = l_mcast_ttl;
+    }
 
     r_add->type = Set_endian(0);
     r_add->data_len = len;
@@ -1493,6 +1632,19 @@ int  spines_accept(int s, struct sockaddr *addr, socklen_t *addrlen)
 	return(-1);
     }
 
+    /* fill in the other side addr to return */
+    if (addr != NULL) {
+      if(*addrlen < sizeof(struct sockaddr_in)) {
+        Alarm(PRINT, "spines_recvfrom(): fromlen too small\n");
+        return(-1);
+      }
+      ((struct sockaddr_in*)addr)->sin_family      = otherside_addr.sin_family;
+      ((struct sockaddr_in*)addr)->sin_port        = (short)otherside_addr.sin_port;
+      ((struct sockaddr_in*)addr)->sin_addr.s_addr = otherside_addr.sin_addr.s_addr;
+      
+      *addrlen = sizeof(struct sockaddr_in);
+    }
+
     return(new_sk);
 }
 
@@ -1586,85 +1738,6 @@ int spines_get_client(int sk) {
 }
 
 
-
-/***********************************************************/
-/* int spines_reliable_join(int sk, int address, int flags)*/ 
-/*                                                         */
-/* Joins a group for reliable multicast                    */
-/*                                                         */
-/* Arguments                                               */
-/*                                                         */
-/* sk:      the socket defining the connection to Spines   */
-/* address: the multicast address                          */
-/* flags:   SEND_GROUP or RECV_GROUP or SENDRECV_GROUP     */
-/*                                                         */
-/*                                                         */
-/* Return Value                                            */
-/*                                                         */
-/* (int)  1 if join operation was ok                       */
-/*       -1 otherwise                                      */
-/*                                                         */
-/***********************************************************/
-
-
-int spines_reliable_join(int sk, int address, int flags)
-{
-    udp_header *u_hdr, *cmd;
-    char pkt[MAX_PACKET_SIZE];
-    int32 *total_len;
-    int32 *type;
-    int ret;
-    int client;
-    int32 *flags_store;
-
-    if((address & 0xF0000000) != 0xE0000000) {
-    	Alarm(PRINT, "spines_reliable_join: not a multicast address\n");
-    	Alarm(PRINT, "address = "IPF"\n", IP(address));
-    	Alarm(PRINT, "address & 0xF0000000 = %x\n", address & 0xF0000000);
-    	return(-1);
-    }
-
-    Mutex_Lock(&data_mutex);
-    client = spines_get_client(sk);
-    if(client == -1) {
-	Mutex_Unlock(&data_mutex);
-	return(-1);
-    }
-    all_clients[client].rel_mcast_flag = 1;
-    Mutex_Unlock(&data_mutex);
-
-
-    total_len = (int32*)(pkt);
-    u_hdr = (udp_header*)(pkt+sizeof(int32));
-    type = (int32*)(pkt+sizeof(int32)+sizeof(udp_header));
-    cmd = (udp_header*)(pkt+sizeof(int32)+sizeof(udp_header)+sizeof(int32));
-    flags_store = (int32*)(pkt+sizeof(int32)+2*sizeof(udp_header)+sizeof(int32));
-
-
-    *total_len = (int32)(2*sizeof(udp_header) + 2*sizeof(int32));
-    *flags_store = flags;
-
-        
-    u_hdr->source = 0;
-    u_hdr->dest   = 0;
-    u_hdr->len    = 0;
-
-    *type = REL_JOIN_TYPE_MSG;
-
-    cmd->source = 0;
-    cmd->dest   = address;
-    cmd->dest_port   = 0;
-    cmd->len    = sizeof(int32);
-    
-    Alarm(PRINT,"socket number: %d\n", sk);
-
-    ret = send(sk, pkt, (*total_len)+sizeof(int32), 0);
-    
-    if(ret == 2*sizeof(udp_header)+3*sizeof(int32))
-	return(1);
-    else
-	return(-1);
-}
 
 
 int spines_flood_send(int sockfd, int address, int port, int rate, int size, int num_pkt)
@@ -1761,7 +1834,7 @@ int spines_flood_recv(int sockfd, char *filename, int namelen)
     total_len = (int32*)(pkt);
     u_hdr = (udp_header*)(pkt+sizeof(int32));
     type = (int32*)(pkt+sizeof(int32)+sizeof(udp_header));
-    len = (int32*)(pkt+sizeof(int32)+sizeof(udp_header)+sizeof(int32));
+    len = (int*)(pkt+sizeof(int32)+sizeof(udp_header)+sizeof(int32));
     name = (char*)(pkt+sizeof(int32)+sizeof(udp_header)+2*sizeof(int32));
 
 
@@ -1791,171 +1864,58 @@ int spines_flood_recv(int sockfd, char *filename, int namelen)
 
 
 /***********************************************************/
-/* int spines_ctrl_socket(const struct sockaddr *serv_addr)*/
+/* int spines_getsockname(int sk, struct sockaddr *name    */
+/*                        socklen_t *nlen)                 */
 /*                                                         */
-/* Creates a Spines Control socket                         */
+/* Retrieves the local address others in the Spines        */
+/* use to address this node                                */
 /*                                                         */
 /* Arguments                                               */
-/*                                                         */
-/* srvr_addr: Address of the Spines node                   */
-/*                                                         */
+/*   sk:    the Spines socket                              */
+/*   name:  local virtual address others user to in        */
+/*          Spines network to address this node.           */
+/*          fields are in network byte order               */
+/*   nlen:  size of 'name' being passed in                 */
 /*                                                         */
 /* Return Value                                            */
 /*                                                         */
-/* (int) the socket the application can use to             */
-/*       send/receive data                                 */
-/*       -1 in case of an error                            */
-/*                                                         */
-/***********************************************************/
-
-int  spines_ctrl_socket(const struct sockaddr *serv_addr)
-{
-    struct sockaddr_in host;
-    udp_header *u_hdr;
-    char buf[MAX_PACKET_SIZE];
-    int32 *total_len;
-    int32 *msg_type;
-    int ret, sk, u_sk;
-    int val = 1;
-    int32 *flag_var, *rnd_var, *port_var, *addr_var;
-    struct hostent  *host_ptr;
-    char   machine_name[256];
-    int address, port;
-
-    spines_init(serv_addr);
-
-    total_len = (int32*)(buf);
-    u_hdr = (udp_header*)(buf+sizeof(int32));
-    msg_type = (int32*)(buf+sizeof(int32)+sizeof(udp_header));
-    flag_var = (int32*)(buf+sizeof(int32)+sizeof(udp_header)+sizeof(int32));
-    rnd_var = (int32*)(buf+sizeof(int32)+sizeof(udp_header)+2*sizeof(int32));
-    addr_var = (int32*)(buf+sizeof(int32)+sizeof(udp_header)+3*sizeof(int32));
-    port_var = (int32*)(buf+sizeof(int32)+sizeof(udp_header)+4*sizeof(int32));
-
-
-    sk = socket(AF_INET, SOCK_STREAM, 0);        
-    if (sk < 0) {
-	Alarm(PRINT, "spines_socket(): Can not initiate socket...");
-	return(-1);
-    }
-
-    if (setsockopt(sk, IPPROTO_TCP, TCP_NODELAY, (char *)&val, sizeof(val))){
-	Alarm(PRINT, "spines_socket(): Failed to set socket option TCP_NODELAY\n");
-	close(sk);
-	return(-1);
-    }
-
-    u_sk = sk;
-
-    if(serv_addr != NULL) {
-	memcpy(&host, serv_addr, sizeof(struct sockaddr_in));
-    }
-    else if(set_flag == 1) {
-	memcpy(&host, &spines_addr, sizeof(struct sockaddr_in));
-    }
-    else {
-	/* No info about where the Spines server is. Try local machine */
-	gethostname(machine_name,sizeof(machine_name)); 
-	host_ptr = gethostbyname(machine_name);
-	
-	if(host_ptr == NULL) {
-	    Alarm(PRINT, "spines_socket(): could not get my default interface (my name is %s)\n",
-		   machine_name );
-	    return(-1);
-	}
-	if(host_ptr->h_addrtype != AF_INET) {
-	    Alarm(PRINT, "spines_socket(): Sorry, cannot handle addr types other than IPv4\n");
-	    return(-1);
-	}
-	
-	if(host_ptr->h_length != 4) {
-	    Alarm(PRINT, "spines_socket(): Bad IPv4 address length\n");
-	    return(-1);
-	}
-	memcpy(&host.sin_addr.s_addr, host_ptr->h_addr, sizeof(struct in_addr));
-
-	host.sin_port   = htons((int16)DEFAULT_SPINES_PORT);
-    }
-    address = ntohl(host.sin_addr.s_addr);
-    port = ntohs(host.sin_port);
-    host.sin_family = AF_INET;
-    host.sin_port   = htons((int16)(ntohs(host.sin_port)+SESS_CTRL_PORT));
-
-    ret = connect(sk, (struct sockaddr *)&host, sizeof(host));
-    if( ret < 0) {
-	Alarm(PRINT, "3 spines_socket(): Can not initiate connection to Spines...\n");
-	return(-1);
-    }
-    return(sk);
-}
-
-/***********************************************************/
-/* int spines_traceroute()                                 */
-/*                                                         */
-/*                                                         */
-/* Arguments                                               */
-/*  spines_trace: Pointer to Struct spines_trace           */
-/*                                                         */
-/* Return Value                                            */
-/*                                                         */
-/* (int)  1 if connect was ok                              */
+/* (int)  0 on success                                     */
 /*       -1 otherwise                                      */
 /*                                                         */
 /***********************************************************/
 
-int spines_traceroute(const struct sockaddr *dest_addr, spines_trace *sp_trace, 
-	const struct sockaddr *serv_addr)
+int spines_getsockname(int sk, struct sockaddr *name, socklen_t *nlen)
 {
+  int client;
 
-    udp_header *u_hdr, *cmd;
-    char pkt[MAX_PACKET_SIZE];
-    int32 *total_len, *type, dest, src;
-    int ctrl_sk, ret;
-
-    ctrl_sk = spines_ctrl_socket(serv_addr);
-    src  = ntohl(((struct sockaddr_in*)serv_addr)->sin_addr.s_addr);
-    dest = ntohl(((struct sockaddr_in*)dest_addr)->sin_addr.s_addr);
-
-    if (dest == src || Is_mcast_addr(dest)) {
-        Alarm(PRINT, "spines_lib: trace_route() error: Invalid Destination\n");
-        return(-1);
+  if(name != NULL) {
+    if(*nlen < sizeof(struct sockaddr_in)) {
+      Alarm(PRINT, "spines_getsockname(): nlen too small\n");
+      return(-1);
     }
 
-    total_len = (int32*)(pkt);
-    u_hdr = (udp_header*)(pkt+sizeof(int32));
-    type = (int32*)(pkt+sizeof(int32)+sizeof(udp_header));
-    cmd = (udp_header*)(pkt+sizeof(int32)+sizeof(udp_header)+sizeof(int32));
+    Mutex_Lock(&data_mutex); {
+      client = spines_get_client(sk);
+      if(client != -1) {
+        ((struct sockaddr_in*)name)->sin_port = htons((short)all_clients[client].virtual_local_port);
+        ((struct sockaddr_in*)name)->sin_addr.s_addr = htonl(all_clients[client].srv_addr);
+        *nlen = sizeof(struct sockaddr_in);
+      }
+      
+    } Mutex_Unlock(&data_mutex);   
 
-    *total_len = (int32)(2*sizeof(udp_header) + sizeof(int32));
-
-    u_hdr->source = 0;
-    u_hdr->dest   = 0;
-    u_hdr->len    = 0;
-
-    *type = TRACEROUTE_TYPE_MSG;
-
-    cmd->source = 0;
-    cmd->dest = dest;
-    cmd->dest_port = 0;
-    cmd->len = 0;
-
-    ret = send(ctrl_sk, pkt, *total_len+sizeof(int32), 0);
-
-    if (ret != 2+sizeof(udp_header)+2*sizeof(int32)) {
-        Alarm(PRINT, "spines_lib: Problem Sending Trace Route Request\n");
-        return(-1);
+    if(client == -1) {
+      Alarm(PRINT, "spines_getsockname(): unknown socket\n");
+      return(-1);
     }
 
-    ret = spines_recvfrom(ctrl_sk, pkt, sizeof(pkt), 1, NULL, NULL);
+  } else {
+    Alarm(PRINT, "spines_getsockname(): name is null \n");
+    return (-1);
+  }
 
-    if (ret < sizeof(spines_trace)) {
-        Alarm(PRINT, "spines_lib: Internet Hosts Struct Received [%d bytes] too short.\n", ret);
-        return(-1);
-    }
-
-    memcpy(sp_trace, pkt, sizeof(spines_trace));
-
-    close(ctrl_sk);
-    return(1);
+  return (0);
+  
 }
+
 

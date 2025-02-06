@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 - 2007 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2008 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -191,7 +191,13 @@ void Create_Node(int32 address, int16 mode) {
     node_p->counter = 0;
     node_p->flags = mode;
     node_p->device_name = NULL;
+    node_p->cost = 0;
+    node_p->last_time_neighbor = E_get_time();
 
+    /* wireless stuff */
+    node_p->w_data.rssi = 0;
+    node_p->w_data.retry = 0;
+          
     node_p->prev = NULL;
     node_p->next = NULL;
 
@@ -298,6 +304,10 @@ void Disconnect_Node(int32 address)
     if(edge != NULL) {
         Add_to_changed_states(&Edge_Prot_Def, My_Address, (State_Data*)edge, NEW_CHANGE);
 	Set_Routes(0, NULL);
+    }
+
+    if(nd->flags & CONNECTED_NODE) {
+        nd->last_time_neighbor = E_get_time();
     }
 
     if(nd->flags & NEIGHBOR_NODE)

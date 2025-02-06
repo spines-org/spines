@@ -1,8 +1,7 @@
-/* Copyright (c) 2000-2005, The Johns Hopkins University
+/* Copyright (c) 2000-2006, The Johns Hopkins University
  * All rights reserved.
  *
- * The contents of this file are subject to a license (the ``License'')
- * that is the exact equivalent of the BSD license as of July 23, 1999. 
+ * The contents of this file are subject to a license (the ``License'').
  * You may not use this file except in compliance with the License. The
  * specific language governing the rights and limitations of the License
  * can be found in the file ``STDUTIL_LICENSE'' found in this 
@@ -28,129 +27,64 @@
 #include <stdutil/stddefines.h>
 #include <stdutil/stderror.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /************************************************************************************************
- * stderr_doit: Print a message to stderr and flush it.  If errnoflag
- * is non-zero, also print error msg from errno.  Return # of
- * characters written.
+ * stdutil_output: Output stream used for all library error msgs.
+ ***********************************************************************************************/
+
+FILE * stdutil_output = (FILE*) 0x1;  /* magic number because stderr is not a constant */
+
+/************************************************************************************************
+ * stderr_output: Print a message to stdutil_output and flush it.  If
+ * errno_copy is non-zero, also print error msg from strerror.  Return
+ * # of characters written to output stream.
  *
  * NOTE: I'd prefer to use snprintf and vsnprintf but they aren't part of C89.
  ***********************************************************************************************/
 
-STDINLINE static int stderr_doit(int errno_copy, const char *fmt, va_list ap) 
+STDINLINE int stderr_output(stderr_action act, int errno_copy, const char *fmt, ...) 
 {
-  char buf[STDERR_MAX_ERR_MSG_LEN + 1];
-  int  ret1;
-  int  ret2 = 0;
+  char    buf[STDERR_MAX_ERR_MSG_LEN + 1];
+  int     ret1 = 0;
+  int     ret2 = 0;
+  va_list ap;
 
-  ret1      = vsprintf(buf, fmt, ap);  /* write the msg */
-  ret1      = STDMAX(ret1, 0);         /* zero out any error */
-  buf[ret1] = 0;                       /* ensure termination */
+  if (stdutil_output != NULL) {
+    va_start(ap, fmt);
 
-  if (errno_copy != 0) {
-    ret2             = sprintf(buf + ret1, ": %s", strerror(errno_copy));   /* write errno msg */
-    ret2             = STDMAX(ret2, 0);                                     /* zero out any error */
-    buf[ret1 + ret2] = 0;                                                   /* ensure termination */
+    ret1      = vsprintf(buf, fmt, ap);  /* write the msg */
+    ret1      = STDMAX(ret1, 0);         /* zero out any error */
+    buf[ret1] = 0;                       /* ensure termination */
+
+    if (errno_copy != 0) {
+      ret2             = sprintf(buf + ret1, ": %s", strerror(errno_copy));   /* errno msg */
+      ret2             = STDMAX(ret2, 0);                                     /* zero out */
+      buf[ret1 + ret2] = 0;                                                   /* termination */
+    }
+
+    if (stdutil_output == (FILE*) 0x1) {
+      stdutil_output = stderr;
+    }
+
+    fprintf(stdutil_output, "%s\r\n", buf);
+    fflush(stdutil_output);
+
+    ret1 += 2;                                                                /* +2 for \r\n */
+    va_end(ap);
   }
 
-  fprintf(stderr, "%s\r\n", buf);
-  fflush(stderr);
+  if (act == STDERR_EXIT) {
+    exit(-1);
+  }
+
+  if (act == STDERR_ABORT) {
+    abort();
+  }
 
   return ret1 + ret2;
-}
-
-/************************************************************************************************
- * stderr_msg: Nonfatal error unrelated to a system call. Print a
- * message and return.
- ***********************************************************************************************/
-
-int stderr_msg(const char *fmt, ...) 
-{
-  int     ret;
-  va_list ap;
-
-  va_start(ap, fmt);
-  ret = stderr_doit(0, fmt, ap);
-  va_end(ap);
-
-  return ret;
-}
-
-/************************************************************************************************
- * stderr_ret: Nonfatal error related to a system call. Print a
- * message and return.
- ***********************************************************************************************/
-
-int stderr_ret(const char *fmt, ...) 
-{
-  int     ret;
-  va_list ap;
-
-  va_start(ap, fmt);
-  ret = stderr_doit(errno, fmt, ap);
-  va_end(ap);
-
-  return ret;
-}
-
-/************************************************************************************************
- * stderr_quit: Fatal error unrelated to a system call. Print a
- * message and terminate.
- ***********************************************************************************************/
-
-void stderr_quit(const char *fmt, ...) 
-{
-  va_list ap;
-
-  va_start(ap, fmt);
-  stderr_doit(0, fmt, ap);
-  va_end(ap);
-  exit(-1);
-}
-
-/************************************************************************************************
- * stderr_abort: Fatal error unrelated to a system call. Print a
- * message and abort.
- ***********************************************************************************************/
-
-void stderr_abort(const char *fmt, ...) 
-{
-  va_list ap;
-
-  va_start(ap, fmt);
-  stderr_doit(0, fmt, ap);
-  va_end(ap);
-  abort();
-}
-
-/************************************************************************************************
- * stderr_sys: Fatal error related to a system call. Print a message
- * and terminate.
- ***********************************************************************************************/
-
-void stderr_sys(const char *fmt, ...) 
-{
-  int     errno_cpy = errno;
-  va_list ap;
-
-  va_start(ap, fmt);
-  stderr_doit(errno_cpy, fmt, ap);
-  va_end(ap);
-  exit(errno_cpy != 0 ? errno_cpy : -1);
-}
-
-/************************************************************************************************
- * stderr_dump: Fatal error related to a system call. Print a message
- * and abort.
- ***********************************************************************************************/
-
-void stderr_dump(const char *fmt, ...) 
-{
-  va_list ap;
-
-  va_start(ap, fmt);
-  stderr_doit(errno, fmt, ap);
-  va_end(ap);
-  abort();
 }
 
 /************************************************************************************************
@@ -209,3 +143,7 @@ STDINLINE const char *stderr_strerr(stdcode code)
 
   return ret;
 }
+
+#ifdef __cplusplus
+}
+#endif

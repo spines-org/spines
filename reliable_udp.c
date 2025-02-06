@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 - 2007 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2008 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -106,6 +106,7 @@ void Process_rel_udp_data_packet(int32 sender_id, char *buff,
     int flag, ret;
     stdhash *neighbors;
 
+
     /* Check if we knew about the sender of the message */
     stdhash_find(&All_Nodes, &it, &sender_id);
     if(stdhash_is_end(&All_Nodes, &it)) { /* I had no idea about the sender node */
@@ -177,7 +178,15 @@ void Process_rel_udp_data_packet(int32 sender_id, char *buff,
 	    
 	    if(!Same_endian(type))
 		Flip_udp_hdr(hdr);
-	    
+
+            /* decrement the TTL */
+            if(hdr->ttl != 0) {
+                hdr->ttl--;
+            } else {  
+                /* the ttl value in this function should never be 0, becuase we should never be sending out packets of ttl 0 */
+                Alarm(EXIT, "Process_rel_udp_data_packet(): processing a packet with TTL of 0, not allowed.\n");
+            }
+
 	    if(hdr->len + sizeof(udp_header) == data_len) {
 		if(!Is_mcast_addr(hdr->dest) && !Is_acast_addr(hdr->dest)) {
 		    /* This is not a multicast address */
@@ -190,7 +199,7 @@ void Process_rel_udp_data_packet(int32 sender_id, char *buff,
 		    
 		    /* Nope, it's for smbd else. See where we should forward it */
 		    next_hop = Get_Route(My_Address, hdr->dest);
-		    if(next_hop != NULL) {
+		    if((next_hop != NULL) && (hdr->ttl > 0)) {
 			Forward_Rel_UDP_Data(next_hop, buff, data_len, 0);
 			return;
 		    }
@@ -221,12 +230,14 @@ void Process_rel_udp_data_packet(int32 sender_id, char *buff,
 		    ret = NO_ROUTE;
 		    
 		    if((neighbors = Get_Mcast_Neighbors(hdr->source, hdr->dest)) != NULL) {
+                      if (hdr->ttl > 0) {
 			stdhash_begin(neighbors, &ngb_it);
 			while(!stdhash_is_end(neighbors, &ngb_it)) {
 			    next_hop = *((Node **)stdhash_it_val(&ngb_it));
 			    ret = Forward_Rel_UDP_Data(next_hop, buff, data_len, 0);
 			    stdhash_it_next(&ngb_it);
 			}
+                      }
 		    }
 		    return;
 		}
@@ -289,7 +300,6 @@ int Forward_Rel_UDP_Data(Node *next_hop, char *buff, int16u buf_len, int32u type
 	return(BUFF_DROP);
     }
     buff_size = stdcarr_size(&(r_data->msg_buff));
-    
 
     /*    send_type = type & (ECN_DATA_MASK | ECN_ACK_MASK);
 	  send_type = send_type | REL_UDP_DATA_TYPE; */

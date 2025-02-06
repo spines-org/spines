@@ -52,6 +52,7 @@ static char Loopback;
 static int  spinesPort;
 static int  sendPort;
 static int  recvPort;
+static int  Sender;
 static int  Protocol;
 static int  Group_Address;
 static int  Dest_Address;
@@ -61,18 +62,26 @@ static void Usage(int argc, char *argv[]);
 #define MAX_PKT_SIZE  100000
 #define MAX_MESS_LEN     8192
 
+#define IP1( address )  ( ( 0xFF000000 & (address) ) >> 24 )
+#define IP2( address )  ( ( 0x00FF0000 & (address) ) >> 16 )
+#define IP3( address )  ( ( 0x0000FF00 & (address) ) >> 8 )
+#define IP4( address )  ( ( 0x000000FF & (address) ) )
+#define IP( address ) IP1(address),IP2(address),IP3(address),IP4(address)
+#define IPF "%ld.%ld.%ld.%ld"
+
 int main(int argc, char* argv[])
 {
-    struct sockaddr_in host;
+    struct sockaddr_in host, group_addr;
     struct hostent     h_ent, *host_ptr;
 
     char           machine_name[256];
-    int            ss, sr, bytes, num, ret;
+    int            ss, sr, bytes, num, ret, i;
     fd_set         mask;
     fd_set         dummy_mask,temp_mask;
     char           mess_buf[MAX_MESS_LEN];
     char           input_buf[80];
     struct ip_mreq mreq;
+    spines_trace   spt;
 
     Usage(argc, argv);
 
@@ -129,6 +138,7 @@ int main(int argc, char* argv[])
     }
     mreq.imr_multiaddr.s_addr = htonl(Group_Address);
     mreq.imr_interface.s_addr = htonl(INADDR_ANY);
+    group_addr.sin_addr.s_addr = htonl(Group_Address);
             
     if(spines_setsockopt(sr, IPPROTO_IP, SPINES_ADD_MEMBERSHIP, (void *)&mreq, sizeof(mreq)) < 0) {
         printf("Mcast: problem in setsockopt to join multicast address");
@@ -162,10 +172,13 @@ int main(int argc, char* argv[])
     FD_ZERO( &mask );
     FD_ZERO( &dummy_mask );
     FD_SET( sr, &mask );
-    FD_SET( (long)0, &mask );   /* stdin */
+    if (Sender == 1) {
+        FD_SET( (long)0, &mask );   /* stdin */
+    }
     for(;;)
     {
         temp_mask = mask;
+        bytes = 0;
         num = select( FD_SETSIZE, &temp_mask, &dummy_mask, &dummy_mask, NULL);
         if (num > 0) {
             if ( FD_ISSET( sr, &temp_mask) ) {
@@ -175,10 +188,26 @@ int main(int argc, char* argv[])
             } else if( FD_ISSET(0, &temp_mask) ) {
                 bytes = read( 0, input_buf, sizeof(input_buf) );
                 input_buf[bytes] = 0;
-                printf( "Sending: %s\n", input_buf );
-                ret = spines_sendto(ss, input_buf, strlen(input_buf), 0, (struct sockaddr *)&host, sizeof(struct sockaddr));
+                if (!strncmp(input_buf, "1", 1) || !strncmp(input_buf, "2", 1)) {
+                    /* spt sends and receives a value */
+                    memset((void*)&spt, '\0', sizeof(spt));
+                    ((struct sockaddr_in *)(&spt))->sin_addr.s_addr = htonl(Group_Address);
+                    if (!strncmp(input_buf, "1", 1)) {
+                        ret = spines_ioctl(sr, 0, SPINES_MEMBERSHIP, (void *)&spt, sizeof(spt));
+                    } else if (!strncmp(input_buf, "2", 1)) {
+                        ret = spines_ioctl(sr, 0, SPINES_EDISTANCE, (void *)&spt, sizeof(spt));
+                    }
+                    ret = ret + 1;
+                    printf("\n\nTOTAL: %d\n", spt.count);
+                    for (i=0; i<spt.count; i++) {
+                        printf("   ---"IPF" :%d :%d\n", IP(spt.address[i]), spt.distance[i], spt.cost[i]);
+                    }
+                } else {
+                    printf( "Sending: %s\n", input_buf );
+                    ret = spines_sendto(ss, input_buf, strlen(input_buf), 0, (struct sockaddr *)&host, sizeof(struct sockaddr));
+                }
             }
-            if(ret <= 0) {
+            if(ret <= 0 || bytes <=0) {
                 printf("Disconnected by spines...\n");
                 exit(0);
             }
@@ -198,6 +227,7 @@ static void Usage(int argc, char *argv[])
     recvPort = 8400;
     Protocol = 0;
     Loopback = 1;
+    Sender = 0;
     strcpy(DEST_IP, "");
     strcpy(SP_IP, "");
     strcpy(MCAST_IP, "");
@@ -219,6 +249,7 @@ static void Usage(int argc, char *argv[])
             sscanf(argv[1], "%s", DEST_IP );
             sscanf(DEST_IP ,"%d.%d.%d.%d",&i1, &i2, &i3, &i4);
             Dest_Address = ( (i1 << 24 ) | (i2 << 16) | (i3 << 8) | i4 ); 
+            Sender = 1;
             argc--; argv++;
         }else if( !strncmp( *argv, "-j", 2 ) ){
             sscanf(argv[1], "%s", MCAST_IP );
@@ -241,10 +272,10 @@ static void Usage(int argc, char *argv[])
                     "\t[-p <port number>] : port where spines runs, default is 8100",
                     "\t[-d <port number>] : to send packets on, default is 8400",
                     "\t[-r <port number>] : to receive packets on, default is 8400",
-                    "\t[-a <address>    ] : address to send packets to",
+                    "\t[-a <address>    ] : address to send text messages to, from stdin",
                     "\t[-j <xcast addr> ] : multicast or anycast address to join",
                     "\t[-l <0, 1>       ] : turn on or off loopback for this router",
-                    "\t[-P <0, 1 or 2>  ] : overlay links (0 : UDP; 1; Rliable; 2: Realtime)");
+                    "\t[-P <0, 1 or 2>  ] : overlay links (0 : UDP; 1; Reliable; 2: Realtime)");
             exit( 0 );
         }
     }

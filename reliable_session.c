@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 - 2007 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2008 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -346,9 +346,10 @@ void Ses_Send_Rel_Hello(int sesid, void* dummy)
 
     ses = *((Session **)stdhash_it_val(&it));
 
-    if(ses->r_data == NULL) 
-	Alarm(EXIT, "Ses_Send_Rel_Hello: Not a reliable sesion\n");
-    
+    if(ses->r_data == NULL) {
+      Alarm(DEBUG, "Ses_Send_Rel_Hello: Not a reliable sesion\n");
+      return;  /* TODO: should never happen, but I was noticing this.  Come back and see what is going on */
+    }
 
     if(ses->rel_hello_cnt > 5) {
 	if(ses->r_data->flags != CONNECTED_LINK) {
@@ -379,6 +380,7 @@ void Ses_Send_Rel_Hello(int sesid, void* dummy)
     u_hdr->dest = ses->rel_otherside_addr;
     u_hdr->dest_port = ses->rel_otherside_port;
     u_hdr->len = sizeof(rel_udp_pkt_add) + sizeof(ses_hello_packet);
+    u_hdr->ttl = SPINES_TTL_MAX;
 
     r_add = (rel_udp_pkt_add*)(send_buff + sizeof(udp_header));
     r_add->type = Set_endian(HELLO_TYPE);
@@ -705,6 +707,7 @@ int Process_Reliable_Session_Packet(Session *ses)
     u_hdr->source_port = ses->port;
     u_hdr->dest = ses->rel_otherside_addr;
     u_hdr->dest_port = ses->rel_otherside_port;
+    u_hdr->ttl = SPINES_TTL_MAX;
 
 
     /* Setting the reliability tail of the packet */
@@ -717,12 +720,7 @@ int Process_Reliable_Session_Packet(Session *ses)
     r_add->type = Set_endian(REL_UDP_DATA_TYPE);
     u_hdr->len += r_add->ack_len;
 
-    if(u_hdr->dest == My_Address) {
- 	ret = Deliver_Rel_UDP_Data(ses->data, ses->read_len + r_add->ack_len, 0);
-    }
-    else {
-	ret = Reliable_Ses_Send(ses); 
-    }
+    ret = Reliable_Ses_Send(ses); 
     
     return(ret);
 }
@@ -1436,7 +1434,7 @@ int Process_Sess_Ack(Session *ses, char* buf, int16u ack_len,
 	r_tail->seq_no          = Flip_int32(r_tail->seq_no);
 	r_tail->cummulative_ack = Flip_int32(r_tail->cummulative_ack);
 	
-	for(i=sizeof(reliable_tail); i<ack_len; i+=sizeof(int32)) {
+        for(i=sizeof(reliable_ses_tail); i<ack_len; i+=sizeof(int32)) {
 	    nack = (int32*)(buf+i);
 	    *nack = Flip_int32(*nack);
 	}
@@ -1642,7 +1640,7 @@ int Reliable_Ses_Send(Session* ses)
     Node* next_hop;
     char *send_buff;
     int16u data_len, ack_len;
-    int ret;
+    int ret = 0;
     sp_time now, timeout_val, tmp_time, sum_time;
     char *p_nack;
     int32u i;
@@ -1664,10 +1662,9 @@ int Reliable_Ses_Send(Session* ses)
 
 
     next_hop = Get_Route(My_Address, u_hdr->dest);
-    if(next_hop == NULL) {
-	return(NO_ROUTE);
+    if((next_hop == NULL) && (u_hdr->dest != My_Address)){
+        return(NO_ROUTE);
     }
-
 
     /* If there is no more room in the window, or the connection is not valid yet, 
      * stick the message in the sending buffer */
@@ -1766,19 +1763,22 @@ int Reliable_Ses_Send(Session* ses)
     r_add->type = Set_endian(REL_UDP_DATA_TYPE);
 
     /* Send the Packet */
+    if(u_hdr->dest == My_Address) {
+      Deliver_UDP_Data(send_buff, u_hdr->len+sizeof(udp_header), 0);
 
-    if(ses->links_used == SOFT_REALTIME_LINKS) {
-	ret = Forward_RT_UDP_Data(next_hop, send_buff,
-			    u_hdr->len+sizeof(udp_header));
+    } else {
 
-    }
-    else if(ses->links_used == RELIABLE_LINKS) {
+      if(ses->links_used == SOFT_REALTIME_LINKS) {
+        ret = Forward_RT_UDP_Data(next_hop, send_buff,
+			          u_hdr->len+sizeof(udp_header));
+
+      } else if(ses->links_used == RELIABLE_LINKS) {
 	ret = Forward_Rel_UDP_Data(next_hop, send_buff, 
 				   u_hdr->len+sizeof(udp_header), 0);
-    }
-    else {
+      } else {
 	ret = Forward_UDP_Data(next_hop, send_buff, 
 			       u_hdr->len+sizeof(udp_header));
+      }
     }
     
   
@@ -1855,7 +1855,7 @@ void Ses_Send_Much(Session *ses)
 
 
     next_hop = Get_Route(My_Address, ses->rel_otherside_addr);
-    if(next_hop == NULL) {
+    if((next_hop == NULL) && (My_Address != ses->rel_otherside_addr)){
 	/* I don't have a route to the destination. 
 	   It might be temporary */
 	return;
@@ -2005,19 +2005,23 @@ void Ses_Send_Much(Session *ses)
 	}
 
 	/* Send the Packet */
-	
-	if(ses->links_used == SOFT_REALTIME_LINKS) {
+	if(My_Address == ses->rel_otherside_addr) {
+          ret = Deliver_UDP_Data(send_buff, u_hdr->len+sizeof(udp_header), 0);
+
+        } else {
+	  if(ses->links_used == SOFT_REALTIME_LINKS) {
 	    ret = Forward_RT_UDP_Data(next_hop, send_buff,
 				      u_hdr->len+sizeof(udp_header));
-	}
-	else if(ses->links_used == RELIABLE_LINKS) {
+
+	  } else if(ses->links_used == RELIABLE_LINKS) {
 	    ret = Forward_Rel_UDP_Data(next_hop, send_buff, 
-				 u_hdr->len+sizeof(udp_header), 0);
-	}
-	else {
+				       u_hdr->len+sizeof(udp_header), 0);
+
+	  } else {
 	    ret = Forward_UDP_Data(next_hop, send_buff, 
 				   u_hdr->len+sizeof(udp_header));
-	}
+	  }
+        }
     
     }
 
@@ -2168,7 +2172,7 @@ void Ses_Send_Ack(int sesid, void* dummy)
 
 
     next_hop = Get_Route(My_Address, ses->rel_otherside_addr);
-    if(next_hop == NULL) {
+    if((next_hop == NULL) && (My_Address != ses->rel_otherside_addr)){
 	/* I don't have a route to the destination. 
 	   It might be temporary */
 	return;
@@ -2191,6 +2195,7 @@ void Ses_Send_Ack(int sesid, void* dummy)
     u_hdr->dest = ses->rel_otherside_addr;
     u_hdr->dest_port = ses->rel_otherside_port;
     u_hdr->len = sizeof(rel_udp_pkt_add);
+    u_hdr->ttl = SPINES_TTL_MAX;
 
     r_add = (rel_udp_pkt_add*)(send_buff + sizeof(udp_header));
     r_add->type = Set_endian(LINK_ACK_TYPE);
@@ -2258,18 +2263,22 @@ void Ses_Send_Ack(int sesid, void* dummy)
     ack_congestion_flag = r_data->congestion_flag << 2;
 
     /* Send the Packet */
+    if(My_Address == u_hdr->dest) {
+      Deliver_UDP_Data(send_buff, u_hdr->len+sizeof(udp_header), 0);
 
-    if(ses->links_used == SOFT_REALTIME_LINKS) {
+    } else {
+      if(ses->links_used == SOFT_REALTIME_LINKS) {
 	Forward_RT_UDP_Data(next_hop, send_buff,
-				  u_hdr->len+sizeof(udp_header));
-    }
-    else if(ses->links_used == RELIABLE_LINKS) {
+	  		    u_hdr->len+sizeof(udp_header));
+
+      } else if(ses->links_used == RELIABLE_LINKS) {
 	Forward_Rel_UDP_Data(next_hop, send_buff, 
-				   u_hdr->len+sizeof(udp_header), ack_congestion_flag);
-    }
-    else {
+		             u_hdr->len+sizeof(udp_header), ack_congestion_flag);
+
+      } else {
 	Forward_UDP_Data(next_hop, send_buff, 
-			       u_hdr->len+sizeof(udp_header));
+			 u_hdr->len+sizeof(udp_header));
+      }
     }
 
     dec_ref_cnt(send_buff);

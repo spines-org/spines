@@ -1,8 +1,7 @@
-/* Copyright (c) 2000-2005, The Johns Hopkins University
+/* Copyright (c) 2000-2006, The Johns Hopkins University
  * All rights reserved.
  *
- * The contents of this file are subject to a license (the ``License'')
- * that is the exact equivalent of the BSD license as of July 23, 1999. 
+ * The contents of this file are subject to a license (the ``License'').
  * You may not use this file except in compliance with the License. The
  * specific language governing the rights and limitations of the License
  * can be found in the file ``STDUTIL_LICENSE'' found in this 
@@ -26,6 +25,10 @@
 
 #include <stdutil/stderror.h>
 #include <stdutil/stdfd.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #if defined(_WIN32)
 #  include <io.h>
@@ -195,7 +198,7 @@ STDINLINE stdcode stdfd_sync(stdfd *fd)
 
   STDSAFETY_CHECK(fd->stream != NULL && fd->fd >= 0);
 
-  if (stdfd_flush(fd) != 0 || STDFSYNC(fd->fd) != 0) {
+  if (fflush(fd->stream) != 0 || STDFSYNC(fd->fd) != 0) {
     ret = errno;
     STDSAFETY_CHECK(ret != STDESUCCESS);
   }
@@ -278,26 +281,34 @@ STDINLINE void stdfd_clr_err(stdfd *fd)
  ***********************************************************************************************/
 
 STDINLINE stdcode stdfd_trylock(stdfd *fd)
+#if defined(_WIN32)
 {
   stdcode ret = STDESUCCESS;
 
   STDSAFETY_CHECK(fd->stream != NULL && fd->fd >= 0);
 
-#if defined(_WIN32)
   if (_locking(fd->fd, _LK_NBLCK, 1) != 0) {
-#else
-  struct flock lock = { 0 };
-
-  lock.l_type = F_WRLCK;
-
-  if (fcntl(fd->fd, F_SETLK, &lock) != 0) {
-#endif
     ret = errno;
     STDSAFETY_CHECK(ret != STDESUCCESS);
   }
 
   return ret;
 }
+#else
+{
+  struct flock lock = { 0 };
+  stdcode ret       = STDESUCCESS;
+
+  lock.l_type = F_WRLCK;
+
+  if (fcntl(fd->fd, F_SETLK, &lock) != 0) {
+    ret = errno;
+    STDSAFETY_CHECK(ret != STDESUCCESS);    
+  }
+
+  return ret;
+}
+#endif
 
 /************************************************************************************************
  * stdfd_unlock: Release an advisory lock on a file descriptor's
@@ -305,26 +316,34 @@ STDINLINE stdcode stdfd_trylock(stdfd *fd)
  ***********************************************************************************************/
 
 STDINLINE stdcode stdfd_unlock(stdfd *fd)
+#if defined(_WIN32)
 {
   stdcode ret = STDESUCCESS;
 
   STDSAFETY_CHECK(fd->stream != NULL && fd->fd >= 0);
 
-#if defined(_WIN32)
   if (_locking(fd->fd, _LK_UNLCK, 1) != 0) {
-#else
-  struct flock lock = { 0 };
-
-  lock.l_type = F_UNLCK;
-
-  if (fcntl(fd->fd, F_SETLK, &lock) != 0) {
-#endif
     ret = errno;
     STDSAFETY_CHECK(ret != STDESUCCESS);
   }  
 
   return ret;
 }
+#else
+{
+  struct flock lock = { 0 };
+  stdcode ret       = STDESUCCESS;
+
+  lock.l_type = F_UNLCK;
+  
+  if (fcntl(fd->fd, F_SETLK, &lock) != 0) {
+    ret = errno;
+    STDSAFETY_CHECK(ret != STDESUCCESS);
+  }
+
+  return ret;
+ }
+#endif
 
 /************************************************************************************************
  * stdfile_unlink: Erase a file.
@@ -341,3 +360,7 @@ STDINLINE stdcode stdfile_unlink(const char *path)
 
   return ret;
 }
+
+#ifdef __cplusplus
+}
+#endif

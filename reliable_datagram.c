@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 - 2007 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2008 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -180,6 +180,8 @@ int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_typ
 	if (r_data->flags & CONNECTED_LINK) {
 	    /* Resend the tail if there is no room in the window and there are packets buffered. 
 	     * It is likely that there will be a timeout */	
+            Alarm(DEBUG, " \t: would have resent tail: waiting for timeouts\n"); 
+            /*
 	    if(((stdcarr_size(&r_data->msg_buff) >= (unsigned int)r_data->window_size) && 
 		(r_data->tail - r_data->last_tail_resent >= (unsigned int)(r_data->window_size/2)))||
 	       ((stdcarr_size(&r_data->msg_buff) >= (unsigned int)(2*r_data->window_size))&&
@@ -198,6 +200,7 @@ int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_typ
 		}
 		E_queue(Send_Nack_Retransm, (int)linkid, NULL, zero_timeout);
 	    }
+            */
 	}
 	
 	return(0);
@@ -310,8 +313,6 @@ int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_typ
 			      scat);
         }
 #endif
-
-
 	
         Alarm(DEBUG, "Sent: data: %d; ack: %d; hdr: %d; total: %d\n",
               buff_len, ack_len, sizeof(packet_header), ret);
@@ -335,14 +336,17 @@ int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_typ
     if(timeout_val.sec == 0 && timeout_val.usec < 2000) {
 	timeout_val.usec = 2000;
     }
+    if(Wireless && timeout_val.sec == 0 && timeout_val.usec < 30000) {
+	timeout_val.usec = 20000+5000*(rand()%10);
+    }
 
     timeout_val.sec  *= r_data->timeout_multiply;
     timeout_val.usec *= r_data->timeout_multiply;
     timeout_val.sec += timeout_val.usec/1000000;
     timeout_val.usec = timeout_val.usec%1000000;
 
-    if(timeout_val.sec > DEAD_LINK_CNT)
-	timeout_val.sec = DEAD_LINK_CNT;
+    if(timeout_val.sec > (DEAD_LINK_CNT-1))
+	timeout_val.sec = (DEAD_LINK_CNT-1);
 
     E_queue(Reliable_timeout, (int)linkid, NULL, timeout_val);
     r_data->scheduled_timeout = 1;
@@ -593,8 +597,8 @@ void Send_Much(int16 linkid)
     if(timeout_val.sec == 0 && timeout_val.usec < 2000) {
 	timeout_val.usec = 2000;
     }
-    if(Wireless && timeout_val.sec == 0 && timeout_val.usec < 10000) {
-	timeout_val.usec = 10000;
+    if(Wireless && timeout_val.sec == 0 && timeout_val.usec < 30000) {
+	timeout_val.usec = 20000+5000*(rand()%10);
     }
 
     timeout_val.sec  *= r_data->timeout_multiply;
@@ -602,8 +606,8 @@ void Send_Much(int16 linkid)
     timeout_val.sec += timeout_val.usec/1000000;
     timeout_val.usec = timeout_val.usec%1000000;
 
-    if(timeout_val.sec > DEAD_LINK_CNT)
-	timeout_val.sec = DEAD_LINK_CNT;
+    if(timeout_val.sec > (DEAD_LINK_CNT-1))
+	timeout_val.sec = (DEAD_LINK_CNT-1);
 
 
     /*    Alarm(DEBUG, "---timeout sec: %d; usec: %d\n",
@@ -669,6 +673,7 @@ void Send_Ack(int linkid, void* dummy)
     /*r_tail->seq_no = r_data->seq_no;*/
     r_tail->seq_no = 0;
     r_tail->cummulative_ack = r_data->recv_tail;
+
 
     ack_len = sizeof(reliable_tail); 
     /* Add NACKs to the reliable tail */
@@ -783,6 +788,7 @@ void Reliable_timeout(int linkid, void *dummy)
     int ret;
     int32u i, cur_seq;
     sp_time timeout_val, sum_time, tmp_time, now;
+
 
     now = E_get_time();
 
@@ -988,8 +994,8 @@ void Reliable_timeout(int linkid, void *dummy)
     if(timeout_val.sec == 0 && timeout_val.usec < 2000) {
 	timeout_val.usec = 2000;
     }
-    if(Wireless && timeout_val.sec == 0 && timeout_val.usec < 10000) {
-	timeout_val.usec = 10000;
+    if(Wireless && timeout_val.sec == 0 && timeout_val.usec < 30000) {
+	timeout_val.usec = 20000+5000*(rand()%10);
     }
 
     /* Increase the timeout exponentially */
@@ -999,14 +1005,15 @@ void Reliable_timeout(int linkid, void *dummy)
 	r_data->timeout_multiply = 100;
 
     Alarm(DEBUG, "\n\n! ! timeout_multiply: %d\n\n", r_data->timeout_multiply);
+    Alarm(PRINT, "\n\n! ! timeout_multiply: %d\n\n", r_data->timeout_multiply);
 
     timeout_val.sec  *= r_data->timeout_multiply;
     timeout_val.usec *= r_data->timeout_multiply;
     timeout_val.sec += timeout_val.usec/1000000;
     timeout_val.usec = timeout_val.usec%1000000;
 
-    if(timeout_val.sec > DEAD_LINK_CNT)
-	timeout_val.sec = DEAD_LINK_CNT;
+    if(timeout_val.sec > (DEAD_LINK_CNT-1))
+	timeout_val.sec = (DEAD_LINK_CNT-1);
 
     Alarm(DEBUG, "---timeout sec: %d; usec: %d\n",
 	  timeout_val.sec, timeout_val.usec);
@@ -1167,6 +1174,7 @@ void Send_Nack_Retransm(int linkid, void *dummy)
 	pack_type = r_data->window[nack_seq%MAX_WINDOW].pack_type;
 	send_buff = r_data->window[nack_seq%MAX_WINDOW].buff;
 	seq_no    = r_data->window[nack_seq%MAX_WINDOW].seq_no;
+
 
 	r_data->window[nack_seq%MAX_WINDOW].resent = 1;
 
@@ -1448,8 +1456,16 @@ int Process_Ack(int16 linkid, char *buff, int16u ack_len, int32u type)
 	}
     }
 
-    /* Reset the timeout exponential back-off */
-    r_data->timeout_multiply = 1;
+    /* Reset the timeout slowly */
+    //r_data->timeout_multiply = 1;
+
+    /* NILO : NEW CODE */
+    r_data->timeout_multiply *= (float)(7.0/8.0);
+    if (r_data->timeout_multiply < 1) {
+        r_data->timeout_multiply = 1;
+    }
+    /* NILO : END NEW CODE */
+
 
     /* Cancel the previous timeout */
     if(r_data->scheduled_timeout == 1) {
@@ -1472,16 +1488,25 @@ int Process_Ack(int16 linkid, char *buff, int16u ack_len, int32u type)
 	else if(timeout_val.sec == 0 && timeout_val.usec == 0) {
 	    timeout_val.sec = 1;
 	}
-    if(Wireless && timeout_val.sec == 0 && timeout_val.usec < 10000) {
-	timeout_val.usec = 10000;
-    }
+        if(Wireless && timeout_val.sec == 0 && timeout_val.usec < 30000) {
+	    timeout_val.usec = 20000+5000*(rand()%10);
+        }
 
 	/* Alarm(DEBUG, "---timeout sec: %d; usec: %d\n",
 	 *     timeout_val.sec, timeout_val.usec);
 	 */
 
+        /* NILO : NEW CODE */
+        timeout_val.sec  *= r_data->timeout_multiply;
+        timeout_val.usec *= r_data->timeout_multiply;
+        timeout_val.sec += timeout_val.usec/1000000;
+        timeout_val.usec = timeout_val.usec%1000000;
+
+        if(timeout_val.sec > (DEAD_LINK_CNT-1))
+            timeout_val.sec = (DEAD_LINK_CNT-1);
+        /* NILO : END NEW CODE */
+
 	E_queue(Reliable_timeout, (int)linkid, NULL, timeout_val);
-	
 	r_data->scheduled_timeout = 1;
     }
 

@@ -1,8 +1,7 @@
-/* Copyright (c) 2000-2005, The Johns Hopkins University
+/* Copyright (c) 2000-2006, The Johns Hopkins University
  * All rights reserved.
  *
- * The contents of this file are subject to a license (the ``License'')
- * that is the exact equivalent of the BSD license as of July 23, 1999. 
+ * The contents of this file are subject to a license (the ``License'').
  * You may not use this file except in compliance with the License. The
  * specific language governing the rights and limitations of the License
  * can be found in the file ``STDUTIL_LICENSE'' found in this 
@@ -79,8 +78,8 @@ STDINLINE stdcode      stdskl_insert_rep(stdskl *l, stdit *it, const void *key, 
 
 STDINLINE void         stdskl_erase(stdskl *l, stdit *it);
 STDINLINE void         stdskl_erase_n(stdskl *l, stdit *it, stdsize num_erase);
-STDINLINE void         stdskl_erase_seq(stdskl *l, stdit *b, stdit *e);
-STDINLINE void         stdskl_erase_key(stdskl *l, const void *key);
+STDINLINE stdsize      stdskl_erase_seq(stdskl *l, stdit *b, stdit *e);
+STDINLINE stdsize      stdskl_erase_key(stdskl *l, const void *key);
 
 /* Randomization */
 

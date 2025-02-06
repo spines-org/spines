@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 - 2007 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2008 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -112,6 +112,7 @@ static const sp_time zero_timeout  = {     0,    0};
 static int last_sess_port;
 static sys_scatter Ses_UDP_Pack;
 static char *frag_buf[55];
+static channel ctrl_sk_requests[MAX_CTRL_SK_REQUESTS];
 
 
 #define FRAG_TTL         30
@@ -209,6 +210,7 @@ void Init_Session(void)
       Alarm(EXIT, "Int_Session(): socket failed\n");
     }
 
+    memset(&name, 0, sizeof(name));
     name.sin_family = AF_INET;
     name.sin_addr.s_addr = htonl(My_Address);
     name.sin_port = htons((int16)(Port+SESS_PORT));
@@ -258,6 +260,7 @@ void Init_Session(void)
       Alarm(EXIT, "Int_Session(): socket failed\n");
     }
 
+    memset(&name, 0, sizeof(name));
     name.sin_family = AF_INET;
     name.sin_addr.s_addr = htonl(My_Address);
     name.sin_port = htons((int16)(Port+SESS_CTRL_PORT));
@@ -274,10 +277,10 @@ void Init_Session(void)
 
     ret = bind(sk_local, (struct sockaddr *) &name, sizeof(name));
     if (ret == -1) {
-	Alarm(EXIT, "Init_Session: bind error for port %d\n",Port);
+	Alarm(EXIT, "Init_Session: bind error for port %d\n",Port+SESS_CTRL_PORT);
     }
 
-    if(listen(sk_local, 2) < 0) {
+    if(listen(sk_local, 4) < 0) {
 	Alarm(EXIT, "Session_Init(): Listen failure\n");
     }
 
@@ -299,7 +302,8 @@ void Init_Session(void)
 /* Arguments                                               */
 /*                                                         */
 /* sk_local: the listen socket                             */
-/* dummy, dummy_p: not used                                */
+/* port: port number of incomming request                  */
+/* dummy_p: not used                                       */
 /*                                                         */
 /*                                                         */
 /* Return Value                                            */
@@ -308,17 +312,16 @@ void Init_Session(void)
 /*                                                         */
 /***********************************************************/
 
-void Session_Accept(int sk_local, int dummy, void *dummy_p)
+void Session_Accept(int sk_local, int port, void *dummy_p)
 {
     struct sockaddr_in acc_sin;
-    uint acc_sin_len = sizeof(acc_sin);
-    uint val, lenval, ioctl_cmd;
+    u_int acc_sin_len = sizeof(acc_sin);
+    u_int val, lenval, ioctl_cmd;
     channel sk;
     Session *ses;
     stdit it;
     int ret, i, tot_bytes;
     int32 endianess_type;
-
 
     sk = accept(sk_local, (struct sockaddr*)&acc_sin, &acc_sin_len);
 
@@ -360,6 +363,30 @@ void Session_Accept(int sk_local, int dummy, void *dummy_p)
     ret = ioctl(sk, FIONBIO, &ioctl_cmd);
 #endif
 
+    /* If this is a Control channel setup, just store socket in a 
+       safe place, and send socket to the client so that it can
+       tell me how to link it's session to the appropiate control channel */
+    if (port == SESS_CTRL_PORT) {
+        tot_bytes = 0;
+        while(tot_bytes < sizeof(int32)) {
+            ret = send(sk, ((char*)(&sk))+tot_bytes, sizeof(int32)-tot_bytes, 0);
+	    tot_bytes += ret;
+        } 
+        if(tot_bytes != sizeof(int32)) {
+            close(sk);
+        }
+        for (i=0; i<MAX_CTRL_SK_REQUESTS; i++) {
+            if (ctrl_sk_requests[i] == 0) {
+                ctrl_sk_requests[i] = sk;
+                break;
+            }
+        }
+        if (i == MAX_CTRL_SK_REQUESTS) {
+            Alarm(EXIT, "Session_Accept(): Too many in-progress requests in parallel\n");
+        }
+        return;
+    }
+
     if((ses = (Session*) new(SESSION_OBJ))==NULL) {
 	Alarm(EXIT, "Session_Accept(): Cannot allocte session object\n");
     }
@@ -368,6 +395,7 @@ void Session_Accept(int sk_local, int dummy, void *dummy_p)
     ses->type = UDP_SES_TYPE;
     ses->endianess_type = 0;
     ses->sk = sk;
+    ses->ctrl_sk = 0;
     ses->port = 0;
     ses->read_len = sizeof(int32);
     ses->partial_len = 0;
@@ -375,7 +403,6 @@ void Session_Accept(int sk_local, int dummy, void *dummy_p)
     ses->r_data = NULL;
     ses->rel_blocked = 0;
     ses->client_stat = SES_CLIENT_ON;
-    ses->rel_mcast_flags = 0;
     ses->udp_port = -1;
     ses->recv_fd_flag = 0;
     ses->fd = -1;
@@ -469,7 +496,7 @@ void Session_Read(int sk, int dummy, void *dummy_p)
     Session *ses;
     stdit it;
     int received_bytes;
-    int ret, add_size;
+    int ret, add_size, i;
 
     stdhash_find(&Sessions_Sock, &it, &sk);
     if(stdhash_is_end(&Sessions_Sock, &it)) {
@@ -551,8 +578,22 @@ void Session_Read(int sk, int dummy, void *dummy_p)
 	    ses->received_len = 0;
 	    ses->read_len = sizeof(int32);
 	    ses->partial_len = 0;
-	    ses->state = READY_LEN;
+	    ses->state = READY_CTRL_SK;
 	}
+	else if(ses->state == READY_CTRL_SK) {
+            ses->ctrl_sk = *((int32*)(ses->data));
+            for (i=0; i<MAX_CTRL_SK_REQUESTS; i++) {
+                if (ctrl_sk_requests[i] == ses->ctrl_sk) {
+                    ctrl_sk_requests[i] = 0;
+                    break;
+                }
+            }
+            if (i == MAX_CTRL_SK_REQUESTS) {
+                Alarm(EXIT, "Session_Read(): No such control channel: %d\n", ses->ctrl_sk);
+            }
+            Alarm(PRINT, "linked Spines Socket Channel %d with Control Channel %d\n", ses->sk, ses->ctrl_sk);
+	    ses->state = READY_LEN;
+        }
 	else if(ses->state == READY_LEN) {
 	    ses->total_len = *((int32*)(ses->data));
 	    if(!Same_endian(ses->endianess_type)) {
@@ -795,6 +836,7 @@ void Session_Close(int sesid, int reason)
 	/* Close the socket (now we can, since we won't access the session by socket) */
 	Alarm(PRINT, "Session_Close: closing channel: %d\n", ses->sk);
 	DL_close_channel(ses->sk);
+	DL_close_channel(ses->ctrl_sk);
 	Alarm(PRINT, "session closed: %d\n", ses->sk);
     }
 
@@ -863,18 +905,16 @@ int Process_Session_Packet(Session *ses)
 {
     udp_header *hdr;
     udp_header *cmd;
-    int32 *cmd_int;
+    int32 *cmd_int, *pkt_len;
     Node *next_hop;
-    int ret, i;
-    int32 dummy_port, dest_addr, next_addr;
+    int ret, tot_bytes;
+    int32 dummy_port, dest_addr;
     stdit it, ngb_it;
     int32 *type;
     Group_State *g_state;
-    int32 *flags;
     Lk_Param lkp;
     stdhash *neighbors;
     spines_trace *spines_tr;
-    Route *route;
     char *buf;
 
     /* Process the packet */
@@ -882,7 +922,7 @@ int Process_Session_Packet(Session *ses)
 
     type = (int32*)(ses->data + sizeof(udp_header));
     cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
-    cmd_int = (int*)(ses->data + sizeof(udp_header)+sizeof(int32));
+    cmd_int = (int32*)(ses->data + sizeof(udp_header)+sizeof(int32));
 
     if((hdr->len == 0) && (hdr->source == 0) && (hdr->dest == 0)) {
 	/* Session command */
@@ -1125,7 +1165,7 @@ int Process_Session_Packet(Session *ses)
 	    /* spines_join() for spines_setsockopt() */
 	    if(ses->r_data != NULL) {
 		Alarm(PRINT, "\n!!! spines_join(): session already connected\n");
-		Session_Close(ses->sess_id, SES_DISCONNECT);
+                Session_Close(ses->sess_id, SES_DISCONNECT); 
 		return(NO_BUFF);
 	    }
 	    if(ses->type == LISTEN_SES_TYPE) {
@@ -1200,19 +1240,22 @@ int Process_Session_Packet(Session *ses)
 	    Process_hello_ping_packet(cmd->dest, 0);
 	    return(BUFF_EMPTY);
 	}
-	else if(*type == TRACEROUTE_TYPE_MSG) { 
-	    /* spines_traceroute() */ 
-	    Alarm(PRINT, "spines_traceroute()\n" ); 
+	else if(*type == TRACEROUTE_TYPE_MSG || 
+            *type == EDISTANCE_TYPE_MSG  || 
+            *type == MEMBERSHIP_TYPE_MSG ) { 
+
 	    cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
 	    if(!Same_endian(ses->endianess_type)) {
 		Flip_udp_hdr(cmd);
 	    }
 	    dest_addr = cmd->dest;
+
 	    buf = (char *) new_ref_cnt(PACK_BODY_OBJ); 
 	    if(buf == NULL) { 
 		Alarm(EXIT, "Session_UDP_Read: Cannot allocate buffer\n"); 
 	    } 
-            hdr = (udp_header *)buf;
+            pkt_len = (int32 *)(buf);
+            hdr = (udp_header *)(buf + sizeof(int32));
             hdr->source = My_Address;
             hdr->dest = My_Address;
             hdr->source_port = ses->port;
@@ -1222,25 +1265,30 @@ int Process_Session_Packet(Session *ses)
 
             spines_tr = (spines_trace *)( (char *)hdr + sizeof(udp_header));
             memset(spines_tr, 0, sizeof(spines_trace));
-	    next_addr = My_Address;
-	    i=0;
-	    while ( (route = Find_Route(next_addr, dest_addr)) != NULL) {
-		spines_tr->address[i] = next_addr;
-		spines_tr->distance[i] = route->distance;
-		spines_tr->cost[i] = route->cost;
-		next_addr = route->forwarder->address;
-		if (++i == MAX_HOPS || next_addr == dest_addr) {
-		    break;
-		}
-	    }
+	    if(*type == TRACEROUTE_TYPE_MSG) {
+                Trace_Route(My_Address, dest_addr, spines_tr);
+            } else if (*type == EDISTANCE_TYPE_MSG) {
+                Trace_Group(dest_addr, spines_tr);
+            } else if (*type == MEMBERSHIP_TYPE_MSG ) { 
+                Get_Group_Members(dest_addr, spines_tr);
+            }
 
-            Session_Deliver_Data(ses, buf,
-                                sizeof(udp_header)+sizeof(spines_trace), 
-                                0, 3); 
+            tot_bytes = 0;
+            *pkt_len = sizeof(udp_header)+sizeof(spines_trace);
+            while(tot_bytes < sizeof(int32)+*pkt_len) {
+                ret = send(ses->ctrl_sk,  buf, sizeof(int32)+*pkt_len-tot_bytes, 0);
+                if (ret < 0) {
+	            if((errno == EWOULDBLOCK)||(errno == EAGAIN)) {
+                        Alarm(PRINT, "Blocking\n");
+                    } else {
+                        Alarm(EXIT, "Problem sending through control socket\n");
+                    }
+                }
+	        tot_bytes += ret;
+            } 
             dec_ref_cnt(buf);
             return(BUFF_EMPTY);
         }
-
 	else {
 	    Alarm(PRINT, "Session unknown command: %X\n", *type);
 	    return(BUFF_EMPTY);
@@ -1270,7 +1318,7 @@ int Process_Session_Packet(Session *ses)
 
 		/* Nope, it's for smbd else. See where we should forward it */
 		next_hop = Get_Route(My_Address, hdr->dest);
-		if(next_hop != NULL) {
+		if((next_hop != NULL) && (hdr->ttl > 0)) {
 		    if(ses->links_used == SOFT_REALTIME_LINKS) {
 			ret = Forward_RT_UDP_Data(next_hop, ses->data,
 						  ses->read_len);
@@ -1295,16 +1343,17 @@ int Process_Session_Packet(Session *ses)
 		}
 
                 if((g_state = (Group_State*)Find_State(&All_Groups_by_Node, My_Address, hdr->dest)) != NULL) {
+
                     /* Hey, I joined this group !*/
 		    if(g_state->flags & ACTIVE_GROUP) {
 			/*&& ((g_state->flags & RECV_GROUP)||(!(g_state->flags & SEND_GROUP)))) {*/
-                        /* Deliver immediately for Unreliable Multicast */
+                        /* Deliver immediately for Multicast */
 			Deliver_UDP_Data(ses->data, ses->read_len, 0);
        		    }
 		}
 
 		ret = NO_ROUTE;
-		if((neighbors = Get_Mcast_Neighbors(hdr->source, hdr->dest)) != NULL) {
+		if(((neighbors = Get_Mcast_Neighbors(hdr->source, hdr->dest)) != NULL) && (hdr->ttl > 0)) {
 		    stdhash_begin(neighbors, &ngb_it);
 		    while(!stdhash_is_end(neighbors, &ngb_it)) {
 			next_hop = *((Node **)stdhash_it_val(&ngb_it));
@@ -1401,7 +1450,6 @@ int Deliver_UDP_Data(char* buff, int16u len, int32u type) {
 	return ret;
     }
 
-
     /* If I got here, this is not multicast */
 
     stdhash_find(&Sessions_Port, &h_it, &dummy_port);
@@ -1471,7 +1519,8 @@ int Deliver_UDP_Data(char* buff, int16u len, int32u type) {
 /*                                                         */
 /***********************************************************/
 
-int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int flags) {
+int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int flags) 
+{
     UDP_Cell *u_cell;
     sys_scatter scat;
     int32 total_bytes;
@@ -1589,6 +1638,7 @@ int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int 
 	/* Deliver the packet if it is complete */
 	if(frag_pkt->recv_elements == frag_pkt->scat.num_elements) {
 	    Alarm(DEBUG, "\n!!! Packet complete !!!\n\n");
+
 	    rm_add_size = 0;
 
 	    /* Prepare the packet */
@@ -1821,7 +1871,6 @@ int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int 
      * Let's see if we can send this packet */
 
 
-
     total_bytes = sizeof(int32) + len;
     send_len = len;
     ses->sent_bytes = 0;
@@ -1976,6 +2025,10 @@ void Session_Write(int sk, int sess_id, void *dummy_p)
 	len = u_cell->len;
 
 	if(ses->r_data != NULL) {
+            if (ses->sent_bytes == 0) {
+                ses->sent_bytes = sizeof(udp_header) + sizeof(rel_udp_pkt_add) + sizeof(int32);
+            }
+
 	    r_add = (rel_udp_pkt_add*)(buff + sizeof(udp_header));
 	    data_bytes = len - r_add->ack_len;
 	    total_bytes = sizeof(int32) + data_bytes;
@@ -2049,7 +2102,7 @@ void Session_Write(int sk, int sess_id, void *dummy_p)
 
 	    ses->sent_bytes += ret;
 	}
-	if((u_hdr->frag_num > 1)&&(u_hdr->frag_idx < u_hdr->frag_num -1)) {
+	if(ses->r_data == NULL && u_hdr->frag_num > 1 && (u_hdr->frag_idx < u_hdr->frag_num -1)) {
 	    Alarm(PRINT, "Session_Write: Not the last Fragmented Packet\n");
 	    ses->sent_bytes = sizeof(udp_header) + sizeof(int32);
 	}
@@ -2088,7 +2141,7 @@ void Session_Write(int sk, int sess_id, void *dummy_p)
 /***********************************************************/
 /* void Ses_Send_ID(Session* ses)                          */
 /*                                                         */
-/* Sends to a session its own ID                           */
+/* Sends to a session its own ID + port it is assigned     */
 /*                                                         */
 /* Arguments                                               */
 /*                                                         */
@@ -2104,11 +2157,12 @@ void Ses_Send_ID(Session *ses)
 {
     char *buf;
     int32 *ses_id;
+    int32 *vport;
     udp_header *u_hdr;
 
     buf = (char *) new_ref_cnt(PACK_BODY_OBJ);
     if(buf == NULL) {
-	Alarm(EXIT, "Session_UDP_Read: Cannot allocate buffer\n");
+        Alarm(EXIT, "Session_UDP_Read: Cannot allocate buffer\n");
     }
 
     u_hdr = (udp_header*)buf;
@@ -2116,16 +2170,19 @@ void Ses_Send_ID(Session *ses)
     u_hdr->dest = 0;
     u_hdr->source_port = 0;
     u_hdr->dest_port = 0;
-    u_hdr->len = sizeof(int32);
+    u_hdr->len = 2 * sizeof(int32); /* sess ID + virtual port */
     u_hdr->seq_no = 0;
     u_hdr->frag_num = 1;
     u_hdr->frag_idx = 0;
     u_hdr->sess_id = 0;
 
-    ses_id = (int*)(buf+sizeof(udp_header));
+    ses_id = (int32*)(buf+sizeof(udp_header));
     *ses_id = ses->sess_id;
-    
-    Session_Deliver_Data(ses, buf, sizeof(udp_header)+sizeof(int32), 0, 3);
+
+    vport   = (int32 *)(buf+sizeof(udp_header)+sizeof(ses->sess_id));
+    *vport  = ses->port;
+
+    Session_Deliver_Data(ses, buf, sizeof(udp_header)+(2*sizeof(int32)), 0, 3);
     dec_ref_cnt(buf);
 }
 
@@ -2166,28 +2223,6 @@ void Ses_Send_ERR(int address, int port)
     DL_send(Ses_UDP_Send_Channel, address, port, &scat);
 }
 
-
-/***********************************************************/
-/* void Session_CTRL_Read(int sk, int dmy, void *dmy_p)    */
-/*                                                         */
-/* Receive data from a Control Socket                      */
-/*                                                         */
-/* Arguments                                               */
-/*                                                         */
-/* sk:      socket                                         */
-/* dmy:     not used                                       */
-/* dmy_p:   not used                                       */
-/*                                                         */
-/* Return Value                                            */
-/*                                                         */
-/* NONE                                                    */
-/*                                                         */
-/***********************************************************/
-
-void Session_CTRL_Read(int sk, int dmy, void * dmy_p) 
-{
-    printf("Session CTRL Read Packet \n"); 
-}
 
 /***********************************************************/
 /* void Session_UDP_Read(int sk, int dmy, void *dmy_p)     */
@@ -2447,7 +2482,7 @@ void Session_Flooder_Send(int sesid, void *dummy)
     stdit it;
     Session *ses;
     udp_header *hdr;
-    int *pkt_no, *msg_size;
+    int32 *pkt_no, *msg_size;
     char *buf;
     sp_time *t1, now, next_delay;
     long long int duration_now, int_delay; 

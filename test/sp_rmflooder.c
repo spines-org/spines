@@ -518,7 +518,7 @@ static  void    Usage(int argc, char *argv[])
 		    "\t[-n <rounds>     ] : number of packets",
 		    "\t[-f <filename>   ] : file where to save statistics",
 		    "\t[-g              ] : run with sping for clock sync",
-		    "\t[-P <0, 1 or 2>  ] : overlay links (0 : UDP; 1; Rliable; 2: Realtime)",
+		    "\t[-P <0, 1 or 2>  ] : overlay links (0 : UDP; 1; Reliable; 2: Realtime)",
 		    "\t[-s              ] : sender flooder");
 	    exit( 0 );
 	}

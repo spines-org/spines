@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 - 2007 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2008 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -166,6 +166,14 @@ void Process_RT_UDP_data_packet(int32 sender_id, char *buff, int16u data_len,
     }
 
 
+    /* decrement the TTL */
+    if(hdr->ttl != 0) {
+        hdr->ttl--;
+    } else {  
+        /* the ttl value in this function should never be 0, becuase we should never be sending out packets of ttl 0 */
+        Alarm(EXIT, "Process_RT_UDP_data_packet(): processing a packet with TTL of 0, not allowed.\n");
+    }
+
     if(seq_no < rt_data->recv_tail) {
 	/* This is an old packet. Ignore it. */
 	return;
@@ -249,7 +257,7 @@ void Process_RT_UDP_data_packet(int32 sender_id, char *buff, int16u data_len,
 	    
 	    /* Nope, it's for smbd else. See where we should forward it */
 	    next_hop = Get_Route(hdr->source, hdr->dest);
-	    if(next_hop != NULL) {
+        if ((next_hop != NULL) && (hdr->ttl > 0)) {
 		ret = Forward_RT_UDP_Data(next_hop, buff, data_len);
 		return;
 	    }
@@ -289,14 +297,16 @@ void Process_RT_UDP_data_packet(int32 sender_id, char *buff, int16u data_len,
 #endif
 	    
 	    if((neighbors = Get_Mcast_Neighbors(hdr->source, hdr->dest)) != NULL) {
+              if (hdr->ttl > 0) {
 	        stdhash_begin(neighbors, &ngb_it);
 		while(!stdhash_is_end(neighbors, &ngb_it)) {
 		    next_hop = *((Node **)stdhash_it_val(&ngb_it));
 		    ret = Forward_RT_UDP_Data(next_hop, buff, data_len);
 		    stdhash_it_next(&ngb_it);
 		}
-		return;
-	    }
+	      }
+              return;
+            }
 	}
     }
     else {
@@ -784,7 +794,7 @@ void Process_RT_nack_packet(int32 sender, char *buf, int16u ack_len, int32u type
 	    dec_ref_cnt(rt_data->retransm_buff);
 	}
 
-	tmp = (int*)buf;
+	tmp = (int32*)buf;
 	if(!Same_endian(type)) {
 	    for(i=0; i<ack_len/sizeof(int32); i++) {
 		*tmp = Flip_int32(*tmp);

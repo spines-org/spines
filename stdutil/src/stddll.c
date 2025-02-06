@@ -1,8 +1,7 @@
-/* Copyright (c) 2000-2005, The Johns Hopkins University
+/* Copyright (c) 2000-2006, The Johns Hopkins University
  * All rights reserved.
  *
- * The contents of this file are subject to a license (the ``License'')
- * that is the exact equivalent of the BSD license as of July 23, 1999. 
+ * The contents of this file are subject to a license (the ``License'').
  * You may not use this file except in compliance with the License. The
  * specific language governing the rights and limitations of the License
  * can be found in the file ``STDUTIL_LICENSE'' found in this 
@@ -25,6 +24,10 @@
 
 #include <stdutil/stderror.h>
 #include <stdutil/stddll.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #define STDDLL_IS_LEGAL(l)        ((l)->end_node != NULL && (l)->vsize != 0)
 #define STDDLL_IT_IS_LEGAL(l, it) ((it)->end_node == (l)->end_node && (it)->vsize == (l)->vsize)
@@ -213,8 +216,9 @@ STDINLINE static stddll_node *stddll_low_rerase(stddll *l, stddll_node *erase_en
 {
   stddll_node * curr = erase_end->prev;
   stddll_node * prev;
+  stdsize       ne   = num_erase;
 
-  while (num_erase-- != 0) {
+  while (ne-- != 0) {
     STDBOUNDS_CHECK(curr != STDDLL_LEND(l));  /* check for an illegal erasure */
     prev = curr;
     curr = curr->prev;
@@ -863,3 +867,7 @@ STDINLINE stdit *stddll_it_retreat(stdit *it, stdsize num_retreat)
 
   return it;
 }
+
+#ifdef __cplusplus
+}
+#endif

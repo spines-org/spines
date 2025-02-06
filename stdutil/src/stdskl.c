@@ -1,8 +1,7 @@
-/* Copyright (c) 2000-2005, The Johns Hopkins University
+/* Copyright (c) 2000-2006, The Johns Hopkins University
  * All rights reserved.
  *
- * The contents of this file are subject to a license (the ``License'')
- * that is the exact equivalent of the BSD license as of July 23, 1999. 
+ * The contents of this file are subject to a license (the ``License'').
  * You may not use this file except in compliance with the License. The
  * specific language governing the rights and limitations of the License
  * can be found in the file ``STDUTIL_LICENSE'' found in this 
@@ -27,6 +26,10 @@
 #include <stdutil/stderror.h>
 #include <stdutil/stdtime.h>
 #include <stdutil/stdskl.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /* TODO: consider shrinking end_node's arrays when the top level
    becomes empty (down to some minimum height like 4 or 5); this is
@@ -61,6 +64,12 @@ STDINLINE static int stdskl_low_key_cmp(const stdskl *l, const void *k1, const v
 
 /************************************************************************************************
  * stdskl_low_create_node: Create a node to be inserted into 'l.'
+ *
+ * For random height generation, a node is promoted to a higher height
+ * w/ 25% chance.  The optimum promotion chance for a skiplist is
+ * somewhere between 28% and 37% depending on the analysis used.  25%
+ * gives nearly optimal performance while using less memory and not
+ * requiring excessive random bit generation.
  ***********************************************************************************************/
 
 STDINLINE static stdskl_node *stdskl_low_create_node(stdskl *l, stdint8 height, const void *key, const void *val)
@@ -75,17 +84,16 @@ STDINLINE static stdskl_node *stdskl_low_create_node(stdskl *l, stdint8 height, 
   if (height == -1) {                                             /* height generation requested */
     stdbool keep_going = STDTRUE;
 
-    for (; keep_going && height < STDSKL_MAX_HEIGHT; ++height) {  /* count how many random "on" bits we get in a row */
+    for (; keep_going && height < STDSKL_MAX_HEIGHT; ++height) {  /* loop while random height increases */
 
       if (l->bits_left == 0) {                                    /* out of random bits */
 	l->rand_bits = stdrand32(l->seed);                        /* generate 32 new ones */
 	l->bits_left = 32;
       }
 
-      keep_going = ((l->rand_bits & 0x1) == 0x1);                 /* break loop on a "off" bit */
-
-      --l->bits_left;                                             /* remove used bit */
-      l->rand_bits >>= 1;
+      keep_going = ((l->rand_bits & 0x3) == 0x3);                 /* continue loop w/ 25% chance */
+      l->bits_left  -= 2;                                         /* remove used bits */
+      l->rand_bits >>= 2;
     }
   }
 
@@ -100,8 +108,6 @@ STDINLINE static stdskl_node *stdskl_low_create_node(stdskl *l, stdint8 height, 
   mem_tot  += (height + 1) * sizeof(stdskl_node*);  /* memory for nexts array */
   mem_tot   = STDARCH_PADDED_SIZE(mem_tot);         /* pad memory for key */
   key_off   = mem_tot;
-
-  /* TODO: might only pad the key size if vsize != 0 */
 
   mem_tot  += STDARCH_PADDED_SIZE(l->ksize);        /* memory for key and padding for value */
   val_off   = mem_tot;
@@ -475,7 +481,7 @@ STDINLINE static stdcode stdskl_low_insert(stdskl *l, stdit *it, const stdit *b,
  * erase.
  ***********************************************************************************************/
 
-STDINLINE static void stdskl_low_erase(stdskl *l, stdit *b, stdit *e, stdsize num_erase)
+STDINLINE static stdsize stdskl_low_erase(stdskl *l, stdit *b, stdit *e, stdsize num_erase)
 {
   stdskl_node * ers;
   stdskl_node * prev     = b->impl.skl.node->prevs[0];
@@ -503,7 +509,7 @@ STDINLINE static void stdskl_low_erase(stdskl *l, stdit *b, stdit *e, stdsize nu
 
   /* update list size */
   
-  l->size -= num_erase;
+  l->size -= erased;
 
   /* stitch together the left and right portions of the list */
 
@@ -533,6 +539,8 @@ STDINLINE static void stdskl_low_erase(stdskl *l, stdit *b, stdit *e, stdsize nu
   if (e != NULL) {
     e->impl.skl.node = ers;
   }
+
+  return erased;
 }
 
 /************************************************************************************************
@@ -1032,28 +1040,31 @@ STDINLINE void stdskl_erase_n(stdskl *l, stdit *it, stdsize num_erase)
  * stdskl_erase_seq: Erase a sequence from a list.
  ***********************************************************************************************/
 
-STDINLINE void stdskl_erase_seq(stdskl *l, stdit *b, stdit *e)
+STDINLINE stdsize stdskl_erase_seq(stdskl *l, stdit *b, stdit *e)
 {
   STDSAFETY_CHECK(STDSKL_IS_LEGAL(l) && STDIT_SKL_IS_LEGAL(b) && STDSKL_IT_IS_LEGAL(l, &b->impl.skl) && (stdit_eq(b, e) || STDTRUE));
 
-  stdskl_low_erase(l, b, e, (stdsize) -1);
+  return stdskl_low_erase(l, b, e, (stdsize) -1);
 }
 
 /************************************************************************************************
  * stdskl_erase_key: Erase all entries of a key from a list.
  ***********************************************************************************************/
 
-STDINLINE void stdskl_erase_key(stdskl *l, const void *key)
+STDINLINE stdsize stdskl_erase_key(stdskl *l, const void *key)
 {
-  stdit it;
+  stdsize ret = 0;
+  stdit   it;
 
   STDSAFETY_CHECK(STDSKL_IS_LEGAL(l));
 
   stdskl_lowerb(l, &it, key);
 
-  while (it.impl.skl.node != l->end_node && stdskl_low_key_cmp(l, key, STDSKL_NKEY(it.impl.skl.node)) == 0) {
+  for (; it.impl.skl.node != l->end_node && stdskl_low_key_cmp(l, key, STDSKL_NKEY(it.impl.skl.node)) == 0; ++ret) {
     stdskl_erase(l, &it);  /* advances 'it' */
   }
+
+  return ret;
 }
 
 /************************************************************************************************
@@ -1180,3 +1191,7 @@ STDINLINE stdit *stdskl_it_retreat(stdit *it, stdsize num_retreat)
 
   return it;
 }
+
+#ifdef __cplusplus
+}
+#endif

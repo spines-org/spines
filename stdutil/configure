@@ -1314,7 +1314,7 @@ ac_config_guess="$SHELL $ac_aux_dir/config.guess"
 ac_config_sub="$SHELL $ac_aux_dir/config.sub"
 ac_configure="$SHELL $ac_aux_dir/configure" # This should be Cygnus configure.
 
-          ac_config_headers="$ac_config_headers src/stdutil/private/stdarch.h"
+          ac_config_headers="$ac_config_headers src/stdutil/private/stdarch_autoconf.h"
 
 
 ac_ext=c
@@ -2768,14 +2768,14 @@ case "$host" in
 	SHLDFLAGS="$SHLDFLAGS $LDFLAGS"
 	SHLIBS=$LIBS
 	DYNLIBEXT=dylib
-	STANDARD_LIBS="\$(STATIC_THREADED_RELEASE_LIB) \$(SHARED_THREADED_RELEASE_LIB)"
+	STANDARD_LIBS="\$(STATIC_THREADED_DEBUG_LIB) \$(STATIC_THREADED_RELEASE_LIB) \$(SHARED_THREADED_DEBUG_LIB) \$(SHARED_THREADED_RELEASE_LIB)"
 	SHARED_LIBS="\$(SHARED_LIBS)"
         ;;
 mips-sgi-irix*)
 	CC=cc
 	CFLAGS="-n32 -signed"
 	DYNLIBEXT=
-	STANDARD_LIBS="\$(STATIC_THREADED_RELEASE_LIB)"
+	STANDARD_LIBS="\$(STATIC_THREADED_DEBUG_LIB) \$(STATIC_THREADED_RELEASE_LIB)"
 	SHARED_LIBS=
 	;;
 *-*-*)
@@ -2786,7 +2786,7 @@ mips-sgi-irix*)
 	SHLDFLAGS="$SHLDFLAGS $LDFLAGS"
 	SHLIBS=$LIBS
 	DYNLIBEXT=so
-	STANDARD_LIBS="\$(STATIC_THREADED_RELEASE_LIB) \$(SHARED_THREADED_RELEASE_LIB)"
+	STANDARD_LIBS="\$(STATIC_THREADED_DEBUG_LIB) \$(STATIC_THREADED_RELEASE_LIB) \$(SHARED_THREADED_DEBUG_LIB) \$(SHARED_THREADED_RELEASE_LIB)"
 	SHARED_LIBS="\$(SHARED_LIBS)"
 	;;
 esac
@@ -8030,7 +8030,7 @@ do
   case "$ac_config_target" in
   # Handling of arguments.
   "src/Makefile" ) CONFIG_FILES="$CONFIG_FILES src/Makefile" ;;
-  "src/stdutil/private/stdarch.h" ) CONFIG_HEADERS="$CONFIG_HEADERS src/stdutil/private/stdarch.h" ;;
+  "src/stdutil/private/stdarch_autoconf.h" ) CONFIG_HEADERS="$CONFIG_HEADERS src/stdutil/private/stdarch_autoconf.h" ;;
   *) { { echo "$as_me:$LINENO: error: invalid argument: $ac_config_target" >&5
 echo "$as_me: error: invalid argument: $ac_config_target" >&2;}
    { (exit 1); exit 1; }; };;

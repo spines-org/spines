@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 - 2007 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2008 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -49,6 +49,7 @@
 #include "hello.h"
 #include "protocol.h"
 #include "route.h"
+#include "multicast.h"
 #include "kernel_routing.h"
 
 
@@ -67,8 +68,8 @@ extern int16 KR_Flags;
 /* Local variables */
 static const sp_time zero_timeout        = {     0,    0};
 static const sp_time short_timeout       = {     0,    5000};  /* 5 milliseconds */
-static const sp_time wireless_timeout    = {     0,    5000};  /* 5 milliseconds */
-static const sp_time kr_timeout          = {     0,    12000};
+static const sp_time wireless_timeout    = {     0,    15000};  /* 15 milliseconds */
+static const sp_time kr_timeout          = {     0,    20000};
 static const sp_time state_resend_time   = { 30000,    0};     /* 8 h 20 mins */
 static const sp_time resend_call_timeout = {  3000,    0}; 
 static const sp_time resend_fast_timeout = {     1,    0};     /* one second */
@@ -701,8 +702,14 @@ void Process_state_packet(int32 sender, char *buf,
 	    }
 
 	    /* We should send an acknowledge for this message. So, let's schedule it */
+            if (!E_in_queue(Send_Ack, (int)lk->link_id, NULL)) {
+	        r_data->scheduled_ack = 1;
+	        E_queue(Send_Ack, (int)lk->link_id, NULL, short_timeout);
+            }
+            /* old version
 	    r_data->scheduled_ack = 1;
 	    E_queue(Send_Ack, (int)lk->link_id, NULL, zero_timeout);
+            */
 	
 	    if(flag == 0)
 		return;
@@ -758,6 +765,27 @@ void Process_state_packet(int32 sender, char *buf,
 		changed_route_flag = 1;
 	    }
 	    else {
+                /* Lets make sure that my clock is not back in time, 
+                   with respect to others in the network. */
+                if (pkt->source == My_Address) 
+                {
+                    if (s_data->timestamp_sec < state_cell->timestamp_sec ||
+                        (s_data->timestamp_sec == state_cell->timestamp_sec &&
+                         s_data->timestamp_usec < state_cell->timestamp_usec)) {
+                        /* My clock was out-of-sync!  Need to resend all of my states 
+                           with an update clock value */
+                            Alarm(EXIT, "Clock is out-of-sync!!!\n");
+                            /*
+                            if (state_sync_up_val.sec <= state_cell->timestamp_sec) {
+                                state_sync_up_val.sec = state_cell->timestamp_sec+1;
+                            }
+                            E_dequeue(Resend_States, 0, &Edge_Prot_Def);
+                            E_dequeue(Resend_States, 0, &Groups_Prot_Def);
+                            E_queue(Resend_States, 1, &Edge_Prot_Def, resend_fast_timeout);
+                            E_queue(Resend_States, 1, &Groups_Prot_Def, resend_fast_timeout);
+                            */
+                    }
+                }
 		if((s_data->timestamp_sec < state_cell->timestamp_sec)||
 		   ((s_data->timestamp_sec == state_cell->timestamp_sec)&&
 		    (s_data->timestamp_usec < state_cell->timestamp_usec))) {
@@ -785,7 +813,7 @@ void Process_state_packet(int32 sender, char *buf,
 
 
 /***********************************************************/
-/* void Resend_States(int dummy_int, void* p_data)         */
+/* void Resend_States(int sync_up, void* p_data)           */
 /*                                                         */
 /* Called by the event system                              */
 /* Resends the valid states to all the neighbors for       */
@@ -802,7 +830,7 @@ void Process_state_packet(int32 sender, char *buf,
 /*                                                         */
 /***********************************************************/
 
-void Resend_States (int dummy_int, void* p_data)
+void Resend_States (int sync_up, void* p_data)
 {
     Prot_Def *p_def;
     State_Data *s_data;
@@ -1091,6 +1119,8 @@ void Add_to_changed_states(Prot_Def *p_def, int32 sender,
     
     if(stdhash_empty(p_def->Changed_States())) {
         if (Wireless) {
+            /* The more I wait, the more I can pack, but the more I will 
+               delay the state update, or handoff */
             E_queue(Send_State_Updates, 0, (void*)p_def, wireless_timeout);
         } else {
             E_queue(Send_State_Updates, 0, (void*)p_def, short_timeout);
@@ -1110,6 +1140,9 @@ void Add_to_changed_states(Prot_Def *p_def, int32 sender,
 	Discard_Mcast_Neighbors(s_data->dest_addr); 
         if (Is_valid_kr_group(s_data->dest_addr)) {
             if (!E_in_queue(KR_Set_Group_Route, s_data->dest_addr, NULL)) {
+                /* TODO: If I am a member, I should update right away. Should
+                   use eucl distance to determine delay, to decrease unstable interval,
+                   say my_eucl_dist*wireless_timeout */
                 E_queue(KR_Set_Group_Route, s_data->dest_addr, NULL, kr_timeout);
             }
         } 

@@ -47,12 +47,12 @@
 #ifndef	ARCH_PC_WIN95
 
 #include        <sys/types.h>
-#include        <sys/socket.h>
 #include        <netinet/in.h>
 #include        <arpa/inet.h>
-#include        <sys/uio.h>
-/* for select */
-#include        <sys/time.h>
+# include	<sys/socket.h>
+# include	<sys/uio.h>
+# include	<sys/time.h>
+
 #include        <unistd.h>
 
 #include        <errno.h>
@@ -107,6 +107,7 @@ channel	DL_init_channel( int32 channel_type, int16 port, int32 mcast_address, in
 
 	if ( channel_type & RECV_CHANNEL )
 	{
+	        memset(&soc_addr, 0, sizeof(soc_addr));
         	soc_addr.sin_family    	= AF_INET;
         	soc_addr.sin_port	= htons(port);
                 memset(&soc_addr.sin_zero, 0, sizeof(soc_addr.sin_zero));
@@ -222,6 +223,7 @@ static	struct timeval 		select_delay = { 0, 10000 };
         /* Check that the scatter passed is small enough to be a valid system scatter */
         assert(scat->num_elements <= ARCH_SCATTER_SIZE);
 
+	memset(&soc_addr, 0, sizeof(soc_addr));
 	soc_addr.sin_family 	= AF_INET;
 	soc_addr.sin_addr.s_addr= htonl(address);
 	soc_addr.sin_port	= htons(port);
@@ -359,8 +361,13 @@ static	char		pseudo_scat[MAX_PACKET_SIZE];
         else if (ret == 0)
         {
                 char    *sptr;
-                sptr = (char *) inet_ntoa(source_address.sin_addr);
-                Alarm( DATA_LINK, "DL_recv: received zero length packet on channel %d flags 0x%x\nfrom %s", chan, msg.msg_flags,sptr );
+                unsigned short port;
+                Alarm( DATA_LINK, "DL_recv: received zero length packet on channel %d flags 0x%x msg_len %d\n", chan, msg.msg_flags, msg.msg_namelen);
+                if (msg.msg_namelen >= sizeof(struct sockaddr_in) ) {
+                    sptr = (char *) inet_ntoa(source_address.sin_addr);
+                    port = Flip_int16(source_address.sin_port);
+                    Alarm( DATA_LINK, "\tfrom %s with family %d port %d\n", sptr, source_address.sin_family, port );
+                }
 #ifdef  MSG_BCAST
                 if ( msg.msg_flags & MSG_BCAST )
                 {

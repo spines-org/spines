@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 - 2007 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2008 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -84,8 +84,6 @@
 #define         DATA_MASK               0x0000007f
 
 
-/* Other types */
-
 
 /* Type macros */
 #define		Is_reliable(type)	(type & RELIABLE_TYPE)
@@ -110,6 +108,8 @@
 #define		Is_acast_addr(x)	((x & 0xF0000000) == 0xF0000000)
 
 
+#define         SPINES_TTL_MAX  255;
+
 /*This goes in front of each packet (any kind), as it is sent on the network */
 
 
@@ -125,6 +125,8 @@ typedef	struct	dummy_packet_header {
 
 typedef	char       packet_body[MAX_PACKET_SIZE-sizeof(packet_header)];
 
+
+/* elements are arranged in decending order for byte alligned issues */
 typedef	struct	dummy_udp_pkt_header {
     int32           source;
     int32           dest;
@@ -132,9 +134,10 @@ typedef	struct	dummy_udp_pkt_header {
     int16u          dest_port;
     int16u          len;
     int16u          seq_no;
+    int16u          sess_id;
     char            frag_num;   /* For fragmented packets: total num of fragments */
     char            frag_idx;   /* Fragment index */
-    int16u          sess_id;
+    int32u          ttl;        /* used for both unicast and multicast packets */
 } udp_header;
 
 typedef struct dummy_rel_udp_pkt_add {
@@ -206,6 +209,40 @@ typedef struct dummy_reliable_ses_tail {
     int32u          cummulative_ack;   /* cummulative in order ack */
     int32u          adv_win;           /* advertised window for flow control */
 } reliable_ses_tail;
+
+
+/* join acknowledgement */
+typedef struct dummy_reliable_mcast_ack {
+    int32           type;	    /* the type of the message */
+    int32u          mcast_address;  /* the group address */
+    int32           timestamp_sec;  /* time stamp of request */
+    int32           timestamp_usec;
+    int32           flags;          /* flags of the group state */
+    int32u          seq_no;         /* Sequence number */
+    int16	    dummy;	    /* not used currently */
+    int16u	    len;	    /* length of subsequent buffer */
+    int32u          next_seq_no;    /* the next seq no that will be sent */
+} reliable_mcast_ack;
+
+
+/* data acknowledgement */
+typedef struct dummy_reliable_mcast_data_ack {
+    int32           type;	    /* the type of the message */
+    int32u          seq_no;         /* Sequence number */
+    int32           group;          /* The group for which the g_aru is sent */
+    int32u          g_aru;          /* The cummulative ack for the group */
+    int16u	    num_nacks;	    /* number of nacks */
+/* A list of unsigned ints follows this structure. Each of these is a nack. The
+ * number of nacks is equivalent to num_nacks */
+} reliable_mcast_data_ack;
+
+/* congestion ack */
+typedef struct dummy_reliable_mcast_cg_ack {
+    int32	    type;	    /* type of the message */    
+    int32u          seq_no;         /* Sequence number */
+    int32           group;          /* The group for which the ack is sent */
+    int32           new_acker;      /* New congestion acker (if it changed) */
+} reliable_mcast_cg_ack;
 
 
 #endif	/* NET_TYPES */

@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 - 2007 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2008 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -48,8 +48,6 @@
 #define     GROUP_STATUS(x)      IS_RELIABLE_GROUP(x),IS_JOIN_GROUP(x),IS_LEAVE_GROUP(x),IS_ACTIVE_GROUP(x) 
 #define     GSTAT                "R%dJ%dL%dA%d"
 
-struct Rmcast_Data_d;
-
 typedef struct Group_State_d {
     int32 source_addr;           /* Address of the node that joins / leaves*/
     int32 dest_addr;             /* Group name (address) */
@@ -61,7 +59,6 @@ typedef struct Group_State_d {
     int16 age;                   /* Life of the state (in tens of seconds) */
 
     stdhash joined_sessions;     /* Local sessions that joined the group */
-    struct Rmcast_Data_d *rm_data; /* Reliable multicast specific data */
 } Group_State;
 
 
@@ -94,6 +91,8 @@ Group_State* Create_Group(int32 node_address, int32 mcast_address);
 stdhash* Get_Mcast_Neighbors(int32 sender, int32 mcast_address);
 void Discard_Mcast_Neighbors(int32 mcast_address);
 void Discard_All_Mcast_Neighbors(void); 
+void Trace_Group(int32 mcast_address, spines_trace *spines_tr);
+int Get_Group_Members(int32 mcast_address, spines_trace *spines_tr);
 void Print_Mcast_Groups(int dummy_int, void* dummy);
 
 #endif

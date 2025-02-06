@@ -1,8 +1,7 @@
-/* Copyright (c) 2000-2005, The Johns Hopkins University
+/* Copyright (c) 2000-2006, The Johns Hopkins University
  * All rights reserved.
  *
- * The contents of this file are subject to a license (the ``License'')
- * that is the exact equivalent of the BSD license as of July 23, 1999. 
+ * The contents of this file are subject to a license (the ``License'').
  * You may not use this file except in compliance with the License. The
  * specific language governing the rights and limitations of the License
  * can be found in the file ``STDUTIL_LICENSE'' found in this 
@@ -27,6 +26,10 @@
 #include <stdutil/stddll.h>
 #include <stdutil/stdhash.h>
 #include <stdutil/stdskl.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /************************************************************************************************
  * stdit_get_type: Get the functional type of an iterator.
@@ -53,7 +56,7 @@ STDINLINE stdit_type stdit_get_type(const stdit *it)
     break;
 
   default:
-    ret = 0;
+    ret = (stdit_type) 0;
     STDEXCEPTION(uninitialized or corrupted iterator);
     break;
   }
@@ -628,3 +631,7 @@ STDINLINE stdit *stdit_pptr(stdit *it, const void *key, const void * val, stdsiz
 
   return it;
 }
+
+#ifdef __cplusplus
+}
+#endif

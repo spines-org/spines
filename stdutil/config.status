@@ -272,7 +272,7 @@ _CSEOF
 echo "on `(hostname || uname -n) 2>/dev/null | sed 1q`" >&5
 echo >&5
 config_files=" src/Makefile"
-config_headers=" src/stdutil/private/stdarch.h"
+config_headers=" src/stdutil/private/stdarch_autoconf.h"
 
 ac_cs_usage="\
 \`$as_me' instantiates files from templates according to the
@@ -388,7 +388,7 @@ do
   case "$ac_config_target" in
   # Handling of arguments.
   "src/Makefile" ) CONFIG_FILES="$CONFIG_FILES src/Makefile" ;;
-  "src/stdutil/private/stdarch.h" ) CONFIG_HEADERS="$CONFIG_HEADERS src/stdutil/private/stdarch.h" ;;
+  "src/stdutil/private/stdarch_autoconf.h" ) CONFIG_HEADERS="$CONFIG_HEADERS src/stdutil/private/stdarch_autoconf.h" ;;
   *) { { echo "$as_me:$LINENO: error: invalid argument: $ac_config_target" >&5
 echo "$as_me: error: invalid argument: $ac_config_target" >&2;}
    { (exit 1); exit 1; }; };;
@@ -499,7 +499,7 @@ s,@SHLD@,gcc -shared,;t t
 s,@SHLDFLAGS@, ,;t t
 s,@SHLIBS@,,;t t
 s,@DYNLIBEXT@,so,;t t
-s,@STANDARD_LIBS@,$(STATIC_THREADED_RELEASE_LIB) $(SHARED_THREADED_RELEASE_LIB),;t t
+s,@STANDARD_LIBS@,$(STATIC_THREADED_DEBUG_LIB) $(STATIC_THREADED_RELEASE_LIB) $(SHARED_THREADED_DEBUG_LIB) $(SHARED_THREADED_RELEASE_LIB),;t t
 s,@SHARED_LIBS@,$(SHARED_LIBS),;t t
 s,@CPP@,gcc -E,;t t
 s,@EGREP@,grep -E,;t t

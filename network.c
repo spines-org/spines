@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 - 2007 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2008 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -71,6 +71,7 @@
 #include "multicast.h"
 #include "route.h"
 #include "kernel_routing.h"
+#include "wireless.h"
 
 #ifdef SPINES_SSL
 /* openssl */
@@ -85,7 +86,9 @@
 extern int16u Port;
 extern int16 Num_Initial_Nodes;
 extern int16 Num_Discovery_Addresses;
+extern int16 Num_Neighbors;
 extern int32 Address[MAX_NEIGHBORS];
+extern Node* Neighbor_Nodes[MAX_LINKS/MAX_LINKS_4_EDGE];
 extern int32 My_Address;
 extern int32 Discovery_Address[MAX_DISCOVERY_ADDR];
 extern channel Local_Recv_Channels[MAX_LINKS_4_EDGE];
@@ -252,8 +255,12 @@ void Init_Network(void)
     State_Garbage_Collect(0, &Edge_Prot_Def);
     Resend_States(0, &Groups_Prot_Def);
     State_Garbage_Collect(0, &Groups_Prot_Def);
+
     /* Uncomment next line to print periodical route updates */
     Print_Edges(0, NULL); 
+    Print_Mcast_Groups(0, NULL); 
+
+    Wireless_Init();
 
     pkt_idx = 1;
     stdhash_construct(&Pkt_Queue, sizeof(int32), sizeof(struct Delayed_Packet_d), 
@@ -612,8 +619,19 @@ int    Read_UDP(channel sk, int mode, sys_scatter *scat)
 		         Alarm(EXIT, "Read_UDP; could not create node\n");
 
 		    nd = *((Node **)stdhash_it_val(&it_node));
-		    nd->last_time_heard = E_get_time();
 		    nd->counter = 0;        
+
+                    for(nodeid=0; nodeid< MAX_LINKS/MAX_LINKS_4_EDGE; nodeid++) {
+                        if(Neighbor_Nodes[nodeid] == NULL)
+                            break;
+                    }
+
+                    if(nodeid == MAX_LINKS/MAX_LINKS_4_EDGE)
+                        Alarm(EXIT, "No node IDs available; too many neighbors\n");
+        
+                    if(nodeid+1 > Num_Neighbors)
+                        Num_Neighbors = nodeid+1;
+                    nd->node_id = nodeid;
 		        
 		    linkid = Create_Link(sender_id, CONTROL_LINK);
     		    E_queue(Send_Hello, linkid, NULL, zero_timeout);
@@ -1079,7 +1097,7 @@ int DL_send_SSL(channel chan, int mode, int32 address, int16 port, sys_scatter *
 /* this function is temporary not used */
 void Resend_SSL(int dummy_int, void* p_data)
 {
-    stdit list_it;
+    stddll_it list_it;
     struct send_item *si;
     int ret, err;
 

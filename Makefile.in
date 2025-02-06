@@ -16,7 +16,9 @@ CYGWIN = CYGWIN_NT-5.1
 SSL_INCLUDE=/usr/include
 SSL_LIB=/usr/lib
 SSL_BIN_PATH=/usr/bin
-SSL_SUPPORT = 0
+SSL_VERSION := $(shell LD_LIBRARY_PATH=$(SSL_LIB) $(SSL_BIN_PATH)/openssl version | cut -d " " -f 2)
+SSL_SUPPORT := $(shell expr $(SSL_VERSION) \>= 0.9.8)
+SSL_SUPPORT := 0
 #------------------------ UP TO HERE -----------------------#
 
 
@@ -25,16 +27,13 @@ OBJECTS = util/alarm.o util/events.o util/memory.o util/data_link.o \
 	  node.o link.o network.o reliable_datagram.o state_flood.o \
           link_state.o protocol.o hello.o kernel_routing.o route.o udp.o \
 	  reliable_udp.o realtime_udp.o session.o reliable_session.o \
-	  multicast.o dijkstra.o spines.o
+	  multicast.o dijkstra.o wireless.o spines.o
 
-
-# ARCH_DEFINE is taken from the enviroment and specifies
-# an architecture if any. For example: -DARCH_MIPS_LINUX
 
 ifeq (1,$(SSL_SUPPORT))
-	CFLAGS = -g -DSPINES_SSL -Wall -O3 -I stdutil/src -I$(SSL_INCLUDE) -L$(SSL_LIB) $(ARCH_DEFINE)
+	CFLAGS = -g -DSPINES_SSL -Wall -O3 -I stdutil/src -I$(SSL_INCLUDE) -L$(SSL_LIB) 
 else
-	CFLAGS = -g -Wall -O3 -I stdutil/src $(ARCH_DEFINE)
+	CFLAGS = -g -Wall -O3 -I stdutil/src 
 endif
 
 STDLIB = stdutil/lib/libstdutil.a

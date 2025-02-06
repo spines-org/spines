@@ -7,6 +7,7 @@
 #define KR_OVERLAY_NODES        0x0001
 #define KR_CLIENT_ACAST_PATH    0x0002
 #define KR_CLIENT_MCAST_PATH    0x0004
+#define KR_CLIENT_WITHOUT_EDGE  0x0008
 
 /* Three special predefined groups for kernel routing */
 #define KR_MCAST_GROUP          227
@@ -37,6 +38,7 @@ void  KR_Init();
 void  KR_Set_Group_Route(int32 group_destination, void *dummy);
 void  KR_Set_Table_Route(int32 destination, int table_id);
 void  KR_Delete_Table_Route(int32 destination, int table_id);
+void  KR_Create_Overlay_Node(int32 address);
 void  KR_Delete_Overlay_Node(int32 address);
 void  KR_Set_Default_Route();
 void  KR_Delete_Default_Route();

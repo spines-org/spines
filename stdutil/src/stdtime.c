@@ -1,8 +1,7 @@
-/* Copyright (c) 2000-2005, The Johns Hopkins University
+/* Copyright (c) 2000-2006, The Johns Hopkins University
  * All rights reserved.
  *
- * The contents of this file are subject to a license (the ``License'')
- * that is the exact equivalent of the BSD license as of July 23, 1999. 
+ * The contents of this file are subject to a license (the ``License'').
  * You may not use this file except in compliance with the License. The
  * specific language governing the rights and limitations of the License
  * can be found in the file ``STDUTIL_LICENSE'' found in this 
@@ -31,6 +30,10 @@
 
 #include <stdutil/stderror.h>
 #include <stdutil/stdtime.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /* stdtime: sec == STDINT64_MIN -> nano == 0
             sec <  0            -> -STD1BILLION < nano <= 0
@@ -89,7 +92,7 @@ STDINLINE stdtime stdtime_time64(stdtime64 src)
   stdtime   ret;
 
   ret.sec  = cpy / STD1BILLION;
-  ret.nano = (stdint32) cpy % (stdint32) STD1BILLION;
+  ret.nano = (stdint32) (cpy % STD1BILLION);
 
   if (src < 0) {
     ret.sec  = -ret.sec;
@@ -234,7 +237,8 @@ STDINLINE stdtime64 stdtime64_time(stdtime t)
 }
 
 /************************************************************************************************
- * stdsleep: Sleep for a period of time.
+ * stdsleep: Sleep for a period of time.  On error, remndr will be
+ * filled if non-NULL.
  ***********************************************************************************************/
 
 STDINLINE stdcode stdsleep(stdtime delta, stdtime *remndr)
@@ -324,3 +328,7 @@ STDINLINE stdcode stdsleep64(stdtime64 delta, stdtime64 *remndr)
 
   return ret;
 }
+
+#ifdef __cplusplus
+}
+#endif

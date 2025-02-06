@@ -110,10 +110,13 @@ int main( int argc, char *argv[] )
     long long int zero_diff = 0;
     long long int min_clockdiff, max_clockdiff;
 
-    struct sockaddr_in host, serv_addr, name;
+    struct sockaddr_in host, serv_addr, name, remote;
+    int remote_addr_sz;
     struct hostent     h_ent;
     struct hostent  *host_ptr;
     char   machine_name[256];
+
+    unsigned char * p_ip;
 
 
     Usage(argc, argv);
@@ -342,13 +345,14 @@ int main( int argc, char *argv[] )
 	    exit(1);
         }
 
-	sk = spines_accept(sk_listen, 0, 0);
+	remote_addr_sz = sizeof(remote);
+	sk = spines_accept(sk_listen, (struct sockaddr *)&remote, &remote_addr_sz);
 	if(sk < 0) {
 	    perror("err: accept");
 	    exit(1);	
 	}
-
-	printf("accept\n");
+	p_ip = (unsigned char*) &remote.sin_addr.s_addr;
+	printf("accept from %u.%u.%u.%u port %d\r\n", p_ip[0], p_ip[1], p_ip[2], p_ip[3], remote.sin_port);
 
 	gettimeofday(&start, &tz);
 
@@ -519,7 +523,7 @@ static  void    Usage(int argc, char *argv[])
 		    "\t[-n <rounds>     ] : number of packets",
 		    "\t[-f <filename>   ] : file where to save statistics",
 		    "\t[-g              ] : run with sping for clock sync",
-		    "\t[-P <0, 1 or 2>  ] : overlay links (0 : UDP; 1; Rliable; 2: Soft Realtime)",
+		    "\t[-P <0, 1 or 2>  ] : overlay links (0 : UDP; 1; Reliable; 2: Soft Realtime)",
 		    "\t[-s              ] : sender flooder");
 	    exit( 0 );
 	}

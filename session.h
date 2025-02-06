@@ -1,4 +1,3 @@
-
 /*
  * Spines.
  *     
@@ -19,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 - 2007 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2008 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -39,7 +38,8 @@
 
 #define READY_LEN           1
 #define READY_DATA          2
-#define READY_ENDIAN        3
+#define READY_CTRL_SK       3
+#define READY_ENDIAN        4
 
 
 #define READ_DESC           1
@@ -68,8 +68,10 @@
 #define FLOOD_SEND_TYPE_MSG 10
 #define FLOOD_RECV_TYPE_MSG 11
 #define ADD_NEIGHBOR_MSG    12
-#define TRACEROUTE_TYPE_MSG 13
-#define LOOP_TYPE_MSG       14
+#define LOOP_TYPE_MSG       13
+#define TRACEROUTE_TYPE_MSG 21
+#define EDISTANCE_TYPE_MSG  22
+#define MEMBERSHIP_TYPE_MSG 23
 
 #define SES_CLIENT_ON       1
 #define SES_CLIENT_OFF      2
@@ -77,7 +79,9 @@
 
 #define MAX_BUFF_SESS      50
 #define MAX_PKT_SEQ     10000
-#define MAX_SPINES_MSG   1430
+#define MAX_SPINES_MSG   1404 /* (packet_body ) 1456 - ( (udp_header) 24 + (rel_ses_pkt_add) 8 + (reliable_ses_tail) 12 + (reliable_tail) 8 ) = 1456 - 52 */
+
+#define MAX_CTRL_SK_REQUESTS 10
 
 
 #include "stdutil/src/stdutil/stdcarr.h"
@@ -101,6 +105,7 @@ typedef struct Frag_Packet_d {
 typedef struct Session_d {
     int32u sess_id;
     channel sk;
+    channel ctrl_sk;
     int32  endianess_type;
     int16  type;
     int32  links_used;
@@ -132,7 +137,6 @@ typedef struct Session_d {
     int    rel_hello_cnt;
     int    rel_blocked;
     stdhash joined_groups;
-    int32 rel_mcast_flags;
     int close_reason;
 
     /* Sender Flooder */
@@ -158,7 +162,7 @@ void Session_Read(int sk, int dummy, void *dummy_p);
 void Session_Close(int sesid, int reason);
 int  Process_Session_Packet(struct Session_d *ses);
 int  Deliver_UDP_Data(char* buff, int16u buf_len, int32u type);
-int  Session_Deliver_Data(Session *ses, char* buff, int16u buf_len, int32u type, int32 flags);
+int  Session_Deliver_Data(Session *ses, char* buff, int16u buf_len, int32u type, int flags);
 void Session_Write(int sk, int sess_id, void *dummy_p);
 void Ses_Send_ID(struct Session_d *ses);
 void Ses_Send_ERR(int address, int port);

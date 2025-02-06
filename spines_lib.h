@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 - 2007 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2008 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -70,11 +70,21 @@ extern "C" {
 #define     SPINES_ADD_MEMBERSHIP   IP_ADD_MEMBERSHIP
 #define     SPINES_DROP_MEMBERSHIP  IP_DROP_MEMBERSHIP
 #define     SPINES_MULTICAST_LOOP   IP_MULTICAST_LOOP
-#define     SPINES_ADD_NEIGHBOR     12 
+#define     SPINES_IP_TTL           IP_TTL
+#define     SPINES_IP_MULTICAST_TTL IP_MULTICAST_TTL
+#define     SPINES_ADD_NEIGHBOR     51 
+
+#define     SPINES_TRACEROUTE       61
+#define     SPINES_EDISTANCE        62
+#define     SPINES_MEMBERSHIP       63
 
 #define     DEFAULT_SPINES_PORT     8100
 
-#define     MAX_HOPS                32
+#define     MAX_COUNT               64
+
+/* IP Address Class Check */
+#define     Is_mcast_addr(x)        ((x & 0xF0000000) == 0xE0000000)
+#define     Is_acast_addr(x)        ((x & 0xF0000000) == 0xF0000000)
 
 
 typedef struct Lib_Client_d {
@@ -84,7 +94,7 @@ typedef struct Lib_Client_d {
     int endianess_type;
     int sess_id;
     int rnd_num;
-    int srv_addr;
+    int srv_addr;       /* stored in host byte order */
     int srv_port;
     int protocol;
     int my_addr;
@@ -92,53 +102,59 @@ typedef struct Lib_Client_d {
     int connect_addr;
     int connect_port;
     int connect_flag;
-    int rel_mcast_flag;
+    int virtual_local_port;  /* stored in host byte order */
+    int ip_ttl;              /* ttl to stamp all unicast "DATA" UDP packets */ 
+    int mcast_ttl;           /* ttl to stamp all multicast "DATA" UDP packets */
 } Lib_Client;
 
 
+
 typedef struct spines_trace_d {
-    long address[MAX_HOPS];
-    int distance[MAX_HOPS];
-    int cost[MAX_HOPS];
+    int count;
+    long address[MAX_COUNT];
+    int distance[MAX_COUNT];
+    int cost[MAX_COUNT];
 } spines_trace;
 
 
-int spines_flood_send(int sockfd, int address, int port, int rate, int size, int num_pkt);
-int spines_flood_recv(int sockfd, char *filename, int namelen);
+
+/* PUBLIC INTERFACE */
 
 int  spines_init(const struct sockaddr *serv_addr);
 int  spines_socket(int domain, int type, int protocol, 
 		   const struct sockaddr *serv_addr);
-int  spines_socket_internal(int domain, int type, int protocol, 
-		   const struct sockaddr *serv_addr, int *udp_sk, int *tcp_sk);
 void spines_close(int s);
-int  spines_sendto(int s, const void *msg, size_t len, int flags, 
-		   const struct sockaddr *to, socklen_t tolen);
-int  spines_sendto_internal(int s, const void *msg, size_t len, int flags, 
-			    const struct sockaddr *to, socklen_t tolen, 
-			    int force_tcp);
-int  spines_recvfrom(int s, void *buf, size_t len, int flags, 
-		     struct sockaddr *from, socklen_t *fromlen);
-int  spines_recvfrom_internal(int s, void *buf, size_t len, int flags, 
-			      struct sockaddr *from, socklen_t *fromlen,
-			      int force_tcp);
 int  spines_bind(int sockfd, struct sockaddr *my_addr, socklen_t addrlen);
-int  spines_setsockopt(int s, int  level,  int  optname,  const  void  *optval,
-		       socklen_t optlen);
-int  spines_ioctl(int s, int  level,  int  optname,  const  void  *optval,
-		       socklen_t optlen);
-int  spines_connect(int  sockfd,  const  struct sockaddr *serv_addr, 
-		    socklen_t addrlen);
 int  spines_send(int s, const void *msg, size_t len, int flags);
 int  spines_recv(int s, void *buf, size_t len, int flags);
 int  spines_listen(int s, int backlog);
 int  spines_accept(int s, struct sockaddr *addr, socklen_t *addrlen);
- int spines_setlink(int sk, const struct sockaddr *addr, 
-                    int bandwidth, int latency, float loss, float burst);
-int  spines_get_client(int sk);
-int  spines_ctrl_socket(const struct sockaddr *serv_addr);
-int  spines_traceroute(const struct sockaddr *dest_addr, spines_trace *sp_trace,
-	               const struct sockaddr *serv_addr);
+int  spines_sendto(int s, const void *msg, size_t len, int flags, 
+		   const struct sockaddr *to, socklen_t tolen);
+int  spines_recvfrom(int s, void *buf, size_t len, int flags, 
+		     struct sockaddr *from, socklen_t *fromlen);
+int  spines_connect(int  sockfd,  const  struct sockaddr *serv_addr, 
+                    socklen_t addrlen);
+int  spines_setsockopt(int s, int  level,  int  optname,  void  *optval,
+		       socklen_t optlen);
+int  spines_ioctl(int s, int  level,  int  optname,  void  *optval,
+		  socklen_t optlen);
+int  spines_getsockname(int sk, struct sockaddr *name, socklen_t *nlen);
+
+/* END PUBLIC INTERFACE */
+
+int spines_flood_send(int sockfd, int address, int port, int rate, int size, int num_pkt);
+int spines_flood_recv(int sockfd, char *filename, int namelen);
+int spines_socket_internal(int domain, int type, int protocol, 
+                           const struct sockaddr *serv_addr, int *udp_sk, int *tcp_sk);
+int spines_sendto_internal(int s, const void *msg, size_t len, int flags, 
+                           const struct sockaddr *to, socklen_t tolen, int force_tcp);
+int spines_recvfrom_internal(int s, void *buf, size_t len, int flags, 
+                             struct sockaddr *from, socklen_t *fromlen, int force_tcp);
+
+int spines_setlink(int sk, const struct sockaddr *addr, 
+                   int bandwidth, int latency, float loss, float burst);
+int spines_get_client(int sk);
 
 
 

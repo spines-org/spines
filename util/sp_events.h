@@ -92,6 +92,8 @@ sp_time	E_add_time( sp_time t, sp_time delta_t );
 int	E_compare_time( sp_time t1, sp_time t2 );
 int 	E_queue( void (* func)( int code, void *data ), int code, void *data,
 		 sp_time delta_time );
+int 	E_in_queue( void (* func)( int code, void *data ), int code,
+		   void *data );
 /* Note: This does not dispose/free the data pointed at by the void
    *data pointer */
 int 	E_dequeue( void (* func)( int code, void *data ), int code,

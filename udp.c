@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 - 2007 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2008 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -83,6 +83,7 @@ void	Flip_udp_hdr( udp_header *udp_hdr )
     udp_hdr->len	  = Flip_int16( udp_hdr->len );
     udp_hdr->seq_no	  = Flip_int16( udp_hdr->seq_no );
     udp_hdr->sess_id	  = Flip_int16( udp_hdr->sess_id );
+    udp_hdr->ttl          = Flip_int32( udp_hdr->ttl );
 }
 
 
@@ -128,6 +129,15 @@ void Process_udp_data_packet(int32 sender_id, char *buff, int16u data_len,
     if(!Same_endian(type))
 	Flip_udp_hdr(hdr);
 
+    /* decrement the TTL */
+    if(hdr->ttl != 0) {
+        hdr->ttl--;
+    } else {  
+        /* the ttl value in this function should never be 0, becuase we should never be sending out packets of ttl 0 */
+        Alarm(EXIT, "Process_udp_data_packet(): processing a packet with TTL of 0, not allowed.\n");
+    }
+
+
     if(hdr->len + sizeof(udp_header) == data_len) {	
 	if(!Is_mcast_addr(hdr->dest) && !Is_acast_addr(hdr->dest)) {
 	    /* This is unicast */
@@ -144,7 +154,8 @@ void Process_udp_data_packet(int32 sender_id, char *buff, int16u data_len,
 	    
 	    /* Nope, it's for smbd else. See where we should forward it */
 	    next_hop = Get_Route(My_Address, hdr->dest);
-	    if(next_hop != NULL) {
+            /* only forwad if ttl allows it */
+            if ((next_hop != NULL) && (hdr->ttl > 0)) {
 		ret = Forward_UDP_Data(next_hop, buff, data_len);
 		return;
 	    }
@@ -187,8 +198,9 @@ void Process_udp_data_packet(int32 sender_id, char *buff, int16u data_len,
 		}
 	    }
 	    neighbors = Get_Mcast_Neighbors(hdr->source, hdr->dest);
-	    
-	    if( neighbors != NULL) {
+
+            /* only forward if ttl allows it */
+            if ((neighbors != NULL) && (hdr->ttl > 0)) {
 		stdhash_begin(neighbors, &ngb_it);
 		while(!stdhash_is_end(neighbors, &ngb_it)) {
 		    next_hop = *((Node **)stdhash_it_val(&ngb_it));

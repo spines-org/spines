@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 - 2007 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2008 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -83,17 +83,20 @@ extern Prot_Def  Edge_Prot_Def;
 extern Prot_Def  Groups_Prot_Def;
 extern int       Security;
 extern int       Wireless;
+extern int       Wireless_ts;
+extern int       Wireless_monitor;
 
 /* Local variables */
 
 static const sp_time zero_timeout   = {     0,    0};
-static const sp_time short_timeout  = {     0,    50000};  /* 50 milliseconds */
-static const sp_time long_timeout   = {     0,    200000}; /* 200 milliseconds */
+static       sp_time short_timeout  = {     0,    50000};  /* 50 milliseconds */
 static       sp_time cnt_timeout    = {     0,    100000}; /* 100 milliseconds */
 static       sp_time hello_timeout  = {     1,    0};      /* 1 seconds */
-static       sp_time ad_timeout     = {    60,    0};      /* 60 seconds */
+static       sp_time ad_timeout     = {     6,    0};      /* 6 seconds */
 
-
+int          hello_cnt_start        = (int)(0.7*DEAD_LINK_CNT); 
+int          stable_delay_flag      = 0;
+int          stable_timeout         = 0;
 
 void Flip_hello_pkt( hello_packet *hello_pkt )
 {
@@ -127,28 +130,34 @@ void Init_Connections(void)
     now = E_get_time();
     srand(now.usec);
 
+    if (Wireless) {
+        hello_timeout.sec = 2;
+        cnt_timeout.usec = 200000;
+        hello_cnt_start = (int)(0.3*DEAD_LINK_CNT); 
+        stable_delay_flag = 1;
+    } 
+
     /* Start the hello protocol on all the known links */
     for(linkid=0; linkid<MAX_LINKS && Links[linkid] != NULL; linkid++)  {
-        if (Wireless) {
-            /* Try to avoid synchronized hello in Wireless */
-            rand_hello_timeout.sec = (int)(4.0*rand()/(RAND_MAX+1.0));
-            rand_hello_timeout.usec = (int)(999999.0*rand()/(RAND_MAX+1.0));
-	        E_queue(Send_Hello, linkid, NULL, rand_hello_timeout);
-        } else {
-            Send_Hello(linkid, NULL);
-        }
+        /* Try to avoid synchronized hello */
+        rand_hello_timeout.sec = (int)(rand()%(hello_timeout.sec+1));
+        rand_hello_timeout.usec = (int)(rand()%(1000000));
+	E_queue(Send_Hello, linkid, NULL, rand_hello_timeout);
     }
 
     /* Start the link recover protocol (hello ping) */
-    Send_Hello_Ping(0, NULL); 
+    if (!Wireless || (Wireless && Num_Discovery_Addresses == 0) ) {
+        Send_Hello_Ping(0, NULL); 
+    }
 
     /* Start Discovery of neighbors if requested */
     if (Num_Discovery_Addresses > 0) {
         Send_Discovery_Hello_Ping(0, NULL);
     }
-    if (Wireless) {
-        hello_timeout.sec = 4;
-        cnt_timeout.sec = 1;
+
+    if (stable_delay_flag) {
+        stable_timeout = hello_timeout.sec*hello_cnt_start +
+            (cnt_timeout.usec*(DEAD_LINK_CNT-hello_cnt_start+1))/1000000 + hello_timeout.sec;
     } 
 }
 
@@ -195,19 +204,15 @@ void Send_Hello(int linkid, void* dummy)
 	Clean_RT_history(Links[linkid]->other_side_node);
 	E_queue(Send_Hello, linkid, NULL, hello_timeout);
 	
-	if(cnt > 8 || (Wireless && cnt > 2)) {
+	if(cnt > hello_cnt_start) {
 	    Alarm(DEBUG, "cnt: %d :: %d.%d.%d.%d\n", cnt,
 		  IP1(Links[linkid]->other_side_node->address),
 		  IP2(Links[linkid]->other_side_node->address),
 		  IP3(Links[linkid]->other_side_node->address),
 		  IP4(Links[linkid]->other_side_node->address));
 
-    	    //E_queue(Send_Hello_Request_Cnt, linkid, NULL, long_timeout);
-            if (Wireless) {
-    	        E_queue(Send_Hello_Request_Cnt, linkid, NULL, long_timeout);
-            }
+    	    E_queue(Send_Hello_Request_Cnt, linkid, NULL, cnt_timeout);
         }
-	
     }
 }
 
@@ -522,11 +527,9 @@ void Process_hello_packet(char *buf, int remaining_bytes, int32 sender, int32u t
     srand(now.usec);
     time_rnd = (int)(30.0*rand()/(RAND_MAX+1.0));
 
-    /* Try to avoid synchronized hello in Wireless */
-    if (Wireless) {
-        rand_hello_timeout.sec = (int)(4.0*rand()/(RAND_MAX+1.0));
-        rand_hello_timeout.usec = (int)(1000000.0*rand()/(RAND_MAX+1.0)) - 1;
-    }
+    /* If creating a new link, try to avoid synchronized hello */
+    rand_hello_timeout.sec = (int)(rand()%(hello_timeout.sec+1));
+    rand_hello_timeout.usec = (int)(rand()%(1000000));
 
     if(remaining_bytes != sizeof(hello_packet)) {
         Alarm(EXIT, "Process_hello_packet: Wrong no. of bytes for hello: %d\n",
@@ -567,23 +570,58 @@ void Process_hello_packet(char *buf, int remaining_bytes, int32 sender, int32u t
 
 	/* Maybe the node crashed and went back up before I detected it */
 	/* This stays here, and not in the following one b/c it may
-	 * be possible that after it the node is no longer neighbor*/
+	 * be possible that after it the node is no longer neighbor */
+
+        /* TODO: Not entirely ok if there is more than one crash in less
+           than the time it takes to declare a link dead, or other situations
+           that occur in unstable networks. Should instead agree on a view number on
+           each edge or create one-way connections with identifiers. Otherwise,
+           link may send reliable packets indefinetly. Somewhat reprodusable with
+           high loss in hello packets. */
+
 	if(nd->flags & NEIGHBOR_NODE) {
 	    if(nd->link[CONTROL_LINK] == NULL)
 	        Alarm(EXIT, "Process_hello_packet(): No control link !\n");
 
 	    c_data = (Control_Data*)nd->link[CONTROL_LINK]->prot_data;
 
-	    if(pkt->seq_no + 3 < c_data->other_side_hello_seq) {
-		if(pkt->seq_no < 2) {
-		    Alarm(DEBUG, "\n\nMy neighbor crashed and I didn't know: %d :: %d; %d.%d.%d.%d\n\n",
-			  pkt->seq_no, c_data->other_side_hello_seq,
-			  IP1(sender_id), IP2(sender_id), IP3(sender_id), IP4(sender_id));
-		    Disconnect_Node(sender_id);
-		}
+            /* See if my neighbor crashed and came back without me knowing it */
+            if(pkt->seq_no < DEAD_LINK_CNT && c_data->other_side_hello_seq > (pkt->seq_no + DEAD_LINK_CNT)) { 
+                Alarm(DEBUG, "\n\nMy neighbor crashed and I didn't know: %d :: %d; %d.%d.%d.%d\n\n",
+                      pkt->seq_no, c_data->other_side_hello_seq,
+                      IP1(sender_id), IP2(sender_id), IP3(sender_id), IP4(sender_id));
+                Disconnect_Node(sender_id);
+	        return;
+            }
+
+            /* A new neighbor?  Make sure he has a new link with me */
+            if((nd->flags & NOT_YET_CONNECTED_NODE) && pkt->seq_no > DEAD_LINK_CNT) {
+                /* This is from another movie ...  He should notice from my 
+                   hello packets seq number that this is a new connection */
+                Alarm(DEBUG, "\n\nI crashed and my neighbor does not know yet: %d :: %d; %d.%d.%d.%d\n\n",
+                      pkt->seq_no, c_data->other_side_hello_seq,
+                      IP1(sender_id), IP2(sender_id), IP3(sender_id), IP4(sender_id));
+                return;
+            }
+
+            /* Make sure is not a very old hello that took too long to get here */
+            if(c_data->other_side_hello_seq > pkt->seq_no + 3) { 
 		return;
-	    }
-	}
+            }
+	} 
+
+        /* Stability Flag: Prevent node from comming back until enough time has
+           passed since last instantiation. Prevents reliable-link situation 
+           described above. */
+        if (stable_delay_flag && !(nd->flags & CONNECTED_NODE)) {
+            if ((now.sec - nd->last_time_neighbor.sec) < stable_timeout) {
+                if (nd->flags & NEIGHBOR_NODE) {
+                    Disconnect_Node(sender_id);
+                }
+                return;
+            }
+        }
+
 
 	/* If this is a neighbor... */
 	if(nd->flags & NEIGHBOR_NODE) {
@@ -635,7 +673,6 @@ void Process_hello_packet(char *buf, int remaining_bytes, int32 sender, int32u t
 	    nd->link[CONTROL_LINK]->r_data->rtt = c_data->rtt;
 
 	    /* Update the last time heard */
-	    nd->last_time_heard = now;
 	    nd->counter = 0;
 
 	    E_dequeue(Send_Hello_Request_Cnt, nd->link[CONTROL_LINK]->link_id, NULL); 
@@ -645,6 +682,7 @@ void Process_hello_packet(char *buf, int remaining_bytes, int32 sender, int32u t
 		if(nd->flags & NOT_YET_CONNECTED_NODE)
 		    nd->flags = nd->flags ^ NOT_YET_CONNECTED_NODE;
 	        nd->flags = nd->flags | CONNECTED_NODE;
+	        nd->last_time_neighbor = E_get_time();
 
 		edge->flags = CONNECTED_EDGE;
 		nd->link[CONTROL_LINK]->r_data->flags = CONNECTED_LINK;
@@ -660,8 +698,6 @@ void Process_hello_packet(char *buf, int remaining_bytes, int32 sender, int32u t
 		E_queue(Send_Hello, nd->link[CONTROL_LINK]->link_id, NULL, zero_timeout);
 		E_queue(Try_to_Send, nd->link[CONTROL_LINK]->link_id, NULL, zero_timeout);
 		E_queue(Try_to_Send, nd->link[RELIABLE_UDP_LINK]->link_id, NULL, zero_timeout);
-
-
 
 		Alarm(PRINT, "Connecting node %d.%d.%d.%d\n", 
 		      IP1(nd->address),
@@ -704,7 +740,8 @@ void Process_hello_packet(char *buf, int remaining_bytes, int32 sender, int32u t
 				if(c_data->reported_loss_rate > c_data->est_loss_rate) {
 				    if(c_data->reported_loss_rate - c_data->est_loss_rate >
 				       0.15*c_data->reported_loss_rate) {
-					c_data->reported_loss_rate = c_data->est_loss_rate;
+					//BUG? 
+                    c_data->reported_loss_rate = c_data->est_loss_rate;
 					if( Edge_Update_Cost(nd->link[CONTROL_LINK]->link_id, Route_Weight) > 0) {
 					    c_data->reported_loss_rate = c_data->est_loss_rate;	    
 					}
@@ -728,7 +765,6 @@ void Process_hello_packet(char *buf, int remaining_bytes, int32 sender, int32u t
 	}
 	else {
 	    nd->flags = NEIGHBOR_NODE | NOT_YET_CONNECTED_NODE;	      	  
-	    nd->last_time_heard = now;
 	    nd->counter = 0;
 
 	    for(nodeid=0; nodeid< MAX_LINKS/MAX_LINKS_4_EDGE; nodeid++) {
@@ -747,13 +783,8 @@ void Process_hello_packet(char *buf, int remaining_bytes, int32 sender, int32u t
 	    linkid = Create_Link(sender_id, CONTROL_LINK);
 	    c_data = (Control_Data*)Links[linkid]->prot_data;
 	    c_data->diff_time = my_diff.sec*10000 + my_diff.usec/100;
-	    c_data->other_side_hello_seq = remote_seq;
 	    
-            if (Wireless) {
-                E_queue(Send_Hello, linkid, NULL, rand_hello_timeout);
-            } else {
-                E_queue(Send_Hello, linkid, NULL, zero_timeout);
-            }
+            E_queue(Send_Hello, linkid, NULL, rand_hello_timeout);
 	}
     }
     else {
@@ -763,19 +794,13 @@ void Process_hello_packet(char *buf, int remaining_bytes, int32 sender, int32u t
 	if(stdhash_is_end(&All_Nodes, &it)) 
 	    Alarm(EXIT, "Process_hello_packet; could not create node\n");
         nd = *((Node **)stdhash_it_val(&it));
-	nd->last_time_heard = now;
 	nd->counter = 0;
-	
+
 	linkid = Create_Link(sender_id, CONTROL_LINK);
 	c_data = (Control_Data*)Links[linkid]->prot_data;
 	c_data->diff_time = my_diff.sec*10000 + my_diff.usec/100;
-	c_data->other_side_hello_seq = remote_seq;
 	
-        if (Wireless) {
-            E_queue(Send_Hello, linkid, NULL, rand_hello_timeout);
-        } else {
-            E_queue(Send_Hello, linkid, NULL, zero_timeout);
-        }
+        E_queue(Send_Hello, linkid, NULL, rand_hello_timeout);
     }
     
 }
@@ -800,9 +825,10 @@ void Process_hello_ping_packet(int32 sender, int mode)
     stdit it;
     int16 linkid, nodeid;
     Node *nd;
-
+    sp_time now, rand_hello_timeout;
 
     stdhash_find(&All_Nodes, &it, &sender);
+    now = E_get_time();
 
     if(stdhash_is_end(&All_Nodes, &it)) {
         Create_Node(sender, REMOTE_NODE);
@@ -821,9 +847,25 @@ void Process_hello_ping_packet(int32 sender, int mode)
 	if(nd->link[CONTROL_LINK] != NULL) {
 	    Alarm(EXIT, "Got a non neighbor with a control link !\n");
 	}
-	
+
+        if (stable_delay_flag) {
+            if ((now.sec - nd->last_time_neighbor.sec) < (stable_timeout*2)) {
+                return;
+            } 
+        }
+
+        if (Wireless_monitor) {
+            /* Create neighbor in wireless networks only when 
+               signal strenght is above threshold */
+            if (nd->w_data.rssi < Wireless_ts) {
+                /* Not good enough */
+                return;
+            }
+        }
+
+        /* Create neighbor */
+
 	nd->flags = NEIGHBOR_NODE | NOT_YET_CONNECTED_NODE;	      	  
-	nd->last_time_heard = E_get_time();;
 	nd->counter = 0;
 
 	for(nodeid=0; nodeid< MAX_LINKS/MAX_LINKS_4_EDGE; nodeid++) {
@@ -841,6 +883,12 @@ void Process_hello_ping_packet(int32 sender, int mode)
 	
 	linkid = Create_Link(nd->address, CONTROL_LINK);
 	
-	E_queue(Send_Hello, linkid, NULL, zero_timeout);
+        /* If creating a new link, try to avoid synchronized hello */
+        srand(now.usec);
+        rand_hello_timeout.sec = (int)(rand()%(hello_timeout.sec+1));
+        rand_hello_timeout.usec = (int)(rand()%(1000000));
+        E_queue(Send_Hello, linkid, NULL, rand_hello_timeout);
     }
 }
+
+

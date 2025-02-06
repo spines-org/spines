@@ -1,8 +1,7 @@
-/* Copyright (c) 2000-2005, The Johns Hopkins University
+/* Copyright (c) 2000-2006, The Johns Hopkins University
  * All rights reserved.
  *
- * The contents of this file are subject to a license (the ``License'')
- * that is the exact equivalent of the BSD license as of July 23, 1999. 
+ * The contents of this file are subject to a license (the ``License'').
  * You may not use this file except in compliance with the License. The
  * specific language governing the rights and limitations of the License
  * can be found in the file ``STDUTIL_LICENSE'' found in this 
@@ -26,6 +25,10 @@
 #include <stdutil/stdutil.h>
 #include <stdutil/stderror.h>
 #include <stdutil/stdhash.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /* stdhash is a table based implementation of a dictionary data
    structure. In particular, it is an open-address, double hashing
@@ -1390,3 +1393,7 @@ STDINLINE stdit *stdhash_it_retreat(stdit *it, stdsize num_retreat)
 
   return it;
 }
+
+#ifdef __cplusplus
+}
+#endif

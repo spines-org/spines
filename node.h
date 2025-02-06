@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 - 2007 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2008 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -44,6 +44,7 @@
 #include <openssl/ssl.h>
 #endif
 #include "link.h"
+#include "wireless.h"
 
 
 typedef struct Node_d {
@@ -53,7 +54,7 @@ typedef struct Node_d {
     int16 flags;                 /* Connected, Neighbor, etc. */
     int16 counter;               /* Number of outstanding "hello" messages */
 
-    sp_time last_time_heard;     /* Last time I heard from this node (not fully implemented) */
+    sp_time last_time_neighbor;    
     struct Link_d *link[MAX_LINKS_4_EDGE]; /* Links to this node, if a neighbor */
 
     /* Routing info */
@@ -63,6 +64,10 @@ typedef struct Node_d {
     /* Routing info for Dijkstra only */
     int cost;
     int distance;
+
+    /* Wireless Info from this node */
+    struct  Wireless_Data_d w_data;
+
     struct Node_d *forwarder;
 
     struct Node_d *prev;         /* Used to build an ordered linked list */

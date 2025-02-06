@@ -1,8 +1,7 @@
-/* Copyright (c) 2000-2005, The Johns Hopkins University
+/* Copyright (c) 2000-2006, The Johns Hopkins University
  * All rights reserved.
  *
- * The contents of this file are subject to a license (the ``License'')
- * that is the exact equivalent of the BSD license as of July 23, 1999. 
+ * The contents of this file are subject to a license (the ``License'').
  * You may not use this file except in compliance with the License. The
  * specific language governing the rights and limitations of the License
  * can be found in the file ``STDUTIL_LICENSE'' found in this 
@@ -27,7 +26,7 @@
             or vector.  Stores element by value, contiguously in
             memory modulo the size of the array.  Always maintains at
             least one empty element in a non-empty array to act as a
-            sentinel position and to remove the amibiguous of case
+            sentinel position and to remove the amibiguous case of
             when begin == end -- Is the array full or empty?  In
             particular, this allows for the test begin <= end ? (data
             doesn't wrap around) : (data wraps around)

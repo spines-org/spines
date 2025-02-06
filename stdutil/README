@@ -1,4 +1,4 @@
-This is the v1.0.0 (January 2006) distribution of the StdUtil library.
+This is the v1.0.1 (November 2007) distribution of the StdUtil library.
 
 DESCRIPTION:
 
@@ -6,13 +6,16 @@ The StdUtil library is a toolkit of C data structures and functions.
 
 LICENSE: 
 
-The license for use of the StdUtil library or its code is contained in
-the file STDUTIL_LICENSE found in the root of this distribution.
+The license for use of the StdUtil library and/or its code is 
+contained in the file STDUTIL_LICENSE found in the root of this 
+distribution.
 
 DOCUMENTATION:
 
-HTML documentaiton is contained within the docs directory or can be 
-accessed on the web at http://www.cnds.jhu.edu/software/stdutil/docs
+Documentation is currently incomplete but will be available in a
+subsequent release in HTML format in the docs directory.  The
+documentation will also be available at
+http://www.cnds.jhu.edu/software/stdutil/docs
 
 BUILDING: 
 
@@ -23,8 +26,8 @@ PROBLEMS:
 
 Please report bugs and/or bug fixes to jschultz@cnds.jhu.edu with a
 gdb compatible core (if possible) and any information that could help
-me fix the problem.
+fix the problem.
 
 Enjoy,
 John Schultz <jschultz@cnds.jhu.edu>
-January 2006
+November 2007

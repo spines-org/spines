@@ -1,8 +1,7 @@
-/* Copyright (c) 2000-2005, The Johns Hopkins University
+/* Copyright (c) 2000-2006, The Johns Hopkins University
  * All rights reserved.
  *
- * The contents of this file are subject to a license (the ``License'')
- * that is the exact equivalent of the BSD license as of July 23, 1999. 
+ * The contents of this file are subject to a license (the ``License'').
  * You may not use this file except in compliance with the License. The
  * specific language governing the rights and limitations of the License
  * can be found in the file ``STDUTIL_LICENSE'' found in this 
@@ -32,25 +31,33 @@
 extern "C" {
 #endif
 
+/* NOTE: redefining this limit only has an effect at compile time of the stdutil library */
+
 #ifndef STDERR_MAX_ERR_MSG_LEN 
-/* NOTE: redefining this variable only has an effect at compile time of the stdutil library */
 #  define STDERR_MAX_ERR_MSG_LEN 1024
 #endif
 
+/* stderr output stream (can be set to NULL to squelch all stdutil output) */
+
+extern FILE * stdutil_output /* = stderr */;
+
 /* stderr error routines */
 
-int  stderr_msg(const char *fmt, ...);
-int  stderr_ret(const char *fmt, ...);
-void stderr_quit(const char *fmt, ...);
-void stderr_abort(const char *fmt, ...);
-void stderr_sys(const char *fmt, ...);
-void stderr_dump(const char *fmt, ...);
+typedef enum 
+{
+  STDERR_RETURN,
+  STDERR_EXIT,
+  STDERR_ABORT
+
+} stderr_action;
+
+int stderr_output(stderr_action act, int errno_cpy, const char *fmt, ...);
 
 STDINLINE const char *stderr_strerr(stdcode code);
 
 /* error macros */
 
-#define STDEXCEPTION(x) stderr_abort("STDEXCEPTION: File: %s; Line: %d: %s", __FILE__, __LINE__, #x)
+#define STDEXCEPTION(x) stderr_output(STDERR_ABORT, 0, "STDEXCEPTION: File: %s; Line: %d: %s", __FILE__, __LINE__, #x)
 
 #if defined(STDSAFETY_CHECKS)
 #  define STDSAFETY_CHECK(x) { if (!(x)) { STDEXCEPTION(safety check (x) failed); } }
@@ -115,6 +122,12 @@ STDINLINE const char *stderr_strerr(stdcode code);
 #  define STDEINTR EINTR
 #else
 #  define STDEINTR 507
+#endif
+
+#if defined(ETIMEDOUT)
+#  define STDETIMEDOUT ETIMEDOUT
+#else
+#  define STDETIMEDOUT 508
 #endif
 
 #ifdef __cplusplus

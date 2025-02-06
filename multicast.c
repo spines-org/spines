@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 - 2007 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2008 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -51,6 +51,7 @@
 
 /* Global variables */
 extern int32    My_Address;
+extern stdhash  All_Nodes;
 extern stdhash  All_Groups_by_Node;
 extern stdhash  All_Groups_by_Name;
 extern stdhash  Changed_Group_States;
@@ -450,7 +451,7 @@ void* Groups_Process_state_cell(int32 source, char *pos)
 	g_state->my_timestamp_sec  = now.sec;
 	g_state->my_timestamp_usec = now.usec;
 	g_state->age = 0;
-	g_state->flags = g_state->flags ^ ACTIVE_GROUP;
+	g_state->flags = g_state->flags & !ACTIVE_GROUP;
 
 	Add_to_changed_states(&Groups_Prot_Def, My_Address, (void*)g_state, NEW_CHANGE);	
 
@@ -607,11 +608,14 @@ int Leave_Group(int32 mcast_address, Session *ses)
 	g_state->my_timestamp_sec  = now.sec;
 	g_state->my_timestamp_usec = now.usec;
 	g_state->age = 0;
-	g_state->flags = g_state->flags ^ ACTIVE_GROUP;
+	if((g_state->flags & ACTIVE_GROUP) == 0) {
+            Alarm(DEBUG, "BUG: Should have been active");
+        }
+	g_state->flags = g_state->flags & !ACTIVE_GROUP;
 
 	Add_to_changed_states(&Groups_Prot_Def, My_Address, (void*)g_state, NEW_CHANGE);	
 
-    }
+    } 
     return(1);
 }
 
@@ -774,6 +778,9 @@ stdhash* Get_Mcast_Neighbors(int32 sender, int32 mcast_address)
 
     best_next_hop = NULL;
     stdhash_begin(&s_chain_grp->states, &st_it);
+    if (sender != My_Address && Get_Route(My_Address, sender) == NULL) {
+        stdhash_end(&s_chain_grp->states, &st_it);
+    } 
     while(!stdhash_is_end(&s_chain_grp->states, &st_it)) {
 	g_state = *((Group_State **)stdhash_it_val(&st_it));
 	if(g_state->flags & ACTIVE_GROUP) {
@@ -904,6 +911,109 @@ void Discard_All_Mcast_Neighbors(void)
     }
 }
 
+void Trace_Group(int32 mcast_address, spines_trace *spines_tr) 
+{
+    stdit nd_it;
+    Node *nd;
+    Route *route;
+    spines_trace spt;
+    int i, j, current_ed, is_reachable;
+
+    /* Get all active group members */
+    memset(&spt, 0, sizeof(spt));
+    Get_Group_Members(mcast_address, &spt);
+
+    /* For each possible source, what is the maximum distance to any
+       of the group members (Group Euclidean Distance) */
+    i = 0;
+    stdhash_begin(&All_Nodes, &nd_it); 
+    while(!stdhash_is_end(&All_Nodes, &nd_it)) {
+        nd = *((Node **)stdhash_it_val(&nd_it));
+
+        /* Is this node at all reachable */
+        is_reachable = 0;
+        if (nd->address == My_Address) {
+            is_reachable = 1;
+        } else {
+            route = Find_Route(My_Address, nd->address);
+            if (route != NULL) {
+                if(route->forwarder != NULL) {
+                    is_reachable = 1;
+                }
+            }
+        }
+        if (is_reachable == 0) {
+	    stdhash_it_next(&nd_it);
+            continue;
+        }
+
+        current_ed = 0;
+        for (j=0;j<spt.count;j++) {
+	    route = Find_Route(nd->address, spt.address[j]);
+            if (route != NULL) {
+                if (route->distance >=0 && route->cost >=0) {
+                    if (route->distance > current_ed) {
+                        current_ed = route->distance;
+                    }
+                }
+            }
+            /* TODO: How many links need to be crossed to reach
+               all of the grouop members (Group Euclidean Cost) */
+        }
+        spines_tr->address[i]=nd->address;
+        spines_tr->distance[i]=current_ed;
+        spines_tr->cost[i]=0;
+        i++;
+	stdhash_it_next(&nd_it);
+    }
+    spines_tr->count = i;
+}
+
+int Get_Group_Members(int32 mcast_address, spines_trace *spines_tr)
+{
+    stdit grp_it, st_it;
+    State_Chain *s_chain_grp;
+    Route *route;
+    Group_State *g_state;
+    int i;
+
+    stdhash_find(&All_Groups_by_Name, &grp_it, &mcast_address);
+    if(stdhash_is_end(&All_Groups_by_Name, &grp_it)) {
+	return 0;
+    }
+    s_chain_grp = *((State_Chain **)stdhash_it_val(&grp_it));
+
+    i=0;
+    stdhash_begin(&s_chain_grp->states, &st_it);
+    while(!stdhash_is_end(&s_chain_grp->states, &st_it)) {
+	g_state = *((Group_State **)stdhash_it_val(&st_it));
+	if(g_state->flags & ACTIVE_GROUP) {
+            if (g_state->source_addr == My_Address) {
+                spines_tr->address[i] = g_state->source_addr;
+                spines_tr->distance[i] = 0;
+                spines_tr->cost[i] = 0;
+                i++;
+            } else {
+                route = Find_Route(My_Address, g_state->source_addr);
+	        if (route != NULL) {
+                    if (route->distance >= 0 && route->cost >= 0) {
+                        spines_tr->address[i] = g_state->source_addr;
+                        spines_tr->distance[i] = route->distance;
+                        spines_tr->cost[i] = route->cost;
+                        i++;
+                    }
+                }
+            } 
+        }
+        if (i == MAX_COUNT) {
+            break;
+        }
+        stdhash_it_next(&st_it);
+    }
+    spines_tr->count = i;
+    return 1;
+}
+
 /***********************************************************/
 /* void Print_Mcast_Groups(void)                           */
 /*                                                         */
@@ -921,12 +1031,14 @@ void Discard_All_Mcast_Neighbors(void)
 
 void Print_Mcast_Groups(int dummy_int, void* dummy)
 {
-    const sp_time print_timeout = {    150,    0};
+    const sp_time print_timeout = {    15,    0};
     FILE *fp = NULL;
-    stdit grp_it, nd_it, ngb_it;
+    stdit grp_it, ngb_it;
     State_Chain *s_chain_grp;
     Node *next_hop;
-    stdhash *nodes_list, *neighbors;
+    stdhash *neighbors;
+    spines_trace spt;
+    int i;
 
     stdhash_begin(&All_Groups_by_Name, &grp_it);
     fp = fopen(MCAST_SNAPSHOT_FILE, "w");
@@ -936,21 +1048,30 @@ void Print_Mcast_Groups(int dummy_int, void* dummy)
     }
     while(!stdhash_is_end(&All_Groups_by_Name, &grp_it)) {
 	s_chain_grp = *((State_Chain **)stdhash_it_val(&grp_it));
-	fprintf(fp, "\n"IPF, IP(s_chain_grp->address));
-	if(s_chain_grp->p_states != NULL) {
-	    nodes_list = s_chain_grp->p_states;
-	    stdhash_begin(nodes_list, &nd_it);
-	    while(!stdhash_is_end(nodes_list, &nd_it)) {
-		neighbors = *((stdhash **)stdhash_it_val(&nd_it));
-		if (neighbors != NULL) {
-		    stdhash_begin(neighbors, &ngb_it);
-		    while (!stdhash_is_end(neighbors, &ngb_it)) {
-			next_hop = *((Node **)stdhash_it_val(&ngb_it));
-			fprintf(fp, "\n\t"IPF, IP(next_hop->address));
-			stdhash_it_next(&ngb_it);
-		    }
+
+        /* Print Group */
+	fprintf(fp, "\n\n\n"IPF, IP(s_chain_grp->address));
+       
+        /* Print Current Membership */
+        memset(&spt, 0, sizeof(spt));
+        Get_Group_Members(s_chain_grp->address, &spt);
+        fprintf(fp, "\n\n\tOverlay Membership: %d\n", spt.count); 
+        for (i=0;i<spt.count;i++) {
+            fprintf(fp, "\n\t\t"IPF": %d: %d", 
+                    IP((int)(spt.address[i])), spt.distance[i], spt.cost[i]);
+        }
+
+        /* Print Forwarding Rule */
+        neighbors = Get_Mcast_Neighbors(My_Address, s_chain_grp->address);
+        fprintf(fp, "\n\n\tForwarding Table, Source=ME\n"); 
+	if(neighbors != NULL) {
+	    stdhash_begin(neighbors, &ngb_it);
+	    while(!stdhash_is_end(neighbors, &ngb_it)) {
+		next_hop = *((Node **)stdhash_it_val(&ngb_it));
+                if (next_hop != NULL) {
+		    fprintf(fp, "\n\t\t-->"IPF, IP(next_hop->address));
 		}
-		stdhash_it_next(&nd_it);
+		stdhash_it_next(&ngb_it);
 	    }
 	}
 	fprintf(fp, "\n");
@@ -959,3 +1080,4 @@ void Print_Mcast_Groups(int dummy_int, void* dummy)
     fclose(fp);
     E_queue(Print_Mcast_Groups, 0, NULL, print_timeout);
 }
+

@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 - 2007 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2008 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -55,10 +55,13 @@
 
 /* Global Variables */
 extern int32    My_Address;
+extern int16    Port;
 extern stdhash  All_Nodes;
 extern stdhash  All_Groups_by_Name;
 extern stdhash  All_Groups_by_Node;
 extern int16    KR_Flags;
+extern int32    Discovery_Address[MAX_DISCOVERY_ADDR];
+extern int16    Num_Discovery_Addresses;
 
 /* Local Variables */
 char    *KR_Client_Device_Name;
@@ -82,7 +85,7 @@ stdhash KR_Table;
 void KR_Init() 
 {
     int32 client_net;
-    int ret, i, i1, i2, i3, i4;
+    int ret, i1, i2, i3, i4;
     char *temp;
     void *handle;
 
@@ -133,7 +136,6 @@ void KR_Init()
     }
     if (!handle) {
         Alarm(PRINT, "Unable to load iproute dynamic library. Using system() to change route tables instead\n");
-        dlclose(handle);
     } else {
         iproute = dlsym(handle, "iproute");
         if (iproute == NULL) {
@@ -143,12 +145,43 @@ void KR_Init()
     }
 
     /* Get the default route device name for routing packets to clients */
-    if (KR_Flags & KR_CLIENT_MCAST_PATH) {
-        client_net = KR_TO_CLIENT_UCAST_IP(0);
-        sprintf(cmd, "%s route get "IPF" | %s dev | %s -e 's/.* dev \\([^ ]*\\).*/\\1/'", CMD_ip, IP(client_net), CMD_grep, CMD_sed);
-        KR_Client_Device_Name = KR_Get_Command_Output(cmd);
-        if (KR_Client_Device_Name == NULL) {
-            Alarm(EXIT, "KR: device name for "IPF" is empty!\n", IP(client_net));
+    client_net = KR_TO_CLIENT_UCAST_IP(0);
+    sprintf(cmd, "%s route get "IPF" | %s dev | %s -e 's/.* dev \\([^ ]*\\).*/\\1/'", CMD_ip, IP(client_net), CMD_grep, CMD_sed);
+    KR_Client_Device_Name = KR_Get_Command_Output(cmd);
+    if (KR_Client_Device_Name == NULL) {
+        Alarm(EXIT, "KR: device name for "IPF" is empty!\n", IP(client_net));
+    }
+
+    /* If setting routes between overlay nodes, we need two different route tables, 
+       one for overlay routing (we decide next hop), one for native routing */
+    if (KR_Flags & KR_OVERLAY_NODES) {
+        ret = 0;
+        sprintf(cmd, "%s -D OUTPUT -t mangle -p udp -m multiport --dports %d,%d,%d,%d -j MARK --set-mark 250",
+                     CMD_iptables, Port, Port+1, Port+2, Port+3); 
+        system(cmd);
+        sprintf(cmd, "%s -A OUTPUT -t mangle -p udp -m multiport --dports %d,%d,%d,%d -j MARK --set-mark 250",
+                     CMD_iptables, Port, Port+1, Port+2, Port+3); 
+        ret += system(cmd);
+
+        sprintf(cmd, "%s route flush table 250", CMD_ip); 
+        ret += system(cmd);
+
+        sprintf(cmd, "%s rule del fwmark 250 table 250", CMD_ip);
+        system(cmd);
+        sprintf(cmd, "%s rule add fwmark 250 table 250", CMD_ip);
+        ret += system(cmd);
+
+        sprintf(cmd, "%s route replace default table 250 dev %s", 
+                CMD_ip, KR_Client_Device_Name);
+        ret += system(cmd);
+        sprintf(cmd, "%s route replace "IPF"/8 table 250 dev %s", 
+                CMD_ip, IP(My_Address&0xFF000000), KR_Client_Device_Name);
+        ret += system(cmd);
+        sprintf(cmd, "%s route replace 192.0.0.0/29 table 250 dev %s", 
+                CMD_ip, KR_Client_Device_Name);
+        ret += system(cmd);
+        if (ret != 0) {
+            Alarm(EXIT, "KR_Init(): Error setting system parameters\n");
         }
     }
 }
@@ -180,12 +213,15 @@ void KR_Set_Group_Route(int32 group_destination, void *dummy)
     } 
 
     //Alarm(PRINT, "Setting "IPF" kernel route\n", IP(group_destination));
+    route_changed = 0;
 
     /* I am a member, make note to directly route to dest */
-    if((g_state = (Group_State*)Find_State(&All_Groups_by_Node, My_Address, group_destination)) != NULL) 
-    {
-        if((g_state->flags & ACTIVE_GROUP)) {
-            member = 1;
+    if (!(KR_Flags & KR_CLIENT_WITHOUT_EDGE)) {
+        if((g_state = (Group_State*)Find_State(&All_Groups_by_Node, My_Address, group_destination)) != NULL) 
+        {
+            if((g_state->flags & ACTIVE_GROUP)) {
+                member = 1;
+            }
         }
     }
 
@@ -366,7 +402,7 @@ int KR_Register_Route(int32 destination, int table_id, Node *nd, stdhash *neighb
 
 
 /* 
- * Make changes in the kernel, based on global KR_Table entriy
+ * Make changes in the kernel, based on global KR_Table entry
  */
 void KR_Set_Table_Route(int32 destination, int table_id) 
 {
@@ -390,12 +426,7 @@ void KR_Set_Table_Route(int32 destination, int table_id)
         kr_routes = *((stddll**)stdhash_it_val(&krtid_it));
         if (stddll_empty(kr_routes)) {
             KR_Delete_Table_Route(destination, table_id);
-            /* TODO: Cannot dispose destination 
-            stddll_destruct(kr_routes);
-            dispose(kr_routes);
-            stdhash_destruct(krtid_hash);
-            dispose(krtid_hash);
-            stdhash_erase(&KR_Table, &krt_it); */
+            /* TODO: Cannot dispose destination unless no other table has an entry */
             return;
         }
     }
@@ -406,14 +437,14 @@ void KR_Set_Table_Route(int32 destination, int table_id)
     } else {
         sprintf(cmd, "%s route replace "IPF"/32 ", CMD_ip, IP(destination));
         if (table_id > 0 && table_id < 255) {
-            sprintf(cmd+strlen(cmd), "table %d ", table_id);
+            sprintf(cmd+strlen(cmd), " table %d ", table_id);
         }
     }
 
     stddll_begin(kr_routes, &kr_routes_it);
     while (!stddll_is_end(kr_routes, &kr_routes_it)) { 
         kre = (KR_Entry *)stddll_it_val(&kr_routes_it);
-        sprintf(cmd+strlen(cmd), "nexthop via "IPF" ",
+        sprintf(cmd+strlen(cmd), " nexthop via "IPF" ",
                     IP(kre->next_hop));
         if (kre->dev != NULL && strlen(kre->dev) > 0) {
             sprintf(cmd+strlen(cmd), " dev %s ", kre->dev);
@@ -453,6 +484,12 @@ void KR_Create_Overlay_Node(int32 address)
         sprintf(cmd, "%s -A PREROUTING -t mangle -m u32 --u32 \"2&0xFFFF=%d\" -j MARK --set-mark %d",
                      CMD_iptables, IP4(address), IP4(address)); 
         system(cmd);
+        sprintf(cmd, "%s -D OUTPUT -t mangle -m u32 --u32 \"2&0xFFFF=%d\" -j MARK --set-mark %d",
+                     CMD_iptables, IP4(address), IP4(address)); 
+        system(cmd);
+        sprintf(cmd, "%s -A OUTPUT -t mangle -m u32 --u32 \"2&0xFFFF=%d\" -j MARK --set-mark %d",
+                     CMD_iptables, IP4(address), IP4(address)); 
+        system(cmd);
 
         sprintf(cmd, "%s route flush table %d", CMD_ip, IP4(address)); 
         system(cmd);
@@ -469,11 +506,11 @@ void KR_Create_Overlay_Node(int32 address)
 void KR_Delete_Overlay_Node(int32 address) 
 {
     /* TODO: Delete from KR_Table */
-    sprintf(cmd, "%s route flush table %d", CMD_ip, IP4(address));
-    system(cmd);
     sprintf(cmd, "%s route delete "IPF" ", CMD_ip, IP(address));
     system(cmd);
     if (KR_Flags & KR_CLIENT_MCAST_PATH) {
+        sprintf(cmd, "%s route flush table %d", CMD_ip, IP4(address));
+        system(cmd);
         sprintf(cmd, "%s -D PREROUTING -t mangle -m u32 --u32 \"2&0xFFFF=%d\" -j MARK --set-mark %d",
                 CMD_iptables, IP4(address), IP4(address)); 
         system(cmd);
@@ -507,7 +544,7 @@ void KR_Update_All_Routes()
             route = Find_Route(My_Address, nd->address);
             if(route != NULL && route->forwarder != NULL) {
                 /* Get device name for next hop if necessary */
-                if (route->forwarder->device_name == NULL && KR_Flags & KR_CLIENT_MCAST_PATH) {
+                if (route->forwarder->device_name == NULL && (KR_Flags & KR_CLIENT_MCAST_PATH)) {
                     sprintf(cmd, "%s route get "IPF" | %s dev | %s -e 's/.* dev \\([^ ]*\\).*/\\1/'", CMD_ip, IP(nd->address), CMD_grep, CMD_sed);
                     output = KR_Get_Command_Output(cmd);
                     if (output == NULL) {
@@ -516,17 +553,23 @@ void KR_Update_All_Routes()
                     nd->device_name = output;
                 }
                 /* Now make route changes */
-                route_changed = KR_Register_Route(nd->address, 0, route->forwarder, NULL, 0);
-                if (route_changed) {
-                    KR_Set_Table_Route(nd->address, 0);
+                if (KR_Flags & KR_OVERLAY_NODES) {
+                    route_changed = KR_Register_Route(nd->address, 0, route->forwarder, NULL, 0);
+                    if (route_changed) {
+                        KR_Set_Table_Route(nd->address, 0);
+                    }
                 }
             }
             else {
-                route_changed = KR_Register_Route(nd->address, 0, NULL, NULL, 0);
-                if (route_changed) {
-                    KR_Set_Table_Route(nd->address, 0);
-                    sprintf(cmd, "%s route flush table %d", CMD_ip, IP4(nd->address));
-                    IPROUTE_EXECUTE(cmd);
+                if (KR_Flags & KR_OVERLAY_NODES) {
+                    route_changed = KR_Register_Route(nd->address, 0, NULL, NULL, 0);
+                    if (route_changed) {
+                        KR_Set_Table_Route(nd->address, 0);
+                        if (KR_Flags & KR_CLIENT_MCAST_PATH) {
+                            sprintf(cmd, "%s route flush table %d", CMD_ip, IP4(nd->address));
+                            IPROUTE_EXECUTE(cmd);
+                        }
+                    }
                 }
             }
         }
@@ -551,6 +594,43 @@ void KR_Update_All_Routes()
     stop = E_get_time();
     KR_route_time = (stop.sec - start.sec)*1000000;
     KR_route_time += stop.usec - start.usec;
+}
+
+/* unused/untested garbage collector; needs work/testing; */
+void KR_Garbage_Collect()
+{
+    stdit krt_it, krtid_it;
+    stdhash *krtid_hash;
+    stddll *kr_routes;
+    int found_entry;
+    
+    kr_routes = NULL;
+    stdhash_begin(&KR_Table, &krt_it);
+    while(!stdhash_is_end(&KR_Table, &krt_it)) {
+        krtid_hash = *((stdhash**)stdhash_it_val(&krt_it));
+        found_entry = 0;
+        stdhash_begin(krtid_hash, &krtid_it);
+        while(!stdhash_is_end(krtid_hash, &krtid_it)) {
+            kr_routes = *((stddll**)stdhash_it_val(&krtid_it));
+            if (!stddll_empty(kr_routes)) {
+                found_entry = 1;
+                break;
+            }
+            stdhash_it_next(&krtid_it);
+        }
+        if (found_entry == 0) {
+            stdhash_begin(krtid_hash, &krtid_it);
+            while(!stdhash_is_end(krtid_hash, &krtid_it)) {
+                stddll_destruct(kr_routes);
+                dispose(kr_routes);
+                stdhash_it_next(&krtid_it);
+            }
+            stdhash_destruct(krtid_hash);
+            dispose(krtid_hash);
+            stdhash_erase(&KR_Table, &krt_it); 
+        }
+        stdhash_it_next(&krt_it);
+    }
 }
 
 

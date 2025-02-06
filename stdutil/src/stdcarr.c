@@ -1,8 +1,7 @@
-/* Copyright (c) 2000, The Johns Hopkins University
+/* Copyright (c) 2000-2006, The Johns Hopkins University
  * All rights reserved.
  *
- * The contents of this file are subject to a license (the ``License'')
- * that is the exact equivalent of the BSD license as of July 23, 1999. 
+ * The contents of this file are subject to a license (the ``License'').
  * You may not use this file except in compliance with the License. The
  * specific language governing the rights and limitations of the License
  * can be found in the file ``STDUTIL_LICENSE'' found in this 
@@ -25,6 +24,10 @@
 
 #include <stdutil/stderror.h>
 #include <stdutil/stdcarr.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #define STDCARR_IS_LEGAL(carr) (( ((carr)->cap != 0 && (carr)->base != NULL) || ((carr)->cap == 0 && (carr)->base == NULL) ) && \
 				(stdsize) ((carr)->endbase - (carr)->base) == (carr)->cap * (carr)->vsize && \
@@ -1447,3 +1450,7 @@ STDINLINE stdit *stdcarr_it_offset(stdit *it, stdssize offset)
 {
   return (offset >= 0 ? stdcarr_it_advance(it, (stdsize) offset) : stdcarr_it_retreat(it, (stdsize) -offset));
 }
+
+#ifdef __cplusplus
+}
+#endif

@@ -1,8 +1,7 @@
-/* Copyright (c) 2000-2005, The Johns Hopkins University
+/* Copyright (c) 2000-2006, The Johns Hopkins University
  * All rights reserved.
  *
- * The contents of this file are subject to a license (the ``License'')
- * that is the exact equivalent of the BSD license as of July 23, 1999. 
+ * The contents of this file are subject to a license (the ``License'').
  * You may not use this file except in compliance with the License. The
  * specific language governing the rights and limitations of the License
  * can be found in the file ``STDUTIL_LICENSE'' found in this 
@@ -70,21 +69,21 @@ typedef unsigned short     stduint16;
 typedef stdarch_int32      stdint32;
 typedef stdarch_uint32     stduint32;
 
-#define STDINT32_MAX       (STDINT32_MIN - 1)
+#define STDINT32_MAX       ((stdint32) ((stduint32) STDINT32_MIN - 1))
 #define STDINT32_MIN       ((stdint32) ((stduint32) 0x1 << 31))
 #define STDUINT32_MAX      ((stduint32) -1)
 
 typedef stdarch_int64      stdint64;
 typedef stdarch_uint64     stduint64;
 
-#define STDINT64_MAX       (STDINT64_MIN - 1)
+#define STDINT64_MAX       ((stdint64) ((stduint64) STDINT64_MIN - 1))
 #define STDINT64_MIN       ((stdint64) ((stduint64) 0x1 << 63))
 #define STDUINT64_MAX      ((stduint64) -1)
 
 typedef size_t             stdsize;
 typedef stdarch_ssize      stdssize;  /* a signed version of size_t */
 
-#define STDSSIZE_MAX       (STDSSIZE_MIN - 1)
+#define STDSSIZE_MAX       ((stdssize) ((stdsize) STDSSIZE_MIN - 1))
 #define STDSSIZE_MIN       ((stdssize) ((stdsize) 0x1 << (sizeof(stdssize) * 8 - 1))
 #define STDSIZE_MAX        ((stdsize) -1)
 

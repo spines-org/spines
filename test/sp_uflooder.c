@@ -62,6 +62,7 @@ static int  Reliable_Flag;
 static int  Sping_Flag;
 static int  Protocol;
 static int  Group_Address;
+static int  ttl;
 
 static void Usage(int argc, char *argv[]);
 
@@ -208,6 +209,26 @@ int main( int argc, char *argv[] )
 	    if(fileflag == 1) {
 		fprintf(f1, "\n\n");
 	    }
+	}
+
+	/* set the ttl if instructed to */
+	if(ttl != 255) {
+	  if((ttl >= 0) && (ttl <= 255)) {
+	    if(!Is_mcast_addr(ntohl(host.sin_addr.s_addr)) && !Is_acast_addr(ntohl(host.sin_addr.s_addr))) { 
+              /* This is unicast */
+	      if(spines_setsockopt(sk, 0, SPINES_IP_TTL, &ttl, sizeof(ttl)) != 0) {
+		exit(0);
+	      }
+	    } else {
+              /* This is a multicast */
+	      if(spines_setsockopt(sk, 0, SPINES_IP_MULTICAST_TTL, &ttl, sizeof(ttl)) != 0) {
+		exit(0);
+	      }
+	    }
+	  } else {
+	    printf("error, the ttl value %d is not between 0 and 255\r\n", ttl);
+	    exit(0);
+	  }
 	}
 
 	gettimeofday(&start, &tz);
@@ -442,6 +463,7 @@ static  void    Usage(int argc, char *argv[])
     strcpy(SP_IP, "");
     strcpy(MCAST_IP, "");
     Group_Address = -1;
+    ttl = 255;
 
     while( --argc > 0 ) {
 	argv++;
@@ -472,6 +494,9 @@ static  void    Usage(int argc, char *argv[])
 	}else if( !strncmp( *argv, "-R", 2 ) ){
 	    sscanf(argv[1], "%d", (int*)&Rate );
 	    argc--; argv++;
+	}else if( !strncmp( *argv, "-t", 2 ) ){
+	  sscanf(argv[1], "%d", (int*)&ttl );
+	  argc--; argv++;
 	}else if( !strncmp( *argv, "-n", 2 ) ){
 	    sscanf(argv[1], "%d", (int*)&Num_pkts );
 	    argc--; argv++;
@@ -487,20 +512,21 @@ static  void    Usage(int argc, char *argv[])
 	    fileflag = 1;
 	    argc--; argv++;
 	}else{
-	    printf( "Usage: sp_flooder\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n",
-		    "\t[-o <address>    ] : address where spines runs, default localhost",
-		    "\t[-p <port number>] : port where spines runs, default is 8100",
-		    "\t[-d <port number>] : to send packets on, default is 8400",
-		    "\t[-r <port number>] : to receive packets on, default is 8400",
-		    "\t[-a <address>    ] : address to send packets to",
-		    "\t[-j <mcast addr> ] : multicas address to join",
-		    "\t[-b <size>       ] : size of the packets (in bytes)",
-		    "\t[-R <rate>       ] : sending rate (in 1000's of bits per sec)",
-		    "\t[-n <rounds>     ] : number of packets",
-		    "\t[-f <filename>   ] : file where to save statistics",
-		    "\t[-g              ] : run with sping for clock sync",
-		    "\t[-P <0, 1 or 2>  ] : overlay links (0 : UDP; 1; Rliable; 2: Realtime)",
-		    "\t[-s              ] : sender flooder");
+	    printf( "Usage: sp_flooder\n"
+		    "\t[-o <address>    ] : address where spines runs, default localhost\n"
+		    "\t[-p <port number>] : port where spines runs, default is 8100\n"
+		    "\t[-d <port number>] : to send packets on, default is 8400\n"
+		    "\t[-r <port number>] : to receive packets on, default is 8400\n"
+		    "\t[-a <address>    ] : address to send packets to\n"
+		    "\t[-j <mcast addr> ] : multicas address to join\n"
+		    "\t[-t <ttl number> ] : set a ttl on the packets, defualt is 255\n"
+		    "\t[-b <size>       ] : size of the packets (in bytes)\n"
+		    "\t[-R <rate>       ] : sending rate (in 1000's of bits per sec)\n"
+		    "\t[-n <rounds>     ] : number of packets\n"
+		    "\t[-f <filename>   ] : file where to save statistics\n"
+		    "\t[-g              ] : run with sping for clock sync\n"
+		    "\t[-P <0, 1 or 2>  ] : overlay links (0 : UDP; 1; Reliable; 2: Realtime)\n"
+		    "\t[-s              ] : sender flooder\n");
 	    exit( 0 );
 	}
     }

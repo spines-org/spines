@@ -36,6 +36,7 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/ioctl.h>
 #include <netinet/in.h> 
 #include <netinet/tcp.h>
 #include <netdb.h>
@@ -64,6 +65,7 @@ static int  Reliable_Flag;
 static int  Sping_Flag;
 static int  Forwarder_Flag;
 static int  Group_Address;
+static int  Realtime;
 
 static void Usage(int argc, char *argv[]);
 int max_rcv_buff(int sk);
@@ -81,10 +83,9 @@ void isleep(int usec)
     gettimeofday(&start, &tz);    
     diff = 0;
     while(diff < usec) {
-        if(usec - diff > 10) {
-            usleep(5);
-        } else if(usec - diff > 1) {
-            usleep(1);
+        /* If enough time to sleep, otherwise, busywait */
+        if(usec - diff > 200) {
+            usleep(usec-20);
         }
         gettimeofday(&now, &tz);
         diff = now.tv_sec - start.tv_sec;
@@ -99,7 +100,7 @@ int main( int argc, char *argv[] )
 {
     int  sk, recv_count, first_pkt_flag;
     char buf[MAX_PACKET_SIZE];
-    int  i, ret;
+    int  i, ret, ioctl_cmd, block_count;
     struct timeval *t1, *t2;
     struct timeval local_recv_time, start, now, report_time, old_time;
     struct timezone tz;
@@ -206,6 +207,7 @@ int main( int argc, char *argv[] )
             perror("u_flooder_client: socket error");
             exit(1);
         }
+        max_snd_buff(sk);
 
         /* Bind to control the source port of sent packets, 
            so that we can go over to a NATed network */
@@ -216,6 +218,18 @@ int main( int argc, char *argv[] )
         if(bind(sk, (struct sockaddr *)&name, sizeof(name) ) < 0) {
             perror("err: bind");
             exit(1);
+        }
+        if (Realtime) {
+            /* Realtime here means, if I can't send, drop it, and
+             * worry only about the next packet.  This will happen 
+             * if the sending buffer was full, which is pretty bad 
+             * already for time-sensitive data. */
+            ioctl_cmd = 1;
+            ret = ioctl(sk, FIONBIO, &ioctl_cmd);
+            if (ret == -1) {
+                perror("err: ioctl");
+                exit(1);
+            }
         }
 
         host.sin_family = AF_INET;
@@ -245,6 +259,7 @@ int main( int argc, char *argv[] )
         gettimeofday(&start, &tz);
         report_time.tv_sec = start.tv_sec;
         report_time.tv_usec = start.tv_usec;
+        block_count = 0;
     
         for(i=0; i<Num_pkts; i++)
         {
@@ -261,13 +276,24 @@ int main( int argc, char *argv[] )
 
 
             ret = sendto(sk, buf, Num_bytes, 0, (struct sockaddr *)&host, sizeof(struct sockaddr));
-            if(ret != Num_bytes) {
+            gettimeofday(&now, &tz);
+
+            if (ret < 0) {
+                if((errno == EWOULDBLOCK)||(errno == EAGAIN)) {
+                    block_count++;
+                    //printf("Dropped %d:%d\n", i, block_count);
+                } else {
+                    printf("error in writing: %d...\n", ret);
+                    exit(0);
+                }
+            }
+            else if(ret != Num_bytes) {
                 printf("error in writing: %d...\n", ret);
                 exit(0);
             }
 
             gettimeofday(&now, &tz);
-        
+
             if(fileflag == 1) {
                 sent_packets++;
                 elapsed_time  = (now.tv_sec - report_time.tv_sec);
@@ -305,7 +331,7 @@ int main( int argc, char *argv[] )
                         printf("!!! BIG delay !!!  %lld\n", int_delay);
                     if(int_delay > 0)
                         isleep(int_delay);
-                }
+                } 
             }
         }
         *pkt_no = -1;
@@ -329,6 +355,9 @@ int main( int argc, char *argv[] )
         printf("Sender: Avg. rate: %8.3f Kbps\n", rate_now);
         if(fileflag == 1) {
             fprintf(f1, "Sender: Avg. rate: %8.3f Kbps\n", rate_now);
+        }
+        if(Realtime) {
+            printf("   RT: Dropped %d packets \n", block_count);
         }
     } else {
         printf("Just answering flooder msgs on port %d\n", recvPort);
@@ -474,7 +503,7 @@ int max_rcv_buff(int sk)
       if (ret < 0) 
           break;
       lenval = sizeof(val);
-      ret= getsockopt(sk, SOL_SOCKET, SO_RCVBUF, (void *)&val, &lenval);
+      ret = getsockopt(sk, SOL_SOCKET, SO_RCVBUF, (void *)&val, &lenval);
       if(val < i*1024 ) 
           break;
     }
@@ -523,6 +552,7 @@ static  void    Usage(int argc, char *argv[])
     strcpy(IP, "127.0.0.1");
     strcpy(MCAST_IP, "");
     Group_Address = 0;
+    Realtime = 0;
 
     while( --argc > 0 ) {
         argv++;
@@ -530,6 +560,8 @@ static  void    Usage(int argc, char *argv[])
         if( !strncmp( *argv, "-d", 2 ) ){
             sscanf(argv[1], "%d", (int*)&sendPort );
             argc--; argv++;
+        }else if( !strncmp( *argv, "-rt", 3 ) ){
+            Realtime=1;
         }else if( !strncmp( *argv, "-r", 2 ) ){
             sscanf(argv[1], "%d", (int*)&recvPort );
             argc--; argv++;
@@ -570,6 +602,7 @@ static  void    Usage(int argc, char *argv[])
             "\t[-n <rounds>     ] : number of packets",
 		    "\t[-j <mcast addr> ] : multicas address to join",
             "\t[-f <filename>   ] : file where to save statistics",
+            "\t[-rt             ] : real-time, non-blocking i/o",
             "\t[-p              ] : run with sping for clock sync",
             "\t[-s              ] : sender flooder",
             "\t[-F              ] : forwarder only");

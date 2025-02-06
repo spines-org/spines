@@ -1,8 +1,7 @@
-/* Copyright (c) 2000-2005, The Johns Hopkins University
+/* Copyright (c) 2000-2006, The Johns Hopkins University
  * All rights reserved.
  *
- * The contents of this file are subject to a license (the ``License'')
- * that is the exact equivalent of the BSD license as of July 23, 1999. 
+ * The contents of this file are subject to a license (the ``License'').
  * You may not use this file except in compliance with the License. The
  * specific language governing the rights and limitations of the License
  * can be found in the file ``STDUTIL_LICENSE'' found in this 
@@ -36,6 +35,10 @@
 #  include <stdutil/stderror.h>
 #  include <stdutil/stdthread.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /************************************************************************************************
  * stdthread_spawn: Create a new thread and start its execution.
  ***********************************************************************************************/
@@ -49,6 +52,7 @@ STDINLINE stdcode stdthread_spawn(stdthread *thr_ptr, stdthread_id *id, stdthrea
 
   if ((thr = (HANDLE) _beginthreadex(NULL, 0, (unsigned(STDTHREAD_FCN*)(void*)) thr_fcn, fcn_arg, 0, &tid)) == NULL) {
     ret = errno;
+    STDSAFETY_CHECK(ret != STDESUCCESS);
     goto stdthread_spawn_end;
   }
 
@@ -88,6 +92,7 @@ STDINLINE stdcode stdthread_detach(stdthread thr)
 
   if (CloseHandle(thr) == 0) {
     ret = (stdcode) GetLastError();
+    STDSAFETY_CHECK(ret != STDESUCCESS);
   }
 
   return ret;
@@ -135,6 +140,7 @@ STDINLINE stdcode stdthread_join(stdthread thr, void **exitval_ptr)
 
  stdthread_join_fail:
   ret = (stdcode) GetLastError();
+  STDSAFETY_CHECK(ret != STDESUCCESS);
 
  stdthread_join_end:
   return ret;
@@ -314,7 +320,7 @@ STDINLINE static stdcode stdcond_impl_wake(stdcond *cond, stdbool wake_all)
 
     woke_one = STDFALSE;
 
-    for (loop_cnt = 20; loop_cnt != 0; --loop_cnt) {  /* don't try to wake sleeper more than a constant # of times */
+    for (loop_cnt = 10; loop_cnt != 0; --loop_cnt) {  /* don't try to wake sleeper more than a constant # of times */
       err = ResumeThread(sleeper);
 
       if (err == 1) {
@@ -326,6 +332,7 @@ STDINLINE static stdcode stdcond_impl_wake(stdcond *cond, stdbool wake_all)
 
       } else if (err == (DWORD) -1) {  /* error */
 	ret = (stdcode) GetLastError();
+	STDSAFETY_CHECK(ret != STDESUCCESS);
 	break;
 
       } else if (err > MAXIMUM_SUSPEND_COUNT || (err > loop_cnt && inf_loop)) {
@@ -543,7 +550,7 @@ STDINLINE stdcode stdmutex_fast_cond_wait(stdmutex *mut, stdcond *cond)
      higher priority, then he would just loop forever waiting for this
      thread to Suspend, which would never happen due to its lower
      priority.
-x  */
+  */
 
   if (SuspendThread(curr_thread) == -1) {
     abort();
@@ -573,6 +580,7 @@ x  */
 
  stdmutex_fast_cond_wait_malloc:
   CloseHandle(dup_handle);
+  STDSAFETY_CHECK(ret != STDESUCCESS);
 
  stdmutex_fast_cond_wait_end:
   if (reacquire) {
@@ -1179,6 +1187,10 @@ STDINLINE stdcode stdcond_wait_timed(stdcond *cond, stdmutex *mut, const stdtime
   return ret;
 }
 #  endif
+#endif
+
+#ifdef __cplusplus
+}
 #endif
 
 #else

@@ -1,8 +1,7 @@
-/* Copyright (c) 2000-2005, The Johns Hopkins University
+/* Copyright (c) 2000-2006, The Johns Hopkins University
  * All rights reserved.
  *
- * The contents of this file are subject to a license (the ``License'')
- * that is the exact equivalent of the BSD license as of July 23, 1999. 
+ * The contents of this file are subject to a license (the ``License'').
  * You may not use this file except in compliance with the License. The
  * specific language governing the rights and limitations of the License
  * can be found in the file ``STDUTIL_LICENSE'' found in this 
@@ -28,6 +27,10 @@
 #include <stdutil/stderror.h>
 #include <stdutil/stdtime.h>
 #include <stdutil/stdutil.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /************************************************************************************************
  * stdstrcpy: Like C's strcpy, but returns strlen(dst) instead.
@@ -159,7 +162,7 @@ STDINLINE stduint32 stdhcode_oaat(const void * buf, stdsize buf_len)
  * span several buffers.  Preferably, but not required, tot_len would
  * equal the total length of the buffers to be hcoded.  If the total
  * length is unknown (or you simply don't want to compute it), then
- * consistently use the same arbitrary constant (e.g. - 0) when
+ * consistently use the same arbitrary constant (e.g. - 0x1) when
  * computing the hcode for those objects.
  ***********************************************************************************************/
 
@@ -216,7 +219,7 @@ STDINLINE void stdhcode_oaat_stop(stduint32 * hsh)
      defined (__BORLANDC__) || defined (__TURBOC__))
 #  define stdhcode_sfh_get16bits(d) ( *((const stduint16*)(d)) )
 #else
-#  define stdhcode_sfh_get16bits(d) ( ((stduint16) *((const stduint8 *)(d) + 1) << 8) + *(const stduint8 *)(d) )
+#  define stdhcode_sfh_get16bits(d) ( ((stduint32) *((const stduint8 *)(d) + 1) << 8) | (stduint32) *(const stduint8 *)(d) )
 #endif
 
 STDINLINE stduint32 stdhcode_sfh(const void * buf, stdsize buf_len) 
@@ -263,9 +266,10 @@ STDINLINE stduint32 stdhcode_sfh(const void * buf, stdsize buf_len)
 
   ret ^= ret << 3;
   ret += ret >> 5;
-  ret ^= ret << 2;
-  ret += ret >> 15;
-  ret ^= ret << 10;
+  ret ^= ret << 4;
+  ret += ret >> 17;
+  ret ^= ret << 25;
+  ret += ret >> 6;
   
   return ret;
 }
@@ -275,7 +279,7 @@ STDINLINE stduint32 stdhcode_sfh(const void * buf, stdsize buf_len)
  * span several buffers.  Preferably, but not required, tot_len would
  * equal the total length of the buffers to be hash coded.  If the total
  * length is unknown (or you simply don't want to compute it), then
- * consistently use the same arbitrary constant (e.g. - 0) when
+ * consistently use the same arbitrary constant (e.g. - 0x1) when
  * computing the hcode for those objects.
  *
  * NOTE: The incremental versions of sfh depend on how you partition
@@ -351,10 +355,11 @@ STDINLINE void stdhcode_sfh_stop(stduint32 *hsh)
 
   ret ^= ret << 3;
   ret += ret >> 5;
-  ret ^= ret << 2;
-  ret += ret >> 15;
-  ret ^= ret << 10;
-
+  ret ^= ret << 4;
+  ret += ret >> 17;
+  ret ^= ret << 25;
+  ret += ret >> 6;
+  
   *hsh = ret;
 }
 
@@ -1047,3 +1052,7 @@ STDINLINE stduint64 stdpow2_cap(stduint64 x)
 
   return up_pow2;                     /* up_pow2 in range [1.5x, 3x) */
 }
+
+#ifdef __cplusplus
+}
+#endif

@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 - 2007 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2008 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -34,8 +34,12 @@
 #include <string.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <signal.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
 
+#include <sys/time.h>
+#include <sys/resource.h>
 
 #include "util/arch.h"
 #include "util/alarm.h"
@@ -102,6 +106,9 @@ Route*   All_Routes;
 stdhash  Monitor_Params;
 int      Accept_Monitor;
 int      Wireless;
+int      Wireless_ts;
+char     Wireless_if[20];
+int      Wireless_monitor;
 
 /* Sessions */
 stdhash  Sessions_ID;
@@ -177,7 +184,9 @@ int      Fast_Retransmit;
 int      Stream_Fairness;
 int      Schedule_Set_Route;
 int      Unicast_Only;
+int      Memory_Limit;
 int16    KR_Flags;
+
 
 /* Statistics */
 long64 total_received_bytes;
@@ -198,7 +207,8 @@ long64 total_group_state_bytes;
 
 /* Static Variables */
 static void 	Usage(int argc, char *argv[]);
-static void     Init_Memory_Objects(void);
+static void     Init_Memory_Objects(int x);
+void            Set_resource_limit(int max_mem);
 int32           Get_Interface_ip(char *iface);
 
 /***********************************************************/
@@ -227,7 +237,7 @@ int main(int argc, char* argv[])
 
     Alarm( PRINT, "/===========================================================================\\\n");
     Alarm( PRINT, "| Spines                                                                    |\n");
-    Alarm( PRINT, "| Copyright (c) 2003 - 2007 Johns Hopkins University                        |\n"); 
+    Alarm( PRINT, "| Copyright (c) 2003 - 2008 Johns Hopkins University                        |\n"); 
     Alarm( PRINT, "| All rights reserved.                                                      |\n");
     Alarm( PRINT, "|                                                                           |\n");
     Alarm( PRINT, "| Spines is licensed under the Spines Open-Source License.                  |\n");
@@ -247,7 +257,7 @@ int main(int argc, char* argv[])
     Alarm( PRINT, "| WWW:     www.spines.org      www.dsn.jhu.edu                              |\n");
     Alarm( PRINT, "| Contact: spines@spines.org                                                |\n");
     Alarm( PRINT, "|                                                                           |\n");
-    Alarm( PRINT, "| Version 3.0, Built May 31, 2007                                           |\n"); 
+    Alarm( PRINT, "| Version 3.1, Built March 21, 2008                                         |\n"); 
     Alarm( PRINT, "|                                                                           |\n");
     Alarm( PRINT, "| This product uses software developed by Spread Concepts LLC for use       |\n");
     Alarm( PRINT, "| in the Spread toolkit. For more information about Spread,                 |\n");
@@ -255,7 +265,11 @@ int main(int argc, char* argv[])
     Alarm( PRINT, "\\===========================================================================/\n\n");
 
     Usage(argc, argv);
-    //Alarm_set_types(DEBUG); 
+    Alarm_set_types(PRINT); 
+    //Alarm_set_types(PRINT|DEBUG); 
+
+    /* add the sigPIPE handler */
+    signal(SIGPIPE, SIG_IGN);
 
 #ifdef SPINES_SSL
     if (Security) {
@@ -298,7 +312,17 @@ int main(int argc, char* argv[])
 
     E_init();
    
-    Init_Memory_Objects();
+    /* Is there some specified memory constraint */
+    if (Memory_Limit != 0) {
+        Set_resource_limit(Memory_Limit*1024*1024);
+        if (Memory_Limit < 10) {
+            Init_Memory_Objects(1);
+        } else {
+            Init_Memory_Objects(10);
+        }
+    } else {
+        Init_Memory_Objects(10);
+    }
 
     Init_Network();
 
@@ -323,7 +347,8 @@ int main(int argc, char* argv[])
 /*                                                         */
 /* Arguments                                               */
 /*                                                         */
-/* NONE                                                    */
+/* x: Increase by multiplicative factor the                */
+/*    bound on memory usage that is never released         */
 /*                                                         */
 /*                                                         */
 /* Return Value                                            */
@@ -332,31 +357,32 @@ int main(int argc, char* argv[])
 /*                                                         */
 /***********************************************************/
 
-static void Init_Memory_Objects(void)
+static void Init_Memory_Objects(int x)
 {
     /* initilize memory object types  */
-    Mem_init_object_abort(PACK_HEAD_OBJ, sizeof(packet_header), 100, 1);
-    Mem_init_object_abort(PACK_BODY_OBJ, sizeof(packet_body), 200, 20);
-    Mem_init_object_abort(SYS_SCATTER, sizeof(sys_scatter), 100, 1);
-    Mem_init_object_abort(TREE_NODE, sizeof(Node), 30, 10);
-    Mem_init_object_abort(DIRECT_LINK, sizeof(Link), 10, 1);
-    Mem_init_object_abort(OVERLAY_EDGE, sizeof(Edge), 50, 10);
-    Mem_init_object_abort(OVERLAY_ROUTE, sizeof(Route), 900, 10);
-    Mem_init_object_abort(CHANGED_STATE, sizeof(Changed_State), 50, 1);
-    Mem_init_object_abort(STATE_CHAIN, sizeof(State_Chain), 200, 1);
-    Mem_init_object_abort(MULTICAST_GROUP, sizeof(Group_State), 200, 1);
-    Mem_init_object_abort(BUFFER_CELL, sizeof(Buffer_Cell), 300, 1);
-    Mem_init_object_abort(FRAG_PKT, sizeof(Frag_Packet), 300, 1);
-    Mem_init_object_abort(UDP_CELL, sizeof(UDP_Cell), 300, 1);
-    Mem_init_object_abort(CONTROL_DATA, sizeof(Control_Data), 10, 1);
-    Mem_init_object_abort(RELIABLE_DATA, sizeof(Reliable_Data), 30, 1);
-    Mem_init_object_abort(REALTIME_DATA, sizeof(Realtime_Data), 10, 0);
-    Mem_init_object_abort(SESSION_OBJ, sizeof(Session), 30, 0);
-    Mem_init_object_abort(STDHASH_OBJ, sizeof(stdhash), 100, 0);
+    /* to get original Spines memory parameters, use x=10 */
+    Mem_init_object_abort(PACK_HEAD_OBJ, sizeof(packet_header), (int)(10*x), 1);
+    Mem_init_object_abort(PACK_BODY_OBJ, sizeof(packet_body), (int)(20*x), 20);
+    Mem_init_object_abort(SYS_SCATTER, sizeof(sys_scatter), (int)(10*x), 1);
+    Mem_init_object_abort(TREE_NODE, sizeof(Node), (int)(3*x), 10);
+    Mem_init_object_abort(DIRECT_LINK, sizeof(Link), (int)(1*x), 1);
+    Mem_init_object_abort(OVERLAY_EDGE, sizeof(Edge), (int)(5*x), 10);
+    Mem_init_object_abort(OVERLAY_ROUTE, sizeof(Route), (int)(90*x), 10);
+    Mem_init_object_abort(CHANGED_STATE, sizeof(Changed_State), (int)(5*x), 1);
+    Mem_init_object_abort(STATE_CHAIN, sizeof(State_Chain), (int)(20*x), 1);
+    Mem_init_object_abort(MULTICAST_GROUP, sizeof(Group_State), (int)(20*x), 1);
+    Mem_init_object_abort(BUFFER_CELL, sizeof(Buffer_Cell), (int)(30*x), 1);
+    Mem_init_object_abort(FRAG_PKT, sizeof(Frag_Packet), (int)(30*x), 1);
+    Mem_init_object_abort(UDP_CELL, sizeof(UDP_Cell), (int)(30*x), 1);
+    Mem_init_object_abort(CONTROL_DATA, sizeof(Control_Data), (int)(1*x), 1);
+    Mem_init_object_abort(RELIABLE_DATA, sizeof(Reliable_Data), (int)(3*x), 1);
+    Mem_init_object_abort(REALTIME_DATA, sizeof(Realtime_Data), (int)(1*x), 0);
+    Mem_init_object_abort(SESSION_OBJ, sizeof(Session), (int)(3*x), 0);
+    Mem_init_object_abort(STDHASH_OBJ, sizeof(stdhash), (int)(10*x), 0);
 #ifdef SPINES_SSL
-    Mem_init_object(SSL_IP_BUFFER, 15, 10000, 0);
-    Mem_init_object(SSL_PKT_BUFFER, MAX_PACKET_SIZE, 10000, 0);
-    Mem_init_object(SSL_SOCKADDR_IN, sizeof(struct sockaddr_in), 10000, 0);   
+    Mem_init_object(SSL_IP_BUFFER, 15, (int)(100*x), 0);
+    Mem_init_object(SSL_PKT_BUFFER, MAX_PACKET_SIZE, (int)(100*x), 0);
+    Mem_init_object(SSL_SOCKADDR_IN, sizeof(struct sockaddr_in), (int)(100*x), 0);   
 #endif
 }
 
@@ -401,6 +427,40 @@ int32 Get_Interface_ip(char *iface)
     return ntohl(addr);
 }
 
+/***********************************************************/
+/* void Set_resource_limit(int max_mem)                    */
+/*                                                         */
+/* Set resource limit on spines for memory constrained     */
+/* and/or embeded machines                                 */
+/*                                                         */
+/*                                                         */
+/* Arguments                                               */
+/*                                                         */
+/* max_mem: maximum amount of virtual memory that          */
+/* Spines should use.                                      */
+/*                                                         */
+/*                                                         */
+/* Return Value                                            */
+/*                                                         */
+/* None                                                    */
+/*                                                         */
+/***********************************************************/
+void Set_resource_limit(int max_mem)
+{
+    struct rlimit rl;
+
+    if (max_mem == 0) {
+        return;
+    }
+    if (getrlimit(RLIMIT_AS, &rl) < 0) {
+        Alarm(EXIT, "Set_resource_limit(): Failed to set maximum memory\n");
+    }
+    rl.rlim_cur = max_mem;
+    if (setrlimit(RLIMIT_AS, &rl) < 0) {
+        Alarm(EXIT, "Set_resource_limit(): Failed to set maximum memory\n");
+    }
+}
+
 
 
 /***********************************************************/
@@ -443,11 +503,15 @@ static  void    Usage(int argc, char *argv[])
     Accept_Monitor = 0;
     Unicast_Only = 0;
     KR_Flags = 0;
+    Wireless = 0;
+    Wireless_ts = 30;
+    Wireless_monitor = 0;
+    Memory_Limit = 0;
+    memset((void*)Wireless_if, '\0', sizeof(Wireless_if));
 
 #ifdef SPINES_SSL
     /* openssl */
     Security = 0;
-    Wireless = 0;
     Public_Key = NULL;
     Private_Key = NULL;
     Passphrase = NULL;
@@ -468,8 +532,21 @@ static  void    Usage(int argc, char *argv[])
 	    Accept_Monitor = 1;
 	}else if(!strncmp(*argv, "-U", 2)) {
 	    Unicast_Only = 1;
+	}else if(!strncmp(*argv, "-M", 2)) {
+	    sscanf(argv[1], "%d", (int*)&Memory_Limit);
+        if (Memory_Limit < 1) Memory_Limit = 1; 
+	    argc--; argv++;
+	}else if(!strncmp(*argv, "-Wts", 4)) {
+	    sscanf(argv[1], "%d", (int*)&Wireless_ts);
+            Wireless = 1;
+	    argc--; argv++;
+	}else if(!strncmp(*argv, "-Wif", 4)) {
+            sscanf(argv[1], "%s", Wireless_if);
+            Wireless = 1;
+            Wireless_monitor = 1;
+            argc--; argv++;
 	}else if(!strncmp(*argv, "-W", 2)) {
-        Wireless = 1;
+            Wireless = 1;
 #ifdef SPINES_SSL
 	}else if (!strncmp(*argv, "-secure", 7)) {
 	    Security = 1;
@@ -552,6 +629,7 @@ static  void    Usage(int argc, char *argv[])
 	    if (tmp == 0) KR_Flags |= KR_OVERLAY_NODES;
 	    if (tmp == 1) KR_Flags |= KR_CLIENT_ACAST_PATH;
 	    if (tmp == 2) KR_Flags |= KR_CLIENT_MCAST_PATH;
+	    if (tmp == 3) KR_Flags |= KR_CLIENT_WITHOUT_EDGE;
 	    argc--; argv++;
 	}else{
 

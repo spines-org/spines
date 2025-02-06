@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 - 2007 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2008 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -62,7 +62,7 @@ extern Prot_Def Edge_Prot_Def;
 extern int32    My_Address;
 extern int      Route_Weight;
 extern int16    KR_Flags;
-extern int      Wireless;
+extern int      Wireless_monitor;
 
 /* Local variables */
 static const sp_time zero_timeout        = {     0,      0};
@@ -461,7 +461,6 @@ void* Edge_Process_state_cell(int32 source, char *pos)
      * with this edge. It is possible that smbd. just told me about 
      * a new edge of mine, I created it, I don't have a link with 
      * it yet */
-    /* Ignore that if it's about an edge that doesn't exist... */
     if(edge_cell->cost > 0) {
 	flag_tmp = 0;
 	if(nd_source->address == My_Address) {
@@ -476,7 +475,6 @@ void* Edge_Process_state_cell(int32 source, char *pos)
 	if(flag_tmp == 1) {
 	    if(nd->link[CONTROL_LINK] == NULL) {
 		nd->flags = NEIGHBOR_NODE | NOT_YET_CONNECTED_NODE;	      	  
-		nd->last_time_heard = E_get_time();
 		nd->counter = 0;
 		
 		for(nodeid=0; nodeid< MAX_LINKS/MAX_LINKS_4_EDGE; nodeid++) {
@@ -856,47 +854,40 @@ int Edge_Update_Cost(int linkid, int mode)
  * print_timeout, overwriting the previous file.  So the 
  * latest state of Spines can be found in SNAPSHOT_FILE     
  */
-#define PRINT_EDGES 0
-#define SNAPSHOT_PRINT_EDGES 1
+#define PRINT_EDGES 1
+#define PRINT_KERNEL_ROUTES 0
+#define PRINT_WIRELESS_STATUS 1
 #define SNAPSHOT 1
-#define SNAPSHOT_FILE "spines.snapshot"
+#define SNAPSHOT_FILE "/tmp/spines.snapshot"
 
 void Print_Edges(int dummy_int, void* dummy) 
 {
-    sp_time print_timeout = {   300,    0};
+    sp_time print_timeout = {   20,    0};
     FILE *fp = NULL;
     char line[256];
     char file_name[50];
-    static int snapshot = SNAPSHOT;
 
-    /* If wireless, I want to have snapshot file /tmp for scp */
-    if (Wireless) {
-        sprintf(file_name, "/tmp/%s", SNAPSHOT_FILE);
-        print_timeout.sec = 20;
-    } else {
-        sprintf(file_name, "%s", SNAPSHOT_FILE);
-    }
+    sprintf(file_name, "%s", SNAPSHOT_FILE);
 
-    if (snapshot) { 
+    if (SNAPSHOT) { 
 	fp = fopen(file_name, "w"); 
 	if (fp == NULL) { 
 	    perror("Could not open spines snapshot file\n");
 	    Alarm(PRINT,"\nWill continue without attempting to write to snapshot file\n");
-	    snapshot=0;
 	} else { 
 	    chmod(file_name, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH|S_IWOTH);
 	    fprintf(fp, "\n\n"); 
 	}
     }
 
-    if (PRINT_EDGES || SNAPSHOT_PRINT_EDGES) { 
+    if (PRINT_EDGES) { 
 	stdit it, c_it; 
 	Edge *edge; 
 	State_Chain *s_chain; 
 	
 	sprintf(line, "\n\nAvailable edges:\n"); 
-	if (PRINT_EDGES) Alarm(PRINT, "%s", line); 
-	if (fp != NULL && SNAPSHOT_PRINT_EDGES) fprintf(fp, "%s", line); 
+	Alarm(PRINT, "%s", line); 
+	if (fp != NULL) fprintf(fp, "%s", line); 
 	stdhash_begin(&All_Edges, &it); 
 	while(!stdhash_is_end(&All_Edges, &it)) { 
 	    s_chain = *((State_Chain **)stdhash_it_val(&it)); 
@@ -910,8 +901,8 @@ void Print_Edges(int dummy_int, void* dummy)
 			IP3(edge->dest->address), IP4(edge->dest->address), 
 			edge->cost, edge->timestamp_sec, edge->timestamp_usec); 
 		stdhash_it_next(&c_it); 
-		if (PRINT_EDGES) Alarm(PRINT, "%s", line); 
-		if (fp != NULL && SNAPSHOT_PRINT_EDGES) fprintf(fp, "%s", line); 
+		Alarm(PRINT, "%s", line); 
+		if (fp != NULL) fprintf(fp, "%s", line); 
 	    } 
 	    stdhash_it_next(&it); 
 	} 
@@ -923,7 +914,11 @@ void Print_Edges(int dummy_int, void* dummy)
 
     Print_Routes(fp);
 
-    if (KR_Flags) {
+    if (Wireless_monitor && PRINT_WIRELESS_STATUS) {
+        Wireless_Print_Status(fp);
+    }
+
+    if (KR_Flags && PRINT_KERNEL_ROUTES) {
         KR_Print_Routes(fp);
     }
 

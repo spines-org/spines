@@ -1,59 +1,76 @@
 Spines Documentation 
 ~~~~~~~~~~~~~~~~~~~~
 
-Spines is a software platform that allows deployment of overlay 
-networks in the Internet. Spines instantiates overlay nodes on
-participating computers and creates virtual links between these
-nodes. Many Spines overlays can coexist in the Internet, and even
-overlap on some of the nodes or links. Client applications connect to
-one of the overlay nodes (usually the closest) and send and receive
-messages from that node. The Spines overlay is responsible to forward
-messages towards the node tht has the destination application
-connected. Both the source and the destination of a connection that
-uses Spines should be part of the same Spines overlay network.
+Spines is a messaging infrastructure that allows multi-hop communication
+(unicast, multicast, and anycast), and deployment of virtual topologies on
+real networks. Spines instantiates a virtual router node on every
+participating computer and creates virtual links between these nodes. Packets
+are routed automatically in through the network topology. Many Spines
+topologies can coexist in the same physical network, and even overlap on some
+of the nodes or links.
 
-Spines runs a software daemon on each of the overlay nodes. The daemon
-acts both as a router, forwarding packets toward other nodes, and as a
-server, providing network services to client applications. Clients use
-a library to connect to a Spines daemon and send and receive
-messages. The API is almost identical to the Unix Socket interface.
-Virtually any socket-based application can be easily adapted to work
-with Spines. Spines API provides TCP and UDP-like functions with
-similar semantics for both reliable, and best effort communication.
+Client applications connect to one of the router nodes (usually the closest)
+and send and receive messages from that node. Spines is responsible to forward
+application messages towards the nodes that have destination applications. If
+multiple applications intend to communicate using Spines, they must connect to
+nodes of the same Spines network.
 
-A client can communicate with a daemon either via TCP or UDP.  A
-spines_socket() call returns a socket, which is actually a connection
-to the daemon. The application can use that socket to bind, listen,
-connect, send and receive, using Spines library calls
-(e.g. spines_send() is the equivalent to the regular send() call,
-spines_recv() is equivalent to recv(), etc.).
+Spines runs a software daemon on each of the router nodes. The daemon acts
+both as a router, forwarding packets toward other nodes, and as a server,
+providing network services to client applications. Clients use a library to
+connect to a Spines daemon and send and receive messages. The API is almost
+identical to the Unix Socket interface. Virtually any socket-based application
+can be easily adapted to work with Spines. Spines API provides TCP and
+UDP-like functions with similar semantics for both reliable, and best effort
+communication.
 
-Each application can be uniquely identified in the overlay by the pair
-of IP address of the node it is connected to, and an identifier at
-that node, which we call virtual port. The virtual port of an
-application is either assigned automatically by the overlay node upon
-application connect, or it is set explicitly by the application in a
-call similar to the Unix bind(). Both reliable and best effort unicast
-communication between two applications connected to the overlay are
-done using the IP address and the virtual port described above in a
-way similar to TCP and UDP. Note that the virtual port of an
-application is only defined in relationship with a Spines overlay
-node, and is not related to an operating system port of the computer
-the application, or the daemon is running on.
+A client can communicate with a daemon either via TCP or UDP. A
+spines_socket() call returns a socket, which is actually a connection to the
+daemon. The application can use that socket to bind, listen, connect, send and
+receive, using Spines library calls (e.g. spines_send() is the equivalent to
+the regular send() call, spines_recv() is equivalent to recv(), etc.).
 
-A multicast group is defined as a class D multicast address. If an
-application intends to join a group, it informs its server (overlay
-node) about this, and the server will pass to the application the
-messages sent to that group. Leaving a group follows a similar
-procedure. In order to multicast a message to a group, an application
-simply sends the message (through its server) to the multicast address
-representing the group. The overlay network handles the routing of the
-multicast message according to the current membership of the group the
-message is sent to.  Applications can join, leave, send and receive
-messages to and from multicast groups at any time. An application can
-join multiple groups, thus it can be member of more than one group at
-the same time. An application does not need to be a member of a group
-in order to send messages to that group.
+Each application can be uniquely identified in the topology by the pair of IP
+address of the node it is connected to, and an identifier at that node, which
+we call "virtual port". The virtual port of an application is either assigned
+automatically by the server node upon application connect, or it is set
+explicitly by the application in a call similar to the Unix bind(). Both
+reliable and best effort communication between two applications connected to
+the Spines network are done using the IP address and the virtual port
+described above in a way similar to TCP and UDP. Note that the virtual port of
+an application is only defined in relationship with a Spines node, and is not
+related to an operating system port of the computer the application, or the
+daemon is running on.
+
+A multicast group is defined as a class D multicast address and an anycast
+group as a class E address. If an application intends to join a group, it
+informs its server (router node) about this with a spines_setsockopt() call.
+From there on, the server will pass to the application the messages sent to
+that group. Leaving a group follows a similar procedure. In order to
+multicast/anycast a message to a group, an application simply sends the
+message (through its server) to the multicast/anycast address representing the
+group. The Spines network handles the routing of the multicast message
+according to the current membership of the group the message is sent to.
+Applications can join, leave, send and receive messages to and from multicast
+groups at any time. An application can join multiple groups, thus it can be
+member of more than one group at the same time. An application does not need
+to be a member of a group in order to send messages to that group.
+
+Spines can also manage kernel routing tables by updating native kernel routes
+with those determined by the overlay topology and the chosen metric. In this
+case, Spines is acting as an overlay routing daemon where regular user packets
+(without any knowledge of Spines) are routed seamlessly in kernel-level
+between overlay nodes. As data packets are not processed by Spines, they are
+not copied to user-space, and therefore the routing overhead is substantially
+reduced. This reduction in CPU consumption can greatly benefit low cost
+routers, such as the Linksys WRT54G. Note that, in this mode, certain Spines
+protocols cannot be activated as packets are routed by the underlying kernel
+services. In addition, kernel-routing services are available in Spines to
+support anypath and multipath routing based on group membership.
+
+The current version of Spines was tested to run on Linux X86 computers and on
+Linksys WRT54G wireless routers. 
+
 
 
 Spines Daemon 
@@ -65,81 +82,124 @@ NAME
 
 SYNOPSIS 
 
-     spines [-p spines_port] [-l local_address] [[-a destination] 
-	    [-a destination]...] [-w <Route_Weight>] [-sf] [-m] 
-	    [-U] [-x time_to_live]
+     spines [-p spines_port] [-l local_address] [[-a destination]*]
+            [[-d discovery_address]*] [-w ] [-sf]
+            [-m] [-U] [-x time_to_live] [-secure] [-k level] [-W] 
 
 
 DESCRIPTION 
 
-     spines starts an overlay daemon. In the current distribution,
-     overlay networks are built incrementally. When staring a new
-     overlay node/daemon, the user needs to specify in the command
-     line to which other existing nodes (if any), this daemon will
-     connect.
+     spines starts a virtual router daemon. In the current
+     distribution, Spines networks are built incrementally. When
+     staring a new node/daemon, the user needs to specify in the
+     command line to which other existing nodes (if any), this daemon
+     will connect.
 
 
 OPTIONS 
 
     -p spines_port 
           The port on which the daemon will send and receive messages
-	  (default 8100). All the daemons in a Spines overlay network
-	  need to run on the same port.
+          (default 8100). All the daemons in a Spines network need to
+          run on the same port.
 
     -l local_address
-       	  Local IP address that will be used by Spines (default the
-       	  address of the first defined network interface).
+          Local IP address that will be used by Spines (default the
+          address of the first defined network interface).
 
     -a destination   
-	  The address of an existing node participating in a Spines
-          overlay network. The current daemon will create an overlay
-          link together with the daemon running at this address.  A
-          Spines daemon accepts overlay link requests from other
-          daemons, up to 255 links per node.
-    
+          The address of an existing node participating in a Spines
+          network. The current daemon will create a virtual link
+          together with the daemon running at this address.  A Spines
+          daemon accepts virtual link requests from other daemons, up
+          to 255 links per node.
+
+    -d discovery_address
+          The IP-multicast address used to auto-discover other Spines
+          daemons. A discovery packet is multicasted periodically to
+          allow Spines routers that can hear each other to interconnect.
+          A node can specify up to 10 different discovery addresses. 
+
     -w Route_Weight
-	  Sets the route metric for shortest path computation.
+          Sets the route metric for shortest path computation.
           Route_Weight can be [distance, latency, loss, explat], with
           default, distance.
 
-	  distance: every link has an equal cost of 1. The routing
+          distance: every link has an equal cost of 1. The routing
           minimizes the number of hops on each path.
 
-	  latency: the cost of a link is equal to its latency. The
-	  routing minimizes the total latency of each path.
+          latency: the cost of a link is equal to its latency. The
+          routing minimizes the total latency of each path.
 
-	  loss: the cost of each link is defined as -log(1-p), where p
-	  is the loss rate of that link. The routing chooses paths
-	  that minimize end-to-end loss rate.
+          loss: the cost of each link is defined as -log(1-p), where p
+          is the loss rate of that link. The routing chooses paths
+          that minimize end-to-end loss rate.
 
-	  explat: The cost of each link equals the expected latency of
-	  packets on that link, considering that lost packets will be
-	  attempted to be recovered only once. The routing maximizes
-	  end-to-end delivery ratio within a time constraint for
-	  packet delay.
+          explat: The cost of each link equals the expected latency of
+          packets on that link, considering that lost packets will be
+          attempted to be recovered only once. The routing maximizes
+          end-to-end delivery ratio within a time constraint for
+          packet delay.
 
 
-    -sf
-          Stream based fairness for reliable links. Makes an overlay
-          reliable link behave as multiple streams (individual streams
-          that actually go through the link) with regard to the TCP
-          congestion control
+    -sf   
+          Stream based fairness for reliable links. Makes a reliable
+          link between two neighbors behave as multiple streams
+          (individual streams that actually go through the link) with
+          regard to the TCP congestion control
 
-    -m
-          Accept monitor commands for setting artificial loss rate on
-          the overlay links (see setloss program)
+    -m    
+          Accept monitor commands for setting link characteristics
+          in order to create virtual topologies (see setlink program).
 
-    -U
-	  Unicast only. Instructs the daemon to use Dijkstra for route
-	  computation instead of Floyd Warshall (all pairs shortest
-	  path). This allows faster route computation and scalability
-	  to more overlay nodes (up to 1000), but Spines will not be
-	  able to route multicast messages.
+    -U    
+          Unicast only. Instructs the daemon to use Dijkstra for route
+          computation instead of Floyd Warshall (all pairs shortest
+          path). This allows faster route computation and scalability
+          to more router nodes (up to 1000), but Spines will not be
+          able to route multicast messages.
 
     -x time_to_live
           Sets the time (in seconds) until the daemon will exit
           gracefully. If no such time is given, the daemon will run
-          indeffinitely.
+          indefinitely.
+
+    -secure
+          Enables application-level SSL encryption on messages sent
+          between Spines overlay daemons. Additional flags must
+          be specified when using this options:
+          -pub public_key_file_name
+          -priv private_key_file_name
+          -cacert ca_certificate_file_name
+          -pass passphrase
+
+          This option is experimental and available only when compiled
+          with -DSPINES_SSL. It is based on DTLS, which is available in
+          OpenSSL library version 0.9.8 or greater.
+
+    -k level
+          Sets the kernel routing level that should be used when
+          manipulating kernel routing tables.  By default, Spines routes
+          packets through a user-level router. This option allows Spines
+          to control kernel routing tables according to the following
+          levels:
+
+          0 -- Set kernel routes to every node in the Spines network.
+               This allows Spines to manage kernel routes through the
+               overlay topology. 
+          1 -- Set unicast kernel routes based on a anycast group
+               membership.  By default, 247.0.0.0/8 will map to routes on
+               a 10.0.0.0/8 network.  One route entry (on the main route
+               table) with one next-hop is entered for each destination.
+          2 -- Set unicast kernel routes based on a multicast group
+               membership. By default, 227.0.0.0/8 will map to routes
+               on a 10.0.0.0/8 network.  For each destination, multiple
+               routes (in different routing tables), each with possibly
+               multiple next-hop, are entered.
+
+    -W 
+          Wireless mode.  Will change some default timers to better
+          accommodate a wireless environment.
 
 
 	 
@@ -527,17 +587,64 @@ SYNOPSIS
 
 DESCRIPTION
 
-       The spines_setsockopt call is currently used only for multicast
-       join and leave (ADD/DROP MEMBERSHIP). The parameter s reffers
-       to the socket connected to Spines, and has to be of type
-       SOCK_DGRAM. optname can be either: 
+       The spines_setsockopt call is currently used for controlling
+       multicast and anycast communication. The parameter s refers to the
+       socket connected to Spines, and has to be of type SOCK_DGRAM. The
+       rest of the parameters will depend on optname:
 
-       SPINES_ADD_MEMBERSHIP - joins a multicast group
-       SPINES_DROP_MEMBERSHIP - leaves a multicast group
+       SPINES_ADD_MEMBERSHIP 
+           Joins a multicast or anycast group. The optval and
+           optlen should refer to the ip_mreq struct containing the
+           multicast/anycast group.
 
-       The parameters optval and optlen are used to access option
-       values, in this case a struct ip_mreq containing the multicast
-       group.
+       SPINES_DROP_MEMBERSHIP 
+           Leaves a multicast or anycast group. The optval and
+           optlen should refer to the ip_mreq struct containing the
+           multicast/anycast group.
+
+       SPINES_MULTICAST_LOOP 
+           Turns on/off the multicast loopback. The optval and optlen
+           should refer to a u_char boolean parameter where 0=off and 1=on
+
+       Spines multicast address space is from 224.0.0.0 to 239.255.255.255
+       (Class D address). Spines anycast address space is from 240.0.0.0 to
+       254.255.255.255 (Class E address).
+
+
+RETURN VALUE
+       On success, zero is returned. On error, -1 is returned.
+
+
+
+=====================================================================
+
+NAME
+       spines_ioctl - Manipulates Spines router 
+
+
+SYNOPSIS
+       #include "spines_lib.h"
+
+       int  spines_ioctl(int s, int  level,  int  optname,  
+               const  void  *optval, socklen_t optlen);
+
+
+DESCRIPTION
+
+       The spines_ioctl call allows applications to manipulate internal
+       parameters of the Spines overlay router.  Currently, ioctl
+       can be used to dynamically add Spines neighbors. For example,
+       an application can decide when and who should the Spines router
+       connect to.
+
+       The parameter s refers to the socket connected to Spines, and has
+       to be of type SOCK_DGRAM. The rest of the parameters will depend
+       on optname:
+
+       SPINES_ADD_NEIGHBOR
+           optval and optlen should refer to a sockaddr type address
+           that holds the IP address of the Spines neighbor that the
+           node should connect to.
 
 
 RETURN VALUE

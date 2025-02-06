@@ -66,9 +66,10 @@ SHARED_THREADED_DEBUG_LIB=$(LIBDIR)/libstdutil-threaded-debug.$(LIBVERSION).@DYN
 STATIC_LIBS=$(STATIC_NOTHREAD_RELEASE_LIB) $(STATIC_NOTHREAD_DEBUG_LIB) $(STATIC_THREADED_RELEASE_LIB) $(STATIC_THREADED_DEBUG_LIB)
 SHARED_LIBS=$(SHARED_NOTHREAD_RELEASE_LIB) $(SHARED_NOTHREAD_DEBUG_LIB) $(SHARED_THREADED_RELEASE_LIB) $(SHARED_THREADED_DEBUG_LIB)
 
-ALLTARGETS=$(STATIC_LIBS) @SHARED_LIBS@
+ALLTARGETS=$(STATIC_LIBS) $(SHARED_LIBS)
 
 ########################################### BUILD RULES ########################################
+
 standard: libdir @STANDARD_LIBS@
 
 all: libdir $(ALLTARGETS)
@@ -88,6 +89,7 @@ $(STATIC_THREADED_RELEASE_LIB): $(STATIC_THREADED_RELEASE_OBJS)
 
 $(STATIC_THREADED_DEBUG_LIB): $(STATIC_THREADED_DEBUG_OBJS)
 	$(AR) rvs $@ $(STATIC_THREADED_DEBUG_OBJS)
+	$(SOFTLINK) -f $@ $(LIBDIR)/libstdutil-debug.a
 
 $(SHARED_NOTHREAD_RELEASE_LIB): $(SHARED_NOTHREAD_RELEASE_OBJS)
 	$(SHLD) $(SHLDFLAGS) -o $@ $(SHARED_NOTHREAD_RELEASE_OBJS) $(SHLIBS)
@@ -101,12 +103,13 @@ $(SHARED_THREADED_RELEASE_LIB): $(SHARED_THREADED_RELEASE_OBJS)
 
 $(SHARED_THREADED_DEBUG_LIB): $(SHARED_THREADED_DEBUG_OBJS)
 	$(SHLD) $(SHLDFLAGS) -o $@ $(SHARED_THREADED_DEBUG_OBJS) $(SHLIBS) $(THLIBS)
+	$(SOFTLINK) -f $@ $(LIBDIR)/libstdutil-debug.@DYNLIBEXT@
 
 clean:
-	rm -f *.o *.do *.to *.tdo *.lo *.ldo *.lto *.ltdo core* *~ $(ALLTARGETS) $(LIBDIR)/stdutil.a $(LIBDIR)/stdutil.@DYNLIBEXT@
+	rm -f *.o *.do *.to *.tdo *.lo *.ldo *.lto *.ltdo core* *~ $(ALLTARGETS) $(LIBDIR)/libstdutil.a $(LIBDIR)/libstdutil.@DYNLIBEXT@ $(LIBDIR)/libstdutil-debug.a $(LIBDIR)/libstdutil-debug.@DYNLIBEXT@
 
 distclean: clean
-	rm -f Makefile
+	rm -f Makefile stdutil/private/stdarch_autoconf.h
 
 uberclean: distclean
 

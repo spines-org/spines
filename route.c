@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 - 2007 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2008 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -31,6 +31,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "util/arch.h"
 #include "util/alarm.h"
@@ -46,6 +47,7 @@
 #include "state_flood.h"
 #include "link_state.h"
 #include "kernel_routing.h"
+#include "multicast.h"
 
 /* Global variables */
 
@@ -362,7 +364,7 @@ void Set_Routes(int dummy_int, void *dummy)
     Discard_All_Mcast_Neighbors();
 
     /* Kernel Routing:  Apply updates and change default route */
-    if (KR_Flags & KR_OVERLAY_NODES) {
+    if (KR_Flags != 0) {
         KR_Update_All_Routes();
     }
 }
@@ -401,6 +403,27 @@ Node* Get_Route(int32 source, int32 dest)
     return(route->forwarder);
 }
 
+void Trace_Route(int32 source, int32 dest, spines_trace *spines_tr)
+{
+    int i=0;
+    Route *route;
+
+    while ( (route = Find_Route(source, dest)) != NULL) {
+        spines_tr->address[i] = source;
+        spines_tr->distance[i] = route->distance;
+        spines_tr->cost[i] = route->cost;
+        if (route->forwarder != NULL) {
+            source = route->forwarder->address;
+        } else {
+            /* TODO: Not completely right, but ok for now */
+            source = dest;
+        }
+        if (++i == MAX_COUNT || source == dest) {
+            break;
+        }
+    }
+    spines_tr->count = i;
+}
 
 
 
@@ -427,17 +450,16 @@ void Print_Routes(FILE *fp)
     Alarm(PRINT, "%s", line);
     if (fp != NULL) fprintf(fp, "%s", line);
 
+    /* Print the local node first */
+    sprintf(line, IPF " \tLOCAL NODE ", IP(My_Address));
+    Alarm(PRINT, "%s\n", line);
+    if (fp != NULL) fprintf(fp, "%s\n", line);
+
     stdhash_begin(&All_Nodes, &it); 
     while(!stdhash_is_end(&All_Nodes, &it)) {
         nd = *((Node **)stdhash_it_val(&it));
 	
 	if(nd->address == My_Address) {
-	    sprintf(line, "%d.%d.%d.%d \tLOCAL NODE \n", 
-		  IP1(nd->address), IP2(nd->address), 
-		  IP3(nd->address), IP4(nd->address)); 
-        Alarm(PRINT, "%s", line);
-        if (fp != NULL) fprintf(fp, "%s", line);
-	    
 	    stdhash_it_next(&it);
 	    continue;
 	}
@@ -445,25 +467,24 @@ void Print_Routes(FILE *fp)
 	route = Find_Route(My_Address, nd->address);
 	if(route != NULL) {
 	    if(route->forwarder != NULL) {
-		sprintf(line, "%d.%d.%d.%d via: %d.%d.%d.%d dist: %d; cost: %d\n", 
+		sprintf(line, "%d.%d.%d.%d via: %d.%d.%d.%d dist: %d; cost: %d ", 
 		      IP1(nd->address), IP2(nd->address), 
 		      IP3(nd->address), IP4(nd->address), 
 		      IP1(route->forwarder->address), IP2(route->forwarder->address), 
 		      IP3(route->forwarder->address), IP4(route->forwarder->address),
 		      route->distance, route->cost);
-        Alarm(PRINT, "%s", line);
-        if (fp != NULL) fprintf(fp, "%s", line);
-		stdhash_it_next(&it);
+                Alarm(PRINT, "%s\n", line);
+                if (fp != NULL) fprintf(fp, "%s\n", line);
+        	stdhash_it_next(&it);
 		continue;
 	    }	    
 	}
-	sprintf(line, "%d.%d.%d.%d \t!!! NO ROUTE \n", 
+	sprintf(line, "%d.%d.%d.%d \t!!! NO ROUTE ", 
 	      IP1(nd->address), IP2(nd->address), 
 	      IP3(nd->address), IP4(nd->address)); 
-    Alarm(PRINT, "%s", line);
-    if (fp != NULL) fprintf(fp, "%s", line);
-
-	stdhash_it_next(&it);
+        Alarm(PRINT, "%s\n", line);
+        if (fp != NULL) fprintf(fp, "%s\n", line);
+        stdhash_it_next(&it);
     }
     sprintf(line, "\n\n");
     Alarm(PRINT, "%s", line);

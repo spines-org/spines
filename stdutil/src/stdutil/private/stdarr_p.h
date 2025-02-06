@@ -1,8 +1,7 @@
-/* Copyright (c) 2000-2005, The Johns Hopkins University
+/* Copyright (c) 2000-2006, The Johns Hopkins University
  * All rights reserved.
  *
- * The contents of this file are subject to a license (the ``License'')
- * that is the exact equivalent of the BSD license as of July 23, 1999. 
+ * The contents of this file are subject to a license (the ``License'').
  * You may not use this file except in compliance with the License. The
  * specific language governing the rights and limitations of the License
  * can be found in the file ``STDUTIL_LICENSE'' found in this 
@@ -29,7 +28,7 @@
   
    begin - address of the lowest byte of the array's alloc'ed memory, NULL if none alloc'ed
    end   - address of the first byte past the last value stored in the array, same as begin if empty
-   size  - number of values this array is storing   
+   size  - number of values this array is storing [(end - begin) / vsize]
    cap   - number of values that can legally fit in alloc'ed memory
    vsize - size, in bytes, of the type of values this array is storing   
    opts  - user flags affecting default operation

@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 - 2007 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2008 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -115,7 +115,7 @@ State_Data* Find_State(stdhash *hash_struct, int32 source,
 Changed_State* Find_Changed_State(stdhash *hash_struct, 
 				  int32 source, int32 dest);
 void Empty_Changed_States(stdhash *hash_struct);
-void Resend_States(int dummy_int, void* p_data);
+void Resend_States(int sync_up, void* p_data);
 void State_Garbage_Collect(int dummy_int, void* p_data);
 
 
