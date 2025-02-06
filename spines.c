@@ -37,11 +37,15 @@
 #include "net_types.h"
 #include "node.h"
 #include "link.h"
+#include "state_flood.h"
 #include "network.h"
 #include "udp.h"
 #include "reliable_udp.h"
 #include "session.h"
 #include "objects.h"
+#include "link_state.h"
+#include "route.h"
+#include "multicast.h"
 
 
 #ifdef	ARCH_PC_WIN95
@@ -49,38 +53,106 @@
 WSADATA		WSAData;
 #endif	/* ARCH_PC_WIN95 */
 
+
 /* Global Variables */
+
+/* Startup */
 int16	 Port;
-int32    Address[16];
+int32    Address[256];
 int32    My_Address;
-channel  Control_Channel;
-int16    Num_Nodes;
-stdhash  All_Nodes;
-stdhash  All_Edges;
-stdhash  Changed_Edges;
+
+/* Nodes and direct links */
+int16    Num_Initial_Nodes;
 Node*    Neighbor_Nodes[MAX_LINKS/MAX_LINKS_4_EDGE];
 int16    Num_Neighbors;
+stdhash  All_Nodes;
 Link*    Links[MAX_LINKS];
 channel  Local_Send_Channels[MAX_LINKS_4_EDGE];
 channel  Local_Recv_Channels[MAX_LINKS_4_EDGE];  
 sys_scatter Recv_Pack[MAX_LINKS_4_EDGE];
-int      Err_Rate;
-int      Reliable_Flag;
-int      network_flag;
-sp_time  Up_Down_Interval;
-sp_time  Time_until_Exit;
+
+stdhash  Monitor_Loss;
+int      Accept_Monitor;
+
+/* Sessions */
 stdhash  Sessions_ID;
 stdhash  Sessions_Port;
 stdhash  Rel_Sessions_Port;
 stdhash  Sessions_Sock;
 int16    Link_Sessions_Blocked_On; 
+stdhash  Neighbors;
 
 
-/* This shouldn't be here. Just for testing... */
-int32    Send_To;
+/* Link State */
+stdhash  All_Edges;
+stdhash  Changed_Edges;
+Prot_Def Edge_Prot_Def = {
+    Edge_All_States, 
+    Edge_All_States_by_Dest, 
+    Edge_Changed_States, 
+    Edge_State_type,
+    Edge_State_header_size,
+    Edge_Cell_packet_size,
+    Edge_Is_route_change,
+    Edge_Is_state_relevant,
+    Edge_Set_state_header,
+    Edge_Set_state_cell,
+    Edge_Process_state_header,
+    Edge_Process_state_cell,   
+    Edge_Destroy_State_Data  
+};
 
 
-/* Statics */
+/* Multicast */
+stdhash  All_Groups_by_Node; 
+stdhash  All_Groups_by_Name; 
+stdhash  Changed_Group_States;
+Prot_Def Groups_Prot_Def = {
+    Groups_All_States, 
+    Groups_All_States_by_Name, 
+    Groups_Changed_States, 
+    Groups_State_type,
+    Groups_State_header_size,
+    Groups_Cell_packet_size,
+    Groups_Is_route_change,
+    Groups_Is_state_relevant,
+    Groups_Set_state_header,
+    Groups_Set_state_cell,
+    Groups_Process_state_header,
+    Groups_Process_state_cell,   
+    Groups_Destroy_State_Data  
+};
+
+
+/* Params */
+int      network_flag;
+int      Route_Weight;
+sp_time  Up_Down_Interval;
+sp_time  Time_until_Exit;
+int      Minimum_Window;
+int      Fast_Retransmit;
+int      Stream_Fairness;
+int      Padding;
+
+
+/* Statistics */
+long long int total_received_bytes;
+long long int total_received_pkts;
+long long int total_udp_pkts;
+long long int total_udp_bytes;
+long long int total_rel_udp_pkts;
+long long int total_rel_udp_bytes;
+long long int total_link_ack_pkts;
+long long int total_link_ack_bytes;
+long long int total_hello_pkts;
+long long int total_hello_bytes;
+long long int total_link_state_pkts;
+long long int total_link_state_bytes;
+long long int total_group_state_pkts;
+long long int total_group_state_bytes;
+
+
+/* Static Variables */
 static void 	Usage(int argc, char *argv[]);
 static void     Init_Memory_Objects(void);
 
@@ -132,8 +204,7 @@ int main(int argc, char* argv[])
     Alarm( PRINT, "| This product uses software developed by Spread Concepts LLC for use       |\n");
     Alarm( PRINT, "| in the Spread toolkit. For more information about Spread,                 |\n");
     Alarm( PRINT, "| see http://www.spread.org                                                 |\n");
-    Alarm( PRINT, "\\===========================================================================/\n\n");	    
-
+    Alarm( PRINT, "\\===========================================================================/\n\n");
 
 
     Usage(argc, argv);
@@ -156,10 +227,6 @@ int main(int argc, char* argv[])
 
     if(Time_until_Exit.sec != 0)
 	E_queue(Graceful_Exit, 0, NULL, Time_until_Exit);
-
-    /* This shouldn't be here. Just for testing... */
-    if(Send_To != -1)
-	Random_Send(Send_To, NULL);
 
     E_handle_events();
 
@@ -188,18 +255,20 @@ int main(int argc, char* argv[])
 static void Init_Memory_Objects(void)
 {
     /* initilize memory object types */
-    Mem_init_object_abort(TREE_NODE, sizeof(Node), 30, 10);
-    Mem_init_object_abort(DIRECT_LINK, sizeof(Link), 10, 1);
-    Mem_init_object_abort(CONTROL_DATA, sizeof(Control_Data), 10, 1);
-    Mem_init_object_abort(RELIABLE_DATA, sizeof(Reliable_Data), 30, 1);
-    Mem_init_object_abort(UDP_DATA, sizeof(UDP_Data), 10, 0);
-    Mem_init_object_abort(OVERLAY_EDGE, sizeof(Edge), 10, 10);
-    Mem_init_object_abort(CHANGED_EDGE, sizeof(Changed_Edge), 10, 1);
-    Mem_init_object(PACK_HEAD_OBJ, sizeof(packet_header), 10, 1);
+    Mem_init_object(PACK_HEAD_OBJ, sizeof(packet_header), 50, 1);
     Mem_init_object(PACK_BODY_OBJ, sizeof(packet_body), 200, 10);
     Mem_init_object(SYS_SCATTER, sizeof(sys_scatter), 10, 1);
-    Mem_init_object(BUFFER_CELL, sizeof(Buffer_Cell), 210, 1);
-    Mem_init_object(UDP_CELL, sizeof(UDP_Cell), 210, 0);
+    Mem_init_object_abort(TREE_NODE, sizeof(Node), 30, 10);
+    Mem_init_object_abort(DIRECT_LINK, sizeof(Link), 10, 1);
+    Mem_init_object_abort(OVERLAY_EDGE, sizeof(Edge), 50, 10);
+    Mem_init_object_abort(OVERLAY_ROUTE, sizeof(Route), 900, 10);
+    Mem_init_object_abort(CHANGED_STATE, sizeof(Changed_State), 50, 1);
+    Mem_init_object_abort(STATE_CHAIN, sizeof(State_Chain), 50, 1);
+    Mem_init_object_abort(MULTICAST_GROUP, sizeof(Group_State), 200, 1);
+    Mem_init_object(BUFFER_CELL, sizeof(Buffer_Cell), 300, 1);
+    Mem_init_object(UDP_CELL, sizeof(UDP_Cell), 300, 0);
+    Mem_init_object_abort(CONTROL_DATA, sizeof(Control_Data), 10, 1);
+    Mem_init_object_abort(RELIABLE_DATA, sizeof(Reliable_Data), 30, 1);
     Mem_init_object(SESSION_OBJ, sizeof(Session), 30, 0);
 }
 
@@ -233,20 +302,26 @@ static  void    Usage(int argc, char *argv[])
     Port = 8100;
     Address[0] = -1;
     My_Address = -1;
-    Err_Rate = 0;
+    Route_Weight = DISTANCE_ROUTE;
     network_flag = 1;
-    Reliable_Flag = 0;
+    Minimum_Window = 1;
+    Fast_Retransmit = 0;
+    Stream_Fairness = 0;
+    Padding = 0;
     Up_Down_Interval.sec  = 0;
     Up_Down_Interval.usec = 0;
     Time_until_Exit.sec  = 0;
     Time_until_Exit.usec = 0;
-    
-    Send_To = -1;
-    
+    Accept_Monitor = 0;
+
 
     while(--argc > 0) {
         argv++;
-	if(!strncmp(*argv, "-p", 2)) {
+	if(!strncmp(*argv, "-sf", 3)) {
+	    Stream_Fairness = 1;
+	}else if(!strncmp(*argv, "-m", 2)) {
+	    Accept_Monitor = 1;
+	}else if(!strncmp(*argv, "-p", 2)) {
 	    sscanf(argv[1], "%d", (int*)&Port);
 	    argc--; argv++;
 	}else if(!strncmp(*argv, "-u", 2)) {
@@ -255,24 +330,19 @@ static  void    Usage(int argc, char *argv[])
 	}else if(!strncmp(*argv, "-x", 2)) {
 	    sscanf(argv[1], "%d", (int*)&Time_until_Exit.sec);
 	    argc--; argv++;
-	}else if(!strncmp(*argv, "-r", 2)) {
-	    Reliable_Flag = 1;
-	}else if(!strncmp(*argv, "-e", 2)) {
-	    sscanf(argv[1], "%d", &Err_Rate);
-	    if(Err_Rate > 50)
-		Alarm(PRINT, "\n\nAre you nuts ? What do you expect for %d percent losses ?\n\n",
-		      Err_Rate);
-	    argc--; argv++;
 	}else if(!strncmp(*argv, "-l", 2)) {
 	    sscanf(argv[1], "%s", ip_str);
 	    sscanf( ip_str ,"%d.%d.%d.%d",&i1, &i2, &i3, &i4);
 	    My_Address = ( (i1 << 24 ) | (i2 << 16) | (i3 << 8) | i4 );
 	    argc--; argv++;
-	}else if(!strncmp(*argv, "-s", 2)) {
-	    /* This shouldn't be here. Just for testing... */
-	    sscanf(argv[1], "%s", ip_str);
-	    sscanf( ip_str ,"%d.%d.%d.%d",&i1, &i2, &i3, &i4);
-	    Send_To = ( (i1 << 24 ) | (i2 << 16) | (i3 << 8) | i4 );
+	}else if((!strncmp(*argv, "-w", 2))&&(!strcmp(*(argv+1), "distance"))) {
+	    Route_Weight = DISTANCE_ROUTE;
+	    argc--; argv++;
+	}else if((!strncmp(*argv, "-w", 2))&&(!strcmp(*(argv+1), "latency"))) {
+	    Route_Weight = LATENCY_ROUTE;
+	    argc--; argv++;
+	}else if((!strncmp(*argv, "-w", 2))&&(!strcmp(*(argv+1), "loss"))) {
+	    Route_Weight = LOSSRATE_ROUTE;
 	    argc--; argv++;
 	}else if((!strncmp(*argv, "-a", 2)) && (argc > 1) && 
 		 (strlen(argv[1]) < sizeof(ip_str)) && (cnt < 16)) {
@@ -287,20 +357,24 @@ static  void    Usage(int argc, char *argv[])
   	        }
 	    Address[cnt+1] = -1; 
 	    argc--; argv++; cnt++;
+	    if(cnt >= 256) {
+		Alarm(EXIT, "too many neighbors...\n");
+	    }
 	}else{
-	    Alarm(PRINT, "Usage: \n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n",
-		  "\t[-p <port number>] : to send on, default is 8100",
-		  "\t[-e <error rate> ] : error rate receiving at this node,",
-		  "\t[-l <IP address> ] : local address,",
-		  "\t[-a <IP address> ] : to connect to,",
-		  "\t\tthere can be at most 15 different IP addresses,",
-		  "\t[-x <seconds>    ] : time until exit,",
-		  "\t[-r              ] : use reliable links,",
-		  "\t[-u <seconds>    ] : up-down interval");
+	    Alarm(PRINT, "Usage: \n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n",
+		  "\t[-p <port number> ] : to send on, default is 8100",
+		  "\t[-l <IP address>  ] : local address,",
+		  "\t[-a <IP address>  ] : to connect to,",
+		  "\t\tat most 255 different directly connected neighbors,",
+		  "\t[-w <Route_Weight>] : [distance, latency, loss], default: distance,",
+		  "\t[-sf              ] : stream based fairness (for reliable links),",
+		  "\t[-m               ] : accept monitor commands for setting loss rates,",
+		  "\t[-x <seconds>     ] : time until exit,",
+		  "\t[-u <seconds>     ] : up-down interval");
 	    Alarm(EXIT, "Bye...\n");
 	}
     }
-    Num_Nodes = cnt;
+    Num_Initial_Nodes = cnt;
 
     Alarm(PRINT, "Port: %d\n", Port);
     for(cnt=0; Address[cnt] != -1; cnt++) {

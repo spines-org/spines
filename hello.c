@@ -36,6 +36,8 @@
 #endif
 
 #include <stdlib.h>
+#include <math.h>
+
 #include "util/arch.h"
 #include "util/alarm.h"
 #include "util/sp_events.h"
@@ -46,10 +48,13 @@
 #include "node.h"
 #include "link.h"
 #include "network.h"
-#include "reliable_link.h"
+#include "reliable_datagram.h"
 #include "hello.h"
 #include "link_state.h"
 #include "protocol.h"
+#include "udp.h"
+#include "route.h"
+#include "state_flood.h"
 #include "stdutil/src/stdutil/stdhash.h"
 
 
@@ -64,12 +69,16 @@ extern Node*     Neighbor_Nodes[MAX_LINKS/MAX_LINKS_4_EDGE];
 extern Link*     Links[MAX_LINKS];
 extern int       network_flag;
 extern channel   Local_Send_Channels[MAX_LINKS_4_EDGE];
+extern Prot_Def  Edge_Prot_Def;
+extern Prot_Def  Groups_Prot_Def;
 
 /* Local variables */
 
 static const sp_time zero_timeout  = {     0,    0};
-static const sp_time short_timeout = {     0,    50000}; /* 50 milliseconds */
-static       sp_time hello_timeout;
+static const sp_time short_timeout = {     0,    50000};  /* 50 milliseconds */
+static const sp_time long_timeout  = {     0,    200000}; /* 200 milliseconds */
+static const sp_time cnt_timeout   = {     0,    100000}; /* 100 milliseconds */
+static       sp_time hello_timeout = {     1,    0};      /* 1 second */
 
 
 
@@ -88,9 +97,6 @@ static       sp_time hello_timeout;
 void Init_Connections(void)
 {
     int16 linkid;
-
-    hello_timeout.sec = 1;
-    hello_timeout.usec = 0;
 
     /* Start the hello protocol on all the known links */
     for(linkid=0; linkid<MAX_LINKS && Links[linkid] != NULL; linkid++) 
@@ -124,9 +130,11 @@ void Send_Hello(int linkid, void* dummy)
 	return;
     }
     cnt = Links[linkid]->other_side_node->counter++;
+    
     /*
-    Alarm(PRINT, "hello counter: %d\n", Links[linkid]->other_side_node->counter);
-    */
+     *Alarm(PRINT, "hello counter: %d\n", Links[linkid]->other_side_node->counter);
+     */
+ 
     if(cnt > DEAD_LINK_CNT) {
         Alarm(PRINT, "Disconnecting node %d.%d.%d.%d\n", 
 	      IP1(Links[linkid]->other_side_node->address),
@@ -139,6 +147,10 @@ void Send_Hello(int linkid, void* dummy)
     else {
         Net_Send_Hello((int16u)linkid, 0);
 	E_queue(Send_Hello, linkid, NULL, hello_timeout);
+	
+	if(cnt > 0) {
+	    E_queue(Send_Hello_Request_Cnt, linkid, NULL, long_timeout);
+	}
     }
 }
 
@@ -160,15 +172,59 @@ void Send_Hello(int linkid, void* dummy)
 
 void Send_Hello_Request(int linkid, void* dummy)
 {
-       Net_Send_Hello((int16u)linkid, 1);       
+    Net_Send_Hello((int16u)linkid, 1);
 }
+
+
+
+/***********************************************************/
+/* Send_Hello_Request_Cnt(int linkid, void *dummy)         */
+/*                                                         */
+/* Called by the event system.                             */
+/* Sends a hello message on a link and requests an         */
+/* immediate response (another hello message) from the     */
+/* receiver. Cuts the link after a while if there is no    */
+/* response                                                */
+/*                                                         */
+/* Arguments                                               */
+/*                                                         */
+/* linkid: the ID of the link in the global array          */
+/*                                                         */
+/***********************************************************/
+
+void Send_Hello_Request_Cnt(int linkid, void* dummy)
+{
+    int cnt;
+    
+    if(Links[linkid] == NULL) {
+	Alarm(PRINT, "Send Hello on a non existing link !\n");
+	return;
+    }
+    cnt = Links[linkid]->other_side_node->counter++;
+    
+    if(cnt > DEAD_LINK_CNT) {
+        Alarm(PRINT, "Disconnecting node %d.%d.%d.%d\n", 
+	      IP1(Links[linkid]->other_side_node->address),
+	      IP2(Links[linkid]->other_side_node->address),
+	      IP3(Links[linkid]->other_side_node->address),
+	      IP4(Links[linkid]->other_side_node->address));
+
+        Disconnect_Node(Links[linkid]->other_side_node->address);
+    }
+    else {
+        Net_Send_Hello((int16u)linkid, 1);
+	E_queue(Send_Hello_Request_Cnt, linkid, NULL, cnt_timeout);
+    }
+}
+
+
 
 
 /***********************************************************/
 /* Send_Hello_Ping(int linkid, void *dummy)                */
 /*                                                         */
 /* Called periodically by the event system.                */
-/* Sends a hello message on a dead link and requests an    */
+/* Sends a hello message on dead links and requests a      */
 /* response (another hello message) from the reciver       */
 /* It is used to determine if a crashed/partitioned        */
 /* node recovered                                          */
@@ -181,15 +237,20 @@ void Send_Hello_Request(int linkid, void* dummy)
 
 void Send_Hello_Ping(int dummy_int, void* dummy)
 {
-    stdhash_it it;
+    stdhash_it it, src_it;
     Edge *edge;
+    State_Chain *s_chain;
 
-    stdhash_find(&All_Edges, &it, &My_Address);
-    while(!stdhash_it_is_end(&it)) {
-      	edge = *((Edge **)stdhash_it_val(&it));
-	if(edge->cost < 0)
-	    Net_Send_Hello_Ping(edge->dest->address);       
-	stdhash_it_keyed_next(&it);
+    stdhash_find(&All_Edges, &src_it, &My_Address);
+    if(!stdhash_it_is_end(&src_it)) {
+	s_chain = *((State_Chain **)stdhash_it_val(&src_it));
+	stdhash_begin(&s_chain->states, &it);
+	while(!stdhash_it_is_end(&it)) {
+	    edge = *((Edge **)stdhash_it_val(&it));
+	    if(edge->cost < 0)
+		Net_Send_Hello_Ping(edge->dest->address);       
+	    stdhash_it_next(&it);
+	}
     }
     E_queue(Send_Hello_Ping, 0, NULL, hello_timeout);
 }
@@ -240,6 +301,7 @@ void Net_Send_Hello(int16 linkid, int mode)
     hdr.sender_id = My_Address;
     hdr.data_len  = sizeof(hello_packet);
     hdr.ack_len   = 0;
+    hdr.seq_no = Set_Loss_SeqNo(Links[linkid]->other_side_node);
 
     if(Links[linkid]->prot_data == NULL)
 	Alarm(EXIT, "Net_Send_Hello: control_data unavailable\n");
@@ -249,7 +311,9 @@ void Net_Send_Hello(int16 linkid, int mode)
     pkt.my_time_sec  = (int32)now.sec;
     pkt.my_time_usec = (int32)now.usec;
     pkt.diff_time    = c_data->diff_time;
-
+    pkt.loss_rate    = Compute_Loss_Rate(Links[linkid]->other_side_node);
+    
+    
     if(network_flag == 1) {
 	ret = DL_send(Links[linkid]->chan, 
 		      Links[linkid]->other_side_node->address,
@@ -293,6 +357,7 @@ void Net_Send_Hello_Ping(int32 address)
     hdr.sender_id = My_Address;
     hdr.data_len  = sizeof(hello_packet);
     hdr.ack_len   = 0;
+    hdr.seq_no = 0xffff;
 
     pkt.seq_no       = 0;
     pkt.my_time_sec  = (int32)now.sec;
@@ -337,6 +402,7 @@ void Process_hello_packet(char *buf, int remaining_bytes, int32 sender, int32u t
     int32u remote_seq;
     Control_Data *c_data;
     int32 sender_id = sender;
+    float loss_rate, throughput, tmp1, tmp2;
 
     now = E_get_time();
 
@@ -352,6 +418,7 @@ void Process_hello_packet(char *buf, int remaining_bytes, int32 sender, int32u t
         pkt->my_time_sec  = Flip_int32(pkt->my_time_sec);	
         pkt->my_time_usec = Flip_int32(pkt->my_time_usec);	
         pkt->diff_time    = Flip_int32(pkt->diff_time);
+        pkt->loss_rate    = Flip_int32(pkt->loss_rate);
     }
 
 
@@ -397,15 +464,24 @@ void Process_hello_packet(char *buf, int remaining_bytes, int32 sender, int32u t
 	    c_data->diff_time = my_diff.sec*1000000 + my_diff.usec;
 	    c_data->other_side_hello_seq = remote_seq;
 
-	    edge = Find_Edge(&All_Edges, My_Address, sender_id, 0);
+	    edge = (Edge*)Find_State(&All_Edges, My_Address, sender_id);
 	    if(edge == NULL)
 	        Alarm(EXIT, "Process_hello_packet(): No overlay edge !\n");
 
 	    /* Update round trip time */
-	    c_data->rtt = rtt.sec*1000000 + rtt.usec;
-	    if(c_data->rtt < 0)
-	      c_data->rtt = 0;
+
+	    c_data->rtt = 0.8*c_data->rtt + 0.2*(rtt.sec*1000 + rtt.usec/1000);
+	    if(c_data->rtt < 1)
+	      c_data->rtt = 1;
 	    
+	    if((c_data->reported_rtt == UNKNOWN)||
+	       ((abs(c_data->reported_rtt - c_data->rtt) > 0.1*c_data->reported_rtt)&&
+		(abs(c_data->reported_rtt - c_data->rtt) >= 1))) {
+		if(Edge_Update_Cost(nd->link[CONTROL_LINK]->link_id, LATENCY_ROUTE) > 0) {
+		    c_data->reported_rtt = c_data->rtt;		    
+		}
+	    }
+
 	    if(nd->link[CONTROL_LINK]->r_data == NULL)
 		Alarm(EXIT, "Process_hello_packet: control link not reliable\n");
 	    nd->link[CONTROL_LINK]->r_data->rtt = c_data->rtt;
@@ -413,6 +489,8 @@ void Process_hello_packet(char *buf, int remaining_bytes, int32 sender, int32u t
 	    /* Update the last time heard */
 	    nd->last_time_heard = now;
 	    nd->counter = 0;
+
+	    E_dequeue(Send_Hello_Request_Cnt, nd->link[CONTROL_LINK]->link_id, NULL); 
 		
 	    /* If the node is not connected yet */
 	    if(!(nd->flags & CONNECTED_NODE)) {
@@ -433,10 +511,88 @@ void Process_hello_packet(char *buf, int remaining_bytes, int32 sender, int32u t
 		E_queue(Send_Hello, nd->link[CONTROL_LINK]->link_id, NULL, zero_timeout);
 
 		Alarm(DEBUG, "!!! Sending all links\n");
-	        E_queue(Net_Send_Link_State_All, nd->link[CONTROL_LINK]->link_id, NULL, short_timeout);
+	        E_queue(Net_Send_State_All, nd->link[CONTROL_LINK]->link_id, 
+			&Edge_Prot_Def, short_timeout);
+
+		Alarm(DEBUG, "!!! Sending all groups\n");
+	        E_queue(Net_Send_State_All, nd->link[CONTROL_LINK]->link_id, 
+			&Groups_Prot_Def, short_timeout);
+	    
 	    }
 	    else if(Is_hello_req(type)) {
 		E_queue(Send_Hello, nd->link[CONTROL_LINK]->link_id, NULL, zero_timeout);
+	    }
+	    else {
+		/* This is a connected node */
+		if(pkt->loss_rate == UNKNOWN) {
+		    Alarm(DEBUG, "Loss rate to %d.%d.%d.%d: N/A; rtt: %7d\n", 
+		    	  IP1(nd->address), IP2(nd->address),
+		    	  IP3(nd->address), IP4(nd->address), c_data->rtt);
+		    
+		    Alarm(DEBUG, "%d.%06d\t0.0\n", now.sec, now.usec);
+		}
+		else {
+		    loss_rate = pkt->loss_rate;
+		    loss_rate /= LOSS_RATE_SCALE;
+		    
+		    c_data->est_loss_rate = loss_rate;
+		    
+		    if(c_data->reported_loss_rate == UNKNOWN) {
+			if(Edge_Update_Cost(nd->link[CONTROL_LINK]->link_id, LOSSRATE_ROUTE) > 0) {
+			    c_data->reported_loss_rate = c_data->est_loss_rate;			
+			}
+		    }
+		    else {
+			if(c_data->reported_loss_rate > c_data->est_loss_rate) {
+			    if(c_data->reported_loss_rate - c_data->est_loss_rate >
+			       0.1*c_data->reported_loss_rate) {
+				c_data->reported_loss_rate = c_data->est_loss_rate;
+				if( Edge_Update_Cost(nd->link[CONTROL_LINK]->link_id, LOSSRATE_ROUTE) > 0) {
+				    c_data->reported_loss_rate = c_data->est_loss_rate;	    
+				}
+			    }
+			}
+			else if(c_data->est_loss_rate - c_data->reported_loss_rate >
+			       0.1*c_data->reported_loss_rate) {
+			    if(Edge_Update_Cost(nd->link[CONTROL_LINK]->link_id, LOSSRATE_ROUTE) > 0) {
+				c_data->reported_loss_rate = c_data->est_loss_rate;
+			    }
+			}
+		    }
+
+		    Alarm(DEBUG, "Loss rate to %d.%d.%d.%d: %5.3f\%; rtt: %7d ", 
+			  IP1(nd->address), IP2(nd->address),
+			  IP3(nd->address), IP4(nd->address), 
+			  c_data->est_loss_rate*100, c_data->rtt);
+		    
+		    if(c_data->rtt > 0) {
+			/*t = 1/(r*sqrt(2*p/3) + trto*3*sqrt(3*p/8)*p*(1+32*pow(p, 2)));*/ 
+			tmp1 = c_data->rtt;
+			tmp1 /= 1000000; /* tmp1 = RTT in seconds*/
+			tmp1 *= sqrt(2*loss_rate/3); /* tmp1 = r*sqrt(2*p/3) */
+			
+			tmp2 = c_data->rtt;
+			tmp2 /= 1000000; /* tmp2 = RTT in seconds*/
+			tmp2 *= 3*sqrt(3*loss_rate/8); /* tmp2 = trto*3*sqrt(3*p/8) */
+			tmp2 *= loss_rate*(1+32*loss_rate*loss_rate); /* tmp2 = trto*3*sqrt(3*p/8)*p*(1+32*pow(p, 2)) */
+			
+			throughput = 1/(tmp1+tmp2);
+			
+			if(c_data->est_tcp_rate == UNKNOWN) {
+			    c_data->est_tcp_rate = throughput;
+			}
+			else {
+			    c_data->est_tcp_rate = 
+				0.8*c_data->est_tcp_rate + 0.2*throughput;
+			}
+			Alarm(DEBUG, " TCP rate: %6.3f : %6.3f\n", c_data->est_tcp_rate, throughput);
+			Alarm(DEBUG, "%d.%06d\t%5.3f\n", now.sec, now.usec, 
+			      c_data->est_tcp_rate);
+		    }
+		    else {
+			Alarm(DEBUG, "\n");
+		    }
+		}
 	    }
 	}
 	else {

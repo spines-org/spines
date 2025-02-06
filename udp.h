@@ -49,6 +49,5 @@ void Flip_udp_hdr( udp_header *udp_hdr );
 void Process_udp_data_packet(int32 sender_id, char *buff_p, 
 			     int16u data_len, int32u type, int mode);
 int  Forward_UDP_Data(Node* next_hop, char *buff, int16u buf_len);
-void UDP_Check_Link_Loss(int32 sender, int16u seq_no);
 
 #endif

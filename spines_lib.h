@@ -27,16 +27,34 @@
 #ifndef SPINES_LIB_H
 #define SPINES_LIB_H
 
-int  spines_socket(int port, int address);
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define     UDP_LINKS            0
+#define     RELIABLE_LINKS       1
+
+
+int  spines_socket(int port, int address, int *flags); 
 int  spines_bind(int sk, int port);
 void spines_close(int sk);
 int  spines_sendto(int sk, int address, int port, char *buff, int len);
 int  spines_recvfrom(int sk, int *sender, int *port, char *buff, int len);
+    
+int spines_join(int sk, int address);
+int spines_leave(int sk, int address);
 
 int  spines_listen(int sk);
-int  spines_accept(int sk, int on_port, int on_address);
+int  spines_accept(int sk, int on_port, int on_address, int *flags);
 int  spines_connect(int sk, int address, int port);
 int  spines_send(int sk, char *buff, int len);
 int  spines_recv(int sk, char *buff, int len);
+
+int  spines_setloss(int sk, int address, float loss, float burst);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

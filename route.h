@@ -29,9 +29,26 @@
 
 #include "node.h"
 
-void Build_Q_Set(void);
+#define REMOTE_ROUTE    0
+#define LOCAL_ROUTE     1
+
+#define DISTANCE_ROUTE  0
+#define LATENCY_ROUTE   1
+#define LOSSRATE_ROUTE  2
+
+
+typedef struct Route_d {
+    int32 source;                /* IP Address of source */
+    int32 dest;                  /* IP Address of destination */
+    int32 distance;              /* Number of hops on this route */
+    int32 cost;                  /* Cost of sending on this route */
+    Node *forwarder;             /* Neighbor that will forward towards dest. */
+} Route;
+
+void Init_Routes(void) ;
+Route* Find_Route(int32 source, int32 dest); 
 void Set_Routes(void);
-void Print_Routes(void);
-Node* Get_Route(int32 dest);
+Node* Get_Route(int32 source, int32 dest);
+void Print_Routes(void); 
 
 #endif

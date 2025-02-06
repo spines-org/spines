@@ -55,29 +55,46 @@
 #include "node.h"
 #include "link.h"
 #include "network.h"
-#include "reliable_link.h"
+#include "reliable_datagram.h"
+#include "state_flood.h"
 #include "link_state.h"
 #include "hello.h"
 #include "protocol.h"
 #include "session.h"
+#include "multicast.h"
 
 
 /* Global variables */
 
 extern int16 Port;
-extern int16 Num_Nodes;
-extern int32 Address[16];
+extern int16 Num_Initial_Nodes;
+extern int32 Address[256];
 extern int32 My_Address;
 extern channel Local_Recv_Channels[MAX_LINKS_4_EDGE];
 extern channel Local_Send_Channels[MAX_LINKS_4_EDGE];
 extern sys_scatter Recv_Pack[MAX_LINKS_4_EDGE];
-extern int   Err_Rate;
 extern sp_time Up_Down_Interval;
 extern int network_flag;
+extern Prot_Def Edge_Prot_Def;
+extern Prot_Def Groups_Prot_Def;
+extern stdhash  Monitor_Loss;
 
-/* Local variables */
 
-static int32 total_received_bytes;
+/* Statistics */
+extern long long int total_received_bytes;
+extern long long int total_received_pkts;
+extern long long int total_udp_pkts;
+extern long long int total_udp_bytes;
+extern long long int total_rel_udp_pkts;
+extern long long int total_rel_udp_bytes;
+extern long long int total_link_ack_pkts;
+extern long long int total_link_ack_bytes;
+extern long long int total_hello_pkts;
+extern long long int total_hello_bytes;
+extern long long int total_link_state_pkts;
+extern long long int total_link_state_bytes;
+extern long long int total_group_state_pkts;
+extern long long int total_group_state_bytes;
 
 
 /***********************************************************/
@@ -99,19 +116,38 @@ void Init_Network(void)
 {
     network_flag = 1;
     total_received_bytes = 0;
+    total_received_pkts = 0;
+    total_udp_pkts = 0;
+    total_udp_bytes = 0;
+    total_rel_udp_pkts = 0;
+    total_rel_udp_bytes = 0;
+    total_link_ack_pkts = 0;
+    total_link_ack_bytes = 0;
+    total_hello_pkts = 0;
+    total_hello_bytes = 0;
+    total_link_state_pkts = 0;
+    total_link_state_bytes = 0;
+    total_group_state_pkts = 0;
+    total_group_state_bytes = 0;
 
     Init_My_Node();
     Init_Recv_Channel(CONTROL_LINK);
     Init_Recv_Channel(UDP_LINK);
     Init_Recv_Channel(RELIABLE_UDP_LINK);
+
     Init_Send_Channel(CONTROL_LINK);
     Init_Send_Channel(UDP_LINK);
     Init_Send_Channel(RELIABLE_UDP_LINK);
+
     Init_Nodes();
     Init_Connections();
     Init_Session();
-    Resend_Link_States(0, NULL);
-    Garbage_Collector(0, NULL);
+    Resend_States(0, &Edge_Prot_Def);
+    State_Garbage_Collect(0, &Edge_Prot_Def);
+    Resend_States(0, &Groups_Prot_Def);
+    State_Garbage_Collect(0, &Groups_Prot_Def);
+    /* Uncomment next line to print periodical route updates */
+    /* Print_Edges(0, NULL); */
 }
 
 
@@ -219,7 +255,7 @@ void Init_My_Node(void)
     char machine_name[256];
     int i;
 
-    if(My_Address == -1) {
+    if(My_Address == -1) { /* No local address was given in the command line */
 	gethostname(machine_name,sizeof(machine_name)); 
 	host_ptr = gethostbyname(machine_name);
 	
@@ -234,7 +270,7 @@ void Init_My_Node(void)
         memcpy(&My_Address, host_ptr->h_addr, sizeof(struct in_addr));
 	My_Address = ntohl(My_Address);
     }
-    for(i=0;i<Num_Nodes;i++) {
+    for(i=0;i<Num_Initial_Nodes;i++) {
         if(Address[i] == My_Address)
 	    Alarm(EXIT, "Oops ! I cannot conect to myself...\n");
     }
@@ -261,13 +297,19 @@ void Init_My_Node(void)
 
 int    Read_UDP(channel sk, int mode, sys_scatter *scat)
 {
-    int	          received_bytes;
-    sp_time       dummy_time;
-    double        chance = 100;
+    int	received_bytes;
+    packet_header *pack_hdr;
+    sp_time dummy_time;
+    int32 sender;
+    stdhash_it it;
+    double chance = 100.0;
+    double test = 0.0;
+    double p1, p01, p11;
+    Loss *loss = NULL;
     
     received_bytes = DL_recv(sk, scat);  
     if( received_bytes < sizeof( packet_header )) {
-        Alarm(PRINT, "Read_UDP: ignoring packet of size %d, smaller than packet header size %d\n", 
+        Alarm(DEBUG, "Read_UDP: ignoring packet of size %d, smaller than packet header size %d\n", 
 	      received_bytes, sizeof(packet_header));
 	return -1;
     }
@@ -275,23 +317,68 @@ int    Read_UDP(channel sk, int mode, sys_scatter *scat)
     
     Alarm(DEBUG, "Read_UDP: got %d bytes\n", received_bytes); 
     
+    pack_hdr = (packet_header *)scat->elements[0].buf;
 
+    /* Check for monitor injected losses */
+    sender = pack_hdr->sender_id;
+    stdhash_find(&Monitor_Loss, &it, &sender);
+    if (!stdhash_it_is_end(&it)) {
 
-    if(Err_Rate > 0) {
+	loss = (Loss*)stdhash_it_val(&it); 
 	dummy_time = E_get_time();
 	srand(dummy_time.usec);
+
 	chance = rand();
+	chance *= 100.0;
 	chance /= RAND_MAX;
-	chance *= 100;
+
+	p1  = loss->loss_rate;
+	p1  = p1/1000000.0;
+
+	if(loss->burst_rate == 0) {
+	    p01 = p11 = p1;
+	}
+	else if((loss->burst_rate == 1000000)|| /* burst rate of 100% or */
+		(loss->loss_rate == 1000000)) { /* loss rate of 100% */
+	    p01 = p11 = 1.0;
+	}
+	else {
+	    p11 = loss->burst_rate;
+	    p11 = p11/1000000.0;
+	    p01 = p1*(1-p11)/(1-p1);	      
+	}
+
+        if(loss->was_loss > 0) {
+	    test = 100.0 * p11;
+	}
+	else {
+	    test = 100.0 * p01;
+	}
+    } 
+
+    if(loss != NULL) {
+	Alarm(DEBUG, "loss: %d; burst: %d; was_loss %d; test: %5.3f; chance: %5.3f\n",
+	      loss->loss_rate, loss->burst_rate, loss->was_loss, test, chance);
     }
 
-    if((network_flag == 1)&&(chance >= Err_Rate))
+
+
+    if((network_flag == 1)&&(chance >= test)) {
 	Prot_process_scat(scat, received_bytes, mode);
-    else
+
+	total_received_bytes += received_bytes;
+	total_received_pkts++;
+	if(loss != NULL) {
+	    loss->was_loss = 0;
+	}
+    }
+    else {
 	received_bytes = 0;
-
-    total_received_bytes += received_bytes;
-
+	if(loss != NULL) {
+	    loss->was_loss = 1;
+	}
+    }
+    
     return received_bytes;
 }
 
@@ -304,6 +391,12 @@ void Up_Down_Net(int dummy_int, void *dummy_p)
 
 void Graceful_Exit(int dummy_int, void *dummy_p)
 {
-    Alarm(EXIT, "\n\n\nTotal bytes received: %d\n", total_received_bytes);
+    Alarm(PRINT, "\n\n\nUDP\t%9lld\t%9lld\n", total_udp_pkts, total_udp_bytes);
+    Alarm(PRINT, "REL_UDP\t%9lld\t%9lld\n", total_rel_udp_pkts, total_rel_udp_bytes);
+    Alarm(PRINT, "ACK\t%9lld\t%9lld\n", total_link_ack_pkts, total_link_ack_bytes);
+    Alarm(PRINT, "HELLO\t%9lld\t%9lld\n", total_hello_pkts, total_hello_bytes);
+    Alarm(PRINT, "LINK_ST\t%9lld\t%9lld\n", total_link_state_pkts, total_link_state_bytes);
+    Alarm(PRINT, "GRP_ST\t%9lld\t%9lld\n", total_group_state_pkts, total_group_state_bytes);
+    Alarm(EXIT,  "TOTAL\t%9lld\t%9lld\n", total_received_pkts, total_received_bytes);
 }
 

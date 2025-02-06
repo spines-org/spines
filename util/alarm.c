@@ -96,7 +96,8 @@ void Alarm( int32 mask, char *message, ...)
 	if ( EXIT & mask )
 	{
 	    perror("errno say:");
-	    abort();
+	    /* Uncoment the next line if you want to coredump on exit */
+	    /* abort(); */
             exit( 0 );
 	}
 }
@@ -132,7 +133,7 @@ void Alarm( int32 mask, char *message,
 	if ( EXIT & mask )
 	{
 	    perror("errno say:");
-	    abort();
+	    /*abort();*/
 	    exit( 0 );
 	}
 }

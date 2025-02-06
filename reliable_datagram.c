@@ -50,7 +50,7 @@
 #include "link.h"
 #include "network.h"
 #include "hello.h"
-#include "reliable_link.h"
+#include "reliable_datagram.h"
 #include "protocol.h"
 
 /* Global variables */
@@ -60,6 +60,9 @@ extern stdhash   All_Nodes;
 extern Link* Links[MAX_LINKS];
 extern int network_flag;
 extern int16 Link_Sessions_Blocked_On;
+extern int Minimum_Window;
+extern int Fast_Retransmit;
+extern int Stream_Fairness;
 
 
 /* Local consts */
@@ -72,7 +75,7 @@ void	Flip_ack_tail(char *buff, int16 ack_len)
     reliable_tail *r_tail;
     int32 *nack;
     int processed_bytes;
-
+    
     r_tail = (reliable_tail*)buff;
     r_tail->seq_no          = Flip_int32(r_tail->seq_no);
     r_tail->cummulative_ack = Flip_int32(r_tail->cummulative_ack);
@@ -133,7 +136,7 @@ int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_typ
     /* Getting Link and reliable data from linkid */
     lk = Links[linkid];
     if(lk == NULL) {
-	Alarm(EXIT, "Reliable_Send_Msg(): Non existing link !");
+        Alarm(EXIT, "Reliable_Send_Msg(): Non existing link !");
     }    
     r_data = lk->r_data;
     if(r_data == NULL) {
@@ -171,8 +174,8 @@ int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_typ
 	buf_cell->seq_no = r_tail->seq_no;
 	stdcarr_push_back(&r_data->msg_buff, &buf_cell);
 	
-	Alarm(DEBUG, " IN buff: seq: %d; tail: %d; head: %d\n", 
-	      r_tail->seq_no, r_data->tail, r_data->head);
+	Alarm(DEBUG, "IN buff: seq: %d; tail: %d; head: %d; buff: %d; win: %5.3f\n", 
+	      r_tail->seq_no, r_data->tail, r_data->head, stdcarr_size(&r_data->msg_buff), r_data->window_size);
 	
 	if(stdcarr_size(&r_data->msg_buff) > MAX_BUFF_LINK) {
 	    if(Link_Sessions_Blocked_On == -1) {
@@ -183,6 +186,31 @@ int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_typ
 
 	/* Alarm(PRINT, "buff: %d\n", stdcarr_size(&r_data->msg_buff)); */
 
+	/* Resend the tail if there is no room in the window and there are packets buffered. 
+	 * It is likely that there will be a timeout */	
+	if(((stdcarr_size(&r_data->msg_buff) >= (int)r_data->window_size) && 
+	    (r_data->tail - r_data->last_tail_resent >= (int)(r_data->window_size/2)))||
+	   ((stdcarr_size(&r_data->msg_buff) >= (int)(2*r_data->window_size))&&
+	    (r_data->tail - r_data->last_tail_resent >= 1))) {
+	    r_data->last_tail_resent = r_data->tail;
+	    if(r_data->nack_buff == NULL) {
+		if((r_data->nack_buff = (char*) new(PACK_BODY_OBJ))==NULL) {
+		    Alarm(EXIT, "Process_Ack(): Cannot allocte pack_body object\n");
+		}	
+		else
+		    Alarm(DEBUG, "nack_buff not empty; nack_len: %d\n", r_data->nack_len);
+	    }
+	    if(r_data->nack_len + sizeof(int32) < sizeof(packet_body)) {
+		memcpy(r_data->nack_buff+r_data->nack_len, (char*)(&r_data->tail), 
+		       sizeof(int32));
+		r_data->nack_len += sizeof(int32);
+		r_data->cong_flag = 0;
+	    }
+	    Alarm(DEBUG, "Resending the tail... %d\n", r_data->tail);
+	    E_queue(Send_Nack_Retransm, (int)linkid, NULL, zero_timeout);	    
+	}
+	
+	
 	return(0);
     }   
 
@@ -228,7 +256,8 @@ int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_typ
 	if(ack_len+buff_len > sizeof(packet_body) - sizeof(int32))
 	    break;
 	if(r_data->recv_window[i%MAX_WINDOW].flag == EMPTY_CELL) {
-	    if(r_data->recv_head - i > 4) {
+	    if((r_data->recv_head - i > 3)||
+	       ((r_data->recv_head - i > 1)&&(Fast_Retransmit == 1))) {
 		*((int32*)p_nack) = i;
 		p_nack += sizeof(int32);
 		ack_len += sizeof(int32);
@@ -273,6 +302,7 @@ int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_typ
     hdr->sender_id     = My_Address;
     hdr->data_len      = buff_len; 
     hdr->ack_len       = ack_len;
+    hdr->seq_no         = Set_Loss_SeqNo(lk->other_side_node);
 
     /* Sending the data */
     if(network_flag == 1) {
@@ -294,8 +324,8 @@ int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_typ
     if(r_data->scheduled_timeout == 1) {
         E_dequeue(Reliable_timeout, (int)linkid, NULL);
     }
-    timeout_val.sec = (r_data->rtt*4)/1000000;
-    timeout_val.usec = (r_data->rtt*4)%1000000;
+    timeout_val.sec = (r_data->rtt*2)/1000000;
+    timeout_val.usec = (r_data->rtt*2)%1000000;
 
     if(timeout_val.sec == 0 && timeout_val.usec == 0) {
         timeout_val.sec = 1;
@@ -475,7 +505,8 @@ void Send_Much(int16 linkid)
 	    if(ack_len+data_len > sizeof(packet_body) - sizeof(int32))
 		break;
 	    if(r_data->recv_window[i%MAX_WINDOW].flag == EMPTY_CELL) {
-		if(r_data->recv_head - i > 4) {
+		if((r_data->recv_head - i > 3)||
+		   ((r_data->recv_head - i > 1)&&(Fast_Retransmit == 1))) {
 		    *((int32*)p_nack) = i;
 		    p_nack += sizeof(int32);
 		    ack_len += sizeof(int32);
@@ -516,6 +547,7 @@ void Send_Much(int16 linkid)
 	hdr.sender_id = My_Address;
 	hdr.data_len  = data_len; 
 	hdr.ack_len   = ack_len;
+	hdr.seq_no    = Set_Loss_SeqNo(lk->other_side_node);
 	    
 	scat.elements[1].len = data_len + ack_len;    
 	scat.elements[1].buf = send_buff;
@@ -543,8 +575,8 @@ void Send_Much(int16 linkid)
 	E_dequeue(Reliable_timeout, (int)linkid, NULL);
     }
 
-    timeout_val.sec = (r_data->rtt*4)/1000000;
-    timeout_val.usec = (r_data->rtt*4)%1000000;
+    timeout_val.sec = (r_data->rtt*2)/1000000;
+    timeout_val.usec = (r_data->rtt*2)%1000000;
 
     if(timeout_val.sec == 0 && timeout_val.usec == 0) {
         timeout_val.sec = 1;
@@ -639,7 +671,8 @@ void Send_Ack(int linkid, void* dummy)
 	if(ack_len+data_len > sizeof(packet_body) - sizeof(int32))
 	    break;
 	if(r_data->recv_window[i%MAX_WINDOW].flag == EMPTY_CELL) {
-	    if(r_data->recv_head - i > 4) {
+	    if((r_data->recv_head - i > 3)||
+	       ((r_data->recv_head - i > 1)&&(Fast_Retransmit == 1))) {
 		*((int32*)p_nack) = i;
 		p_nack += sizeof(int32);
 		ack_len += sizeof(int32);
@@ -683,6 +716,7 @@ void Send_Ack(int linkid, void* dummy)
     hdr.sender_id = My_Address;
     hdr.data_len  = 0; 
     hdr.ack_len   = ack_len;
+    hdr.seq_no    = Set_Loss_SeqNo(lk->other_side_node);
 
     /* Sending the ack*/
     if(network_flag == 1) {
@@ -720,6 +754,7 @@ void Reliable_timeout(int linkid, void *dummy)
 {
     sys_scatter *scat;
     packet_header *hdr;
+    udp_header *cur_uhdr;
     Link *lk;
     Reliable_Data *r_data;
     reliable_tail *r_tail;
@@ -728,6 +763,7 @@ void Reliable_timeout(int linkid, void *dummy)
     int16 data_len;
     int16 ack_len;
     int32u pack_type, seq_no;
+    float stream_window;
     int ret;
     int32u i, cur_seq;
     sp_time timeout_val, sum_time, tmp_time, now;
@@ -760,12 +796,45 @@ void Reliable_timeout(int linkid, void *dummy)
     Alarm(DEBUG, "REL_TMOUT: tail: %d; head:%d; rtt: %d\n", 
 	  r_data->tail, r_data->head, r_data->rtt);
 
+    if((Stream_Fairness == 1)&&
+       ((r_data->window[r_data->tail%MAX_WINDOW].pack_type & UDP_DATA_TYPE)||
+	(r_data->window[r_data->tail%MAX_WINDOW].pack_type & REL_UDP_DATA_TYPE))){
+
+	cur_uhdr = (udp_header*)r_data->window[r_data->tail%MAX_WINDOW].buff;
+
+	stream_window = 0.0;
+	for(cur_seq = r_data->tail; (cur_seq < r_data->tail+r_data->window_size)&&
+		(cur_seq < r_data->head); cur_seq++) {
+	    if(memcmp(r_data->window[cur_seq%MAX_WINDOW].buff, 
+		      (char*)cur_uhdr, 2*sizeof(int32)+2*sizeof(int16u)) == 0) {
+		stream_window += 1.0;
+	    }
+	}
+
+	Alarm(DEBUG, "%d:%d -> %d:%d :: Timeout; stream_window: %5.3f : %5.3f\n", 
+	      cur_uhdr->source, cur_uhdr->source_port,
+	      cur_uhdr->dest, cur_uhdr->dest_port, stream_window, r_data->window_size);
+
+	if(stream_window == 0.0) {
+	    stream_window = 1.0;
+	    Alarm(DEBUG, "Timeout: stream_window = 0\n");
+	}
+
+    }
+    else {
+	stream_window = r_data->window_size;
+    }
+
     /* Congestion control */
-    r_data->ssthresh = r_data->window_size/2;
-    if(r_data->ssthresh < 1)
-	r_data->ssthresh = 1;
-    r_data->window_size = 1;
-    Alarm(DEBUG, "window adjusted: %5.3f timeout\n", r_data->window_size);
+    r_data->ssthresh = r_data->window_size - stream_window/2;
+    if(r_data->ssthresh < Minimum_Window)
+	r_data->ssthresh = Minimum_Window;
+
+    r_data->window_size = r_data->window_size - stream_window + 1;
+    if(r_data->window_size < Minimum_Window)
+	r_data->window_size = Minimum_Window;
+   
+    Alarm(DEBUG, "window adjusted: %5.3f timeout; tail: %d\n", r_data->window_size, r_data->tail);
 
     /* If there is already an ack to be sent on this link, cancel it, 
        as this packet will contain the ack info. */
@@ -822,7 +891,8 @@ void Reliable_timeout(int linkid, void *dummy)
 	    if(ack_len+data_len > sizeof(packet_body) - sizeof(int32))
 	    break;
 	    if(r_data->recv_window[i%MAX_WINDOW].flag == EMPTY_CELL) {
-		if(r_data->recv_head - i > 4) {
+		if((r_data->recv_head - i > 3)||
+		   ((r_data->recv_head - i > 1)&&(Fast_Retransmit == 1))) {
 		    *((int32*)p_nack) = i;
 		    p_nack += sizeof(int32);
 		    ack_len += sizeof(int32);
@@ -861,6 +931,7 @@ void Reliable_timeout(int linkid, void *dummy)
 	hdr->sender_id = My_Address;
 	hdr->data_len  = data_len; 
 	hdr->ack_len   = ack_len;
+	hdr->seq_no    = Set_Loss_SeqNo(lk->other_side_node);
 	
 	scat->elements[1].len = data_len + ack_len;    
 	scat->elements[1].buf = send_buff;
@@ -880,8 +951,8 @@ void Reliable_timeout(int linkid, void *dummy)
     dispose(scat->elements[0].buf);
     dispose(scat);
 	
-    timeout_val.sec = (r_data->rtt*4)/1000000;
-    timeout_val.usec = (r_data->rtt*4)%1000000;
+    timeout_val.sec = (r_data->rtt*2)/1000000;
+    timeout_val.usec = (r_data->rtt*2)%1000000;
 
     if(timeout_val.sec == 0 && timeout_val.usec == 0) {
         timeout_val.sec = 1;
@@ -936,6 +1007,9 @@ void Send_Nack_Retransm(int linkid, void *dummy)
 {
     sys_scatter *scat;
     packet_header *hdr;
+    float stream_window;
+    udp_header *cur_uhdr;
+    int32u cur_seq;
     Link *lk;
     Reliable_Data *r_data;
     reliable_tail *r_tail;
@@ -978,20 +1052,56 @@ void Send_Nack_Retransm(int linkid, void *dummy)
 	return;
     }
 	
-    /* Congestion control */
-    r_data->ssthresh = r_data->window_size/2;
-    if(r_data->ssthresh < 1) {
-	r_data->ssthresh = 1;
+    nack_seq = *((int*)r_data->nack_buff);	
+	
+    if((Stream_Fairness == 1)&&
+       ((r_data->window[nack_seq%MAX_WINDOW].pack_type & UDP_DATA_TYPE)||
+	(r_data->window[nack_seq%MAX_WINDOW].pack_type & REL_UDP_DATA_TYPE))){
+
+	cur_uhdr = (udp_header*)r_data->window[nack_seq%MAX_WINDOW].buff;
+
+	stream_window = 0.0;
+	for(cur_seq = r_data->tail; (cur_seq < r_data->tail+r_data->window_size)&&
+		(cur_seq < r_data->head); cur_seq++) {
+	    if(memcmp(r_data->window[cur_seq%MAX_WINDOW].buff, 
+		      (char*)cur_uhdr, 2*sizeof(int32)+2*sizeof(int16u)) == 0) {
+		stream_window += 1.0;
+	    }
+	}
+
+	Alarm(DEBUG, "%d:%d -> %d:%d :: Nack Retransmission; stream_window: %5.3f : %5.3f\n", 
+	      cur_uhdr->source, cur_uhdr->source_port,
+	      cur_uhdr->dest, cur_uhdr->dest_port, stream_window, r_data->window_size);
+
+	if(stream_window == 0.0) {
+	    stream_window = 1.0;
+	    Alarm(DEBUG, "Nack Retransmission: stream_window = 0\n");
+	}
+
     }
-    r_data->window_size = r_data->window_size/2;
-    if(r_data->window_size < 1) {
-	r_data->window_size = 1;
+    else {
+	stream_window = r_data->window_size;
     }
-    Alarm(DEBUG, "window adjusted: %5.3f\n", r_data->window_size);
 
 
+    if(r_data->cong_flag == 1) {
+	/* Congestion control */
+	r_data->ssthresh = r_data->window_size - stream_window/2;
+	if(r_data->ssthresh < Minimum_Window) {
+	    r_data->ssthresh = Minimum_Window;
+	}
+	r_data->window_size = r_data->window_size - stream_window/2;
+	if(r_data->window_size < Minimum_Window) {
+	    r_data->window_size = Minimum_Window;
+	}
+	Alarm(DEBUG, "window adjusted: %5.3f nack\n", r_data->window_size);
+    }
+    else {
+	r_data->cong_flag = 1;
+    }
 
-    /* If there is already an ack to be sent on tis link, cancel it, 
+
+    /* If there is already an ack to be sent on this link, cancel it, 
        as these packets will contain the ack info. */
     if(r_data->scheduled_ack == 1) {
 	r_data->scheduled_ack = 0;
@@ -1044,7 +1154,8 @@ void Send_Nack_Retransm(int linkid, void *dummy)
 	    if(ack_len+data_len > sizeof(packet_body) - sizeof(int32))
 		break;
 	    if(r_data->recv_window[i%MAX_WINDOW].flag == EMPTY_CELL) {
-		if(r_data->recv_head - i > 4) {
+		if((r_data->recv_head - i > 3)||
+		   ((r_data->recv_head - i > 1)&&(Fast_Retransmit == 1))) {
 		    *((int32*)p_nack) = i;
 		    p_nack += sizeof(int32);
 		    ack_len += sizeof(int32);
@@ -1085,6 +1196,7 @@ void Send_Nack_Retransm(int linkid, void *dummy)
 	hdr->sender_id = My_Address;
 	hdr->data_len  = data_len; 
 	hdr->ack_len   = ack_len;
+        hdr->seq_no     = Set_Loss_SeqNo(lk->other_side_node);
 	
 	scat->elements[1].len = data_len + ack_len;    
 	scat->elements[1].buf = send_buff;
@@ -1144,6 +1256,9 @@ int Process_Ack(int16 linkid, char *buff, int16u ack_len, int32u type)
     Link *lk;
     Reliable_Data *r_data;
     reliable_tail *r_tail;
+    float stream_window;
+    udp_header *cur_uhdr;
+    int32u cur_seq;
     int32u i;
     sp_time timeout_val, now, diff;
     int32u rtt_estimate;
@@ -1227,12 +1342,43 @@ int Process_Ack(int16 linkid, char *buff, int16u ack_len, int32u type)
 	    }
 	    else
 		Alarm(EXIT, "Process_Ack(): Reliability failure\n");
+
+
+	    if((Stream_Fairness == 1)&&
+	       ((r_data->window[r_data->tail%MAX_WINDOW].pack_type & UDP_DATA_TYPE)||
+		(r_data->window[r_data->tail%MAX_WINDOW].pack_type & REL_UDP_DATA_TYPE))){
+		
+		cur_uhdr = (udp_header*)r_data->window[r_data->tail%MAX_WINDOW].buff;
+
+		stream_window = 0.0;
+		for(cur_seq = r_data->tail; (cur_seq < r_data->tail+r_data->window_size)&&
+			(cur_seq < r_data->head); cur_seq++) {
+		    if(memcmp(r_data->window[cur_seq%MAX_WINDOW].buff, 
+			      (char*)cur_uhdr, 2*sizeof(int32)+2*sizeof(int16u)) == 0) {
+			stream_window += 1.0;
+		    }
+		}
+		
+		Alarm(DEBUG, "%d:%d -> %d:%d :: Timeout; stream_window: %5.3f : %5.3f\n", 
+		      cur_uhdr->source, cur_uhdr->source_port,
+		      cur_uhdr->dest, cur_uhdr->dest_port, stream_window, r_data->window_size);
+		
+		if(stream_window == 0.0) {
+		    stream_window = 1.0;
+		    Alarm(DEBUG, "Congestion control: stream_window = 0\n");
+		}
+		
+	    }
+	    else {
+		stream_window = r_data->window_size;
+	    }
+
 	    
 	    r_data->tail++;
 
 	    /* Congestion control */
 	    if(!stdcarr_empty(&(r_data->msg_buff))) {
-		/* thee are other packets waiting, so it makes sense to increase the window */
+		/* there are other packets waiting, so it makes sense to increase the window */
 		old_window = r_data->window_size;
 		if(r_data->window_size < r_data->ssthresh) {
 		    /* Slow start */
@@ -1243,18 +1389,22 @@ int Process_Ack(int16 linkid, char *buff, int16u ack_len, int32u type)
 		}
 		else {
 		    /* Congestion avoidance */
-		    r_data->window_size += 1/r_data->window_size;
+		    r_data->window_size += 1/stream_window;
 		    if(r_data->window_size > r_data->max_window) {
 			r_data->window_size = r_data->max_window;
 		    }
 		}
 		if(r_data->window_size != old_window)
-		    Alarm(DEBUG, "window adjusted: %5.3f\n", r_data->window_size);
+		    Alarm(DEBUG, "window adjusted: %5.3f ack\n", r_data->window_size);
 	    }	    
 	}		    
 	/* This was a fresh brand new ack. See if it freed some window slots
 	 * and we can send some more stuff */	
 	E_queue(Try_to_Send, (int)linkid, NULL, zero_timeout);
+    }
+    else if(r_tail->cummulative_ack == r_data->tail) {
+	if(r_tail->cummulative_ack != 0)
+	    Alarm(DEBUG, "Duplicate ack: %d\n", r_tail->cummulative_ack);
     }
 
     /* Reset the timeout exponential back-off */
@@ -1272,8 +1422,8 @@ int Process_Ack(int16 linkid, char *buff, int16u ack_len, int32u type)
 	 *     r_data->tail, r_data->head);
 	 */
 
-	timeout_val.sec = (r_data->rtt*4)/1000000;
-	timeout_val.usec = (r_data->rtt*4)%1000000;
+	timeout_val.sec = (r_data->rtt*2)/1000000;
+	timeout_val.usec = (r_data->rtt*2)%1000000;
 	
 	if(timeout_val.sec == 0 && timeout_val.usec == 0) {
 	    timeout_val.sec = 1;
@@ -1372,11 +1522,8 @@ void Process_ack_packet(int32 sender, char *buf, int16u ack_len, int32u type, in
 	/* This guy should first send hello messages to setup 
 	   the link, etc. The only reason for getting this ack
 	   is that I crashed, recovered, and the sender didn't even notice. 
-	   Create the node as it seems that it will be a neighbor in the 
-	   future. Still, for now I will just make it remote and ignore the ack. 
 	   Hello protocol will take care to make it a neighbor if needed */
 	
-	Create_Node(sender, REMOTE_NODE);
 	return;
     }
 
@@ -1399,3 +1546,38 @@ void Process_ack_packet(int32 sender, char *buf, int16u ack_len, int32u type, in
     } 
 }   
 
+void Pad_Link(int linkid, void *dummy) 
+{
+    Link *lk;
+    Reliable_Data *r_data;
+    udp_header *u_hdr;
+    char *send_buff;
+
+
+    lk = Links[linkid];
+    if(lk->r_data == NULL)
+	    Alarm(EXIT, "Pad_Link: Reliable Data is not defined\n");
+
+    r_data = lk->r_data;
+
+    if(r_data->padded == 1) {
+	return;
+    }
+
+    r_data->padded = 1;
+    
+    if((send_buff = (char*) new_ref_cnt(PACK_BODY_OBJ))==NULL) {
+	Alarm(EXIT, "Pad_Link: Cannot allocte packet_body object\n");
+    }
+
+    u_hdr = (udp_header*)send_buff;
+    u_hdr->source = My_Address;
+    u_hdr->source_port = 0;
+    u_hdr->dest = lk->other_side_node->address;
+    u_hdr->dest_port = 0;
+    u_hdr->len = 0;
+
+    Reliable_Send_Msg(linkid, send_buff, sizeof(udp_header), REL_UDP_DATA_TYPE);
+    
+    dec_ref_cnt(send_buff);
+}

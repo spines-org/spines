@@ -62,12 +62,12 @@
 
 #include <string.h>
 #include <stdlib.h>
-#include "util/arch.h"
-#include "util/alarm.h"
-#include "util/sp_events.h"
-#include "util/data_link.h"
+#include "../util/arch.h"
+#include "../util/alarm.h"
+#include "../util/sp_events.h"
+#include "../util/data_link.h"
 
-#include "spines_lib.h"
+#include "../spines_lib.h"
 
 #ifdef	ARCH_PC_WIN95
 
@@ -126,7 +126,7 @@ int main( int argc, char *argv[] )
 	 */
 
 
-	chan = spines_socket(Port, localhost_ip);
+	chan = spines_socket(Port, localhost_ip, NULL);
 
 	if(chan <= 0) {
 	    printf("disconnected by spines...\n");

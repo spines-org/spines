@@ -70,7 +70,6 @@
 /* Global variables */
 
 extern int32     My_Address;
-extern int       Reliable_Flag;
 extern stdhash   Sessions_ID;
 extern stdhash   Sessions_Port;
 extern stdhash   Rel_Sessions_Port;
@@ -153,11 +152,6 @@ int Init_Reliable_Session(Session *ses, int32 address, int16u port)
 
     /* Congestion control */
     r_data->window_size = 10;
-
-    /* NO_CONG_CONTROL !!!! */
-    /*if(Reliable_Flag == 1)
-     *	r_data->window_size = 100;
-     */
 
  
     r_data->max_window = MAX_CG_WINDOW/2;
@@ -360,7 +354,7 @@ void Ses_Send_Rel_Hello(int sesid, void* dummy)
 	return;
     }
 
-    next_hop = Get_Route(ses->rel_otherside_addr);
+    next_hop = Get_Route(My_Address, ses->rel_otherside_addr);
     if(next_hop == NULL) {
 	/* I don't have a route to the destination. 
 	   It might be temporary */
@@ -434,13 +428,13 @@ void Ses_Send_Rel_Hello(int sesid, void* dummy)
 
     /* Send the Packet */
 
-    if(Reliable_Flag == 1) {
+    if(ses->links_used == RELIABLE_LINKS) {
 	Forward_Rel_UDP_Data(next_hop, send_buff, 
-				   u_hdr->len+sizeof(udp_header), 0);
+			     u_hdr->len+sizeof(udp_header), 0);
     }
     else {
 	Forward_UDP_Data(next_hop, send_buff, 
-			       u_hdr->len+sizeof(udp_header));
+			 u_hdr->len+sizeof(udp_header));
     }
 
     dec_ref_cnt(send_buff);
@@ -587,7 +581,9 @@ void Disconnect_Reliable_Session(Session* ses)
     if(ses->fd_flags & WRITE_DESC)
 	E_detach_fd(ses->sk, WRITE_FD);
     
+
     DL_close_channel(ses->sk);    
+    Alarm(PRINT, "session closed: %d\n", ses->sk);
 
     while(!stdcarr_empty(&ses->udp_deliver_buff)) {
 	stdcarr_begin(&ses->udp_deliver_buff, &c_it);
@@ -603,7 +599,7 @@ void Disconnect_Reliable_Session(Session* ses)
     
 
     /* Set the flags for a disconnected (orphan for now) session */
-    ses->client_stat = SES_CLIENT_OFF;
+    ses->client_stat = SES_CLIENT_ORPHAN;
 
     Ses_Send_Rel_Hello(ses->sess_id, NULL);   
 
@@ -649,7 +645,7 @@ void Ses_Delay_Close(int sesid, void* dummy)
 }
 
 /***********************************************************/
-/* void Process_Reliable_Session_Packet(Session* ses       */
+/* int Process_Reliable_Session_Packet(Session* ses)       */
 /*                                                         */
 /* Processes a packet just received from a reliable session*/
 /*                                                         */
@@ -1235,7 +1231,7 @@ int Net_Rel_Sess_Send(Session *ses, char *buff, int16u len)
 		inc_ref_cnt(buff);
 		
 		E_attach_fd(ses->sk, WRITE_FD, Session_Write, ses->sess_id, 
-			    NULL, HIGH_PRIORITY );
+			    NULL, LOW_PRIORITY );
 		ses->fd_flags = ses->fd_flags | WRITE_DESC;
 		return(BUFF_OK);
 	    } 
@@ -1446,11 +1442,6 @@ int Process_Sess_Ack(Session *ses, char* buf, int16u ack_len,
 		congestion_action = 3;
 	    }
 	    
-	    /* NO_CONG_CONTROL !!!! */
-	    /*if(Reliable_Flag == 1)
-	     *	r_data->window_size = 100;
-	     */
-
 	    if(r_data->window_size != old_window)
 		Alarm(DEBUG, "SES window adjusted: %5.3f\n", r_data->window_size);
 
@@ -1592,7 +1583,7 @@ int Reliable_Ses_Send(Session* ses)
     data_len = sizeof(udp_header) + sizeof(rel_udp_pkt_add) + r_add->data_len;
 
 
-    next_hop = Get_Route(u_hdr->dest);
+    next_hop = Get_Route(My_Address, u_hdr->dest);
     if(next_hop == NULL) {
 	return(NO_ROUTE);
     }
@@ -1657,7 +1648,7 @@ int Reliable_Ses_Send(Session* ses)
     ack_len = sizeof(reliable_tail); 
     p_nack = (char*)r_tail;
     p_nack += ack_len;
-    if(Reliable_Flag == 0) {
+    if(ses->links_used != RELIABLE_LINKS) {
 	for(i=r_data->recv_tail; i<r_data->recv_head; i++) {
 	    if(ack_len+data_len > sizeof(packet_body) - sizeof(int32))
 		break;
@@ -1700,7 +1691,7 @@ int Reliable_Ses_Send(Session* ses)
     
     /* Send the Packet */
 
-    if(Reliable_Flag == 1) {
+    if(ses->links_used == RELIABLE_LINKS) {
 	ret = Forward_Rel_UDP_Data(next_hop, send_buff, 
 				   u_hdr->len+sizeof(udp_header), 0);
     }
@@ -1782,7 +1773,7 @@ void Ses_Send_Much(Session *ses)
     stdcarr_it it;
 
 
-    next_hop = Get_Route(ses->rel_otherside_addr);
+    next_hop = Get_Route(My_Address, ses->rel_otherside_addr);
     if(next_hop == NULL) {
 	/* I don't have a route to the destination. 
 	   It might be temporary */
@@ -1863,7 +1854,7 @@ void Ses_Send_Much(Session *ses)
 	ack_len = sizeof(reliable_tail); 
 	p_nack = (char*)r_tail;
 	p_nack += ack_len;
-	if(Reliable_Flag == 0) {
+	if(ses->links_used != RELIABLE_LINKS) {
 	    for(i=r_data->recv_tail; i<r_data->recv_head; i++) {
 		if(ack_len+data_len > sizeof(packet_body) - sizeof(int32))
 		    break;
@@ -1904,7 +1895,7 @@ void Ses_Send_Much(Session *ses)
 	u_hdr->len += ack_len - sizeof(reliable_tail);
 	r_add->ack_len = ack_len;
 
-	if(Reliable_Flag == 1) {
+	if(ses->links_used == RELIABLE_LINKS) {
 	    ack_window_mask = r_data->window_size/4;
 
 	    if(ack_window_mask > stdcarr_size(&r_data->msg_buff)) 
@@ -1927,7 +1918,7 @@ void Ses_Send_Much(Session *ses)
 
 	/* Send the Packet */
 	
-	if(Reliable_Flag == 1) {
+	if(ses->links_used == RELIABLE_LINKS) {
 	    ret = Forward_Rel_UDP_Data(next_hop, send_buff, 
 				 u_hdr->len+sizeof(udp_header), 0);
 	}
@@ -2034,7 +2025,7 @@ void Ses_Send_Ack(int sesid, void* dummy)
     Alarm(DEBUG, "Sending ACK: %d\n", r_data->recv_tail);
 
 
-    next_hop = Get_Route(ses->rel_otherside_addr);
+    next_hop = Get_Route(My_Address, ses->rel_otherside_addr);
     if(next_hop == NULL) {
 	/* I don't have a route to the destination. 
 	   It might be temporary */
@@ -2081,7 +2072,7 @@ void Ses_Send_Ack(int sesid, void* dummy)
     p_nack = (char*)r_tail;
     p_nack += ack_len;
 
-    if(Reliable_Flag == 0) {
+    if(ses->links_used != RELIABLE_LINKS) {
 	for(i=r_data->recv_tail; i<r_data->recv_head; i++) {
 	    if(ack_len+data_len > sizeof(packet_body) - sizeof(int32))
 		break;
@@ -2125,7 +2116,7 @@ void Ses_Send_Ack(int sesid, void* dummy)
 
     /* Send the Packet */
 
-    if(Reliable_Flag == 1) {
+    if(ses->links_used == RELIABLE_LINKS) {
 	Forward_Rel_UDP_Data(next_hop, send_buff, 
 				   u_hdr->len+sizeof(udp_header), ack_congestion_flag);
     }
@@ -2141,7 +2132,7 @@ void Ses_Send_Ack(int sesid, void* dummy)
 
 
 /***********************************************************/
-/* void Ses_Reliable_Timeout(int sesid, void* dummy)      */
+/* void Ses_Reliable_Timeout(int sesid, void* dummy)       */
 /*                                                         */
 /* Handles a timeout                                       */
 /*                                                         */
@@ -2188,7 +2179,7 @@ void Ses_Reliable_Timeout(int sesid, void *dummy)
     r_data = ses->r_data;
     
 
-    next_hop = Get_Route(ses->rel_otherside_addr);
+    next_hop = Get_Route(My_Address, ses->rel_otherside_addr);
     if(next_hop == NULL) {
 	/* I don't have a route to the destination. 
 	   It might be temporary */
@@ -2215,12 +2206,6 @@ void Ses_Reliable_Timeout(int sesid, void *dummy)
     if(r_data->ssthresh < 1)
 	r_data->ssthresh = 1;
     r_data->window_size = 1;
-
-
-    /* NO_CONG_CONTROL !!!! */
-    /*if(Reliable_Flag == 1)
-     *	r_data->window_size = 100;
-     */
 
     Alarm(DEBUG, "SES window adjusted: %5.3f timeout\n", r_data->window_size);
 
@@ -2263,7 +2248,7 @@ void Ses_Reliable_Timeout(int sesid, void *dummy)
 	p_nack = (char*)r_tail;
 	p_nack += ack_len;
 	
-	if(Reliable_Flag == 0) {
+	if(ses->links_used != RELIABLE_LINKS) {
 	    for(i=r_data->recv_tail; i<r_data->recv_head; i++) {
 		if(ack_len+data_len > sizeof(packet_body) - sizeof(int32))
 		    break;
@@ -2308,7 +2293,7 @@ void Ses_Reliable_Timeout(int sesid, void *dummy)
 	
 	/* Send the Packet */
 	
-	if(Reliable_Flag == 1) {
+	if(ses->links_used == RELIABLE_LINKS) {
 	    Forward_Rel_UDP_Data(next_hop, send_buff, 
 				 u_hdr->len+sizeof(udp_header), 0);
 	}
@@ -2402,7 +2387,7 @@ void Ses_Send_Nack_Retransm(int sesid, void *dummy)
     r_data = ses->r_data;
     
 
-    next_hop = Get_Route(ses->rel_otherside_addr);
+    next_hop = Get_Route(My_Address, ses->rel_otherside_addr);
     if(next_hop == NULL) {
 	/* I don't have a route to the destination. 
 	   It might be temporary */
@@ -2435,13 +2420,6 @@ void Ses_Send_Nack_Retransm(int sesid, void *dummy)
     if(r_data->window_size < 1) {
 	r_data->window_size = 1;
     }
-
-    
-    /* NO_CONG_CONTROL !!!! */
-    /*if(Reliable_Flag == 1)
-     *	r_data->window_size = 100;
-     */
-
 
     Alarm(DEBUG, "SES window adjusted: %5.3f\n", r_data->window_size);
 
@@ -2480,7 +2458,7 @@ void Ses_Send_Nack_Retransm(int sesid, void *dummy)
 	p_nack = (char*)r_tail;
 	p_nack += ack_len;
 	
-	if(Reliable_Flag == 0) {
+	if(ses->links_used != RELIABLE_LINKS) {
 	    for(i=r_data->recv_tail; i<r_data->recv_head; i++) {
 		if(ack_len+data_len > sizeof(packet_body) - sizeof(int32))
 		    break;
@@ -2523,7 +2501,7 @@ void Ses_Send_Nack_Retransm(int sesid, void *dummy)
 
 	/* Send the Packet */
 	
-	if(Reliable_Flag == 1) {
+	if(ses->links_used == RELIABLE_LINKS) {
 	    Forward_Rel_UDP_Data(next_hop, send_buff, 
 				 u_hdr->len+sizeof(udp_header), 0);
 	}

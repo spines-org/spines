@@ -32,6 +32,5 @@ void Process_rel_udp_data_packet(int32 sender_id, char *buff_p,
 				 int32u type, int mode);
 
 int  Forward_Rel_UDP_Data(Node* next_hop, char *buff_p, int16u buf_len, int32u type);
-void Random_Send(int dest_t, void *dummy_p);
 
 #endif

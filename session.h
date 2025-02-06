@@ -23,6 +23,7 @@
  *
  */
 
+#include "spines_lib.h"
 
 #ifndef SESSION_H
 #define SESSION_H
@@ -44,16 +45,24 @@
 #define SES_DELAY_CLOSE     4
 
 #define UDP_SES_TYPE        1
-#define RELIABLE_SES_TYPE   2
-#define LISTEN_SES_TYPE     3
+#define LISTEN_SES_TYPE     2
+#define RELIABLE_SES_TYPE   3
+#define REL_MCAST_SES_TYPE  4
 
 #define BIND_TYPE_MSG       1
 #define CONNECT_TYPE_MSG    2
 #define LISTEN_TYPE_MSG     3
 #define ACCEPT_TYPE_MSG     4
+#define JOIN_TYPE_MSG       5
+#define LEAVE_TYPE_MSG      6
+#define LINKS_TYPE_MSG      7
+#define REL_JOIN_TYPE_MSG   8
+#define SETLOSS_TYPE_MSG    9
+
 
 #define SES_CLIENT_ON       1
 #define SES_CLIENT_OFF      2
+#define SES_CLIENT_ORPHAN   3
 
 #define MAX_BUFF_SESS      20
 
@@ -64,6 +73,7 @@ typedef struct Session_d {
     int32u sess_id;
     channel sk;
     int16  type;
+    int32  links_used;
     byte   client_stat;
     int16u port;
     int16u total_len;
@@ -80,6 +90,9 @@ typedef struct Session_d {
     int32  rel_orig_port;
     int    rel_hello_cnt;
     int    rel_blocked;
+    stdhash joined_groups;
+    int32 rel_mcast_flags;
+    int close_reason;
 } Session;
 
 
@@ -89,11 +102,12 @@ void Session_Read(int sk, int dummy, void *dummy_p);
 void Session_Close(int sk, int reason);
 int  Process_Session_Packet(struct Session_d *ses);
 int  Deliver_UDP_Data(char* buff, int16u buf_len, int32u type);
+int  Session_Deliver_Data(Session *ses, char* buff, int16u buf_len, int32u type, int32 flags);
 void Session_Write(int sk, int sess_id, void *dummy_p);
 void Block_Session(struct Session_d *ses);
 void Resume_Session(struct Session_d *ses);
 void Block_All_Sessions(void);
 void Resume_All_Sessions(void);
-
+void Try_Close_Session(int sesid, void *dummy); 
 
 #endif

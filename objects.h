@@ -37,28 +37,38 @@
  * Object types must start with 1 and go up. 0 is reserved 
  */
 
+
+/* Util objects */
 #define BASE_OBJ                1
-#define PACK_HEAD_OBJ           2
-#define PACK_BODY_OBJ           3
+#define TIME_EVENT              2
+#define QUEUE                   3
+#define QUEUE_SET               4
+#define QUEUE_ELEMENT           5
+#define MQUEUE_ELEMENT          6
+#define SCATTER                 7
+
+
+/* Transmitted objects */
+#define PACK_HEAD_OBJ           10
+#define PACK_BODY_OBJ           11
+#define SYS_SCATTER             12
+
 
 /* Non-Transmitted objects */
-#define SCATTER                 20
-#define QUEUE_ELEMENT           21
-#define QUEUE                   22
-#define TREE_NODE               23
-#define DIRECT_LINK             24
-#define OVERLAY_EDGE            25
-#define CHANGED_EDGE            26
-#define TIME_EVENT              27
-#define QUEUE_SET               28
-#define MQUEUE_ELEMENT          29
-#define SYS_SCATTER             30
+#define TREE_NODE               21
+#define DIRECT_LINK             22
+#define OVERLAY_EDGE            23
+#define OVERLAY_ROUTE           24
+#define CHANGED_STATE           25
+#define STATE_CHAIN             26
+#define MULTICAST_GROUP         27
+
 #define BUFFER_CELL             31
 #define UDP_CELL                32
 
 #define CONTROL_DATA            41
 #define RELIABLE_DATA           42
-#define UDP_DATA                43
+
 
 #define SESSION_OBJ             51
 

@@ -26,12 +26,16 @@
 
 #include "util/arch.h"
 #include "util/alarm.h"
+#include "util/memory.h"
 #include "util/sp_events.h"
 #include "stdutil/src/stdutil/stdhash.h"
 
 #include "node.h"
 #include "link.h"
 #include "route.h"
+#include "objects.h"
+#include "state_flood.h"
+#include "link_state.h"
 
 
 /* Global variables */
@@ -39,18 +43,16 @@
 extern stdhash  All_Nodes;
 extern stdhash  All_Edges;
 extern int32    My_Address;
+extern int      Route_Weight;
 
 /* Local variables */
-
-static Node* head;
-
+static Node *head;
 
 
 /***********************************************************/
-/* void Build_Q_Set(void)                                  */
+/* void Init_Routes(void)                                  */
 /*                                                         */
-/* Builds the Q set (see Dijkstra). Actually, it organizes */
-/* nodes in a linked list                                  */
+/* Initializes the data structures for Floyd Warshall algo */
 /*                                                         */
 /*                                                         */
 /* Arguments                                               */
@@ -63,59 +65,155 @@ static Node* head;
 /*                                                         */
 /***********************************************************/
 
-void Build_Q_Set(void) 
+
+void Init_Routes(void) 
 {
-    stdhash_it it;
-    Node *nd, *old;
-    
-    /* There should be at least one node here, myself */
-    stdhash_begin(&All_Nodes, &it); 
-    nd = *((Node **)stdhash_it_val(&it));
+    stdhash_it src_it, it, nd_it, route_it;
+    State_Chain *s_chain;
+    Node *nd, *nd_tmp;
+    Edge *edge;
+    Route* route;
+
+
+    /* Clearing the old routes */
+    stdhash_begin(&All_Nodes, &nd_it); 
+    /* There should be at least one node, me */
+    if(stdhash_it_is_end(&nd_it)) {
+	Alarm(EXIT, "Init_Routes: No nodes available\n");
+    }
+    nd = *((Node **)stdhash_it_val(&nd_it));
+    stdhash_begin(&nd->routes, &route_it);
+    while(!stdhash_it_is_end(&route_it)) {
+	route = *((Route **)stdhash_it_val(&route_it));	    
+	dispose(route);
+	stdhash_it_next(&route_it);
+    }
+    stdhash_clear(&nd->routes);
     head = nd;
     head->prev = NULL;
     head->next = NULL;
-    if(head->address == My_Address) {
-	head->cost = 0;
-	head->distance = 0;
-	head->forwarder = head;
-    }
-    else {
-	head->cost = -1;
-	head->distance = -1;
-	head->forwarder = NULL;
-    }
-    old = nd;
-    stdhash_it_next(&it);
-    while(!stdhash_it_is_end(&it)) {
-        nd = *((Node **)stdhash_it_val(&it));
-	if(nd->address == My_Address) {
-	    head->prev = nd;
-	    nd->next = head;
+    stdhash_it_next(&nd_it);
+
+    /* Ok, done wih the head of the list. Now see the other nodes */
+    while(!stdhash_it_is_end(&nd_it)) {
+	nd = *((Node **)stdhash_it_val(&nd_it));
+	stdhash_begin(&nd->routes, &route_it);
+	while(!stdhash_it_is_end(&route_it)) {
+	    route = *((Route **)stdhash_it_val(&route_it));	    
+	    dispose(route);
+	    stdhash_it_next(&route_it);
+	}
+	stdhash_clear(&nd->routes);
+	
+	/* Do an insert sort... */
+	if(head->address > nd->address) {
 	    nd->prev = NULL;
+	    nd->next = head;
+	    head->prev = nd;
 	    head = nd;
-	    head->cost = 0;
-	    head->distance = 0;
-	    head->forwarder = head;
 	}
 	else {
-	    old->next = nd;
-	    nd->prev = old;
-	    nd->next = NULL;
-	    nd->cost = -1;
-	    nd->distance = -1;
-	    nd->forwarder = NULL;
-	    old = nd;
+	    nd_tmp = head;
+	    while(nd_tmp->next != NULL) {
+		if(nd_tmp->next->address > nd->address) {
+		    break;
+		}
+		nd_tmp = nd_tmp->next;
+	    }
+	    nd->next = nd_tmp->next;
+	    nd->prev = nd_tmp;
+	    nd_tmp->next = nd;
+	    if(nd->next != NULL) {
+		nd->next->prev = nd;
+	    }
 	}
-	stdhash_it_next(&it);
+	/* Ok, go to the next node */
+	stdhash_it_next(&nd_it);
+    }
+    
+
+    /* Initializing the routes with the direct neighbors */
+    stdhash_begin(&All_Edges, &src_it); 
+    while(!stdhash_it_is_end(&src_it)) {
+        /* source by source */
+        s_chain = *((State_Chain **)stdhash_it_val(&src_it));
+	stdhash_find(&All_Nodes, &nd_it, &s_chain->address);
+	if(stdhash_it_is_end(&nd_it)) {
+	    Alarm(EXIT, "Init_Routes: edge without source\n");
+	}
+	nd = *((Node **)stdhash_it_val(&nd_it));
+
+        stdhash_begin(&s_chain->states, &it); 
+        while(!stdhash_it_is_end(&it)) {
+            /* one by one, the destinations... */
+            edge = *((Edge **)stdhash_it_val(&it));
+	    if(edge->cost >= 0) {
+		if((route = (Route*) new(OVERLAY_ROUTE))==NULL) {
+		    Alarm(EXIT, "Init_Routes: cannot allocate object\n");
+		}
+		route->source = edge->source_addr;
+		route->dest = edge->dest_addr;
+		route->distance = 1;
+		route->cost = edge->cost;
+		if(edge->source_addr == My_Address) {
+		    route->forwarder = edge->dest;
+		}
+		else {
+		    route->forwarder = NULL;
+		}
+		stdhash_insert(&nd->routes, &route_it, &edge->dest_addr, &route);
+	    }
+	    stdhash_it_next(&it);
+	}
+	stdhash_it_next(&src_it);
     }
 }
 
 
 
 /***********************************************************/
+/* Route* Find_Route(int32 source, int32 dest)             */
+/*                                                         */
+/* Finds a route (if it exists)                            */
+/*                                                         */
+/*                                                         */
+/* Arguments                                               */
+/*                                                         */
+/* source: IP address of the source                        */
+/* dest:   IP address of the destination                   */
+/*                                                         */
+/* Return Value                                            */
+/*                                                         */
+/* (Route*) a pointer to the Route structure, or NULL      */
+/*          if the route does not exist                    */
+/*                                                         */
+/***********************************************************/
+
+Route* Find_Route(int32 source, int32 dest) 
+{
+    stdhash_it it, src_it;
+    Node *nd;
+    Route *route;
+
+    stdhash_find(&All_Nodes, &src_it, &source);
+    if(!stdhash_it_is_end(&src_it)) {
+	nd = *((Node **)stdhash_it_val(&src_it));
+	stdhash_find(&nd->routes, &it, &dest);
+	if(!stdhash_it_is_end(&it)) {
+	    route = *((Route **)stdhash_it_val(&it));
+	    return(route);
+	}
+    }
+    return(NULL);
+}
+
+
+
+
+/***********************************************************/
 /* void Set_Routes(void)                                   */
 /*                                                         */
-/* Runs Dijkstra. Computes the shortest paths.             */
+/* Runs Floyd-Warshall. Computes all-pairs shortest paths. */
 /*                                                         */
 /*                                                         */
 /* Arguments                                               */
@@ -129,105 +227,93 @@ void Build_Q_Set(void)
 /***********************************************************/
 
 void Set_Routes(void) {
-    stdhash_it it;
-    Node *nd, *dest, *tmp;
-    Edge *edge;
+    stdhash_it route_it;
+    Node *k_nd, *i_nd, *j_nd;
+    Route *i_k_route, *k_j_route, *i_j_route;
+    int flag;
 
-    Build_Q_Set();
-	
+    
+    Init_Routes();
 
-    Alarm(DEBUG, "\n\n\n\n");
+    k_nd = head;
+    while(k_nd != NULL) {
+	/* For all k */
+	i_nd = head;
+	while(i_nd != NULL) {
+	    /* For all i */
+	    if((i_k_route = Find_Route(i_nd->address, k_nd->address)) == NULL) {
+		/* If there's no route from i to k, continue */
+		i_nd = i_nd->next;
+		continue;
+	    }
+	    j_nd = head;
+	    while(j_nd != NULL) {
+		/* For all j */
+		if(i_nd->address == j_nd->address) {
+		    /* i == j */
+		    j_nd = j_nd->next;
+		    continue;
+		}
+		if((k_j_route = Find_Route(k_nd->address, j_nd->address)) == NULL) {
+		    /* If there's no route from k to j, continue */
+		    j_nd = j_nd->next;
+		    continue;
+		}
+		
+		Alarm(DEBUG, "k: %d; i: %d, j: %d\n",
+		      IP4(k_nd->address), IP4(i_nd->address), IP4(j_nd->address));
 
+		if((i_j_route = Find_Route(i_nd->address, j_nd->address)) == NULL) {
+		    if((i_j_route = (Route*) new(OVERLAY_ROUTE))==NULL) {
+			Alarm(EXIT, "Set_Routes: cannot allocate object\n");
+		    }
+		    i_j_route->source = i_nd->address;
+		    i_j_route->dest = j_nd->address;
+		    i_j_route->distance = -1;
+		    i_j_route->cost = -1;
+		    stdhash_insert(&i_nd->routes, &route_it, &j_nd->address, &i_j_route);
+		}
 
+		flag = 0;
+		if(Route_Weight == DISTANCE_ROUTE) {
+		    /* Distance-based routing.*/
+		    if((i_j_route->distance == -1)||
+		       (i_j_route->distance > i_k_route->distance + k_j_route->distance)) {
+			flag = 1;
+		    }
+		}
+		else {
+		    /* Cost-based routing. */
+		    if((i_j_route->cost == -1)||
+		       (i_j_route->cost > i_k_route->cost + k_j_route->cost)) {
+			flag = 1;
+		    }
+		}
 
-    while(head != NULL) {
-	if(head->distance == -1)
-	   break;
-
-	/* Take the head and move it to the S set */
-	nd = head;
-	head = nd->next;
-	nd->next = NULL;
-	if(head != NULL)
-	    head->prev = NULL;
-
-	Alarm(DEBUG, "head is: %d.%d.%d.%d\n", 
-	      IP1(nd->address), IP2(nd->address), 
-	      IP3(nd->address), IP4(nd->address)); 
- 
-	if(head == NULL)
-	    Alarm(DEBUG, "And the next one is NULL\n");
-      
-
-	/* Take all the links of this node and relax them */
-	 stdhash_find(&All_Edges, &it, &nd->address);
-	 while(!stdhash_it_is_end(&it)) {
-	     edge = *((Edge **)stdhash_it_val(&it));
-
-	     if(edge->cost < 0) {
-		 stdhash_it_keyed_next(&it);
-		 continue;
-	     }
-
-	     dest = edge->dest;
-	     if((dest->distance == -1) || 
-		(dest->distance > nd->distance + 1)) {
-		 /* Ok, this link should be relaxed */
-		 dest->distance = nd->distance + 1;
-		 dest->cost = nd->cost + edge->cost;
-		 if(nd->address ==  My_Address) {
-		     dest->forwarder = dest;
-		 }
-		 else {
-		     dest->forwarder = nd->forwarder;
-		 }
-
-		 /* Now put this node in the right spot in the sorted Q set */
-		 if(dest->prev != NULL) {
-		     /* Take dest from its place */
-		     dest->prev->next = dest->next;
-		     if(dest->next != NULL) {
-			 dest->next->prev = dest->prev;
-		     }
-		     /* And do an insert sort... */
-		     if((head->distance == -1)||
-			(head->distance > dest->distance)) {
-			 dest->prev = NULL;
-			 dest->next = head;
-			 head->prev = dest;
-			 head = dest;
-		     }
-		     else {
-			 tmp = head;
-			 while(tmp->next != NULL) {
-			     if((tmp->next->distance > dest->distance)||
-				(tmp->next->distance == -1))
-				 break;
-			     tmp = tmp->next;
-			 }
-			 dest->next = tmp->next;
-			 dest->prev = tmp;
-			 tmp->next = dest;
-			 if(dest->next != NULL) {
-			     dest->next->prev = dest;
-			 }
-		     }
-		 }
-		 else if(dest != head)
-		     Alarm(EXIT, "Routing ERROR !!!\n");
-	     }
-	     stdhash_it_keyed_next(&it);
-	 }
+		if(flag == 1) {
+		    /* Ok, the route through k is better */
+		    
+		    i_j_route->distance = i_k_route->distance + k_j_route->distance;
+		    i_j_route->cost = i_k_route->cost + k_j_route->cost;
+		    /* I am either on the path from i to k, or on the 
+		     * path from k to j, or on neither of them,
+		     * but not on both... */
+		    i_j_route->forwarder = i_k_route->forwarder;
+		    if(k_j_route->forwarder != NULL) {
+			i_j_route->forwarder = k_j_route->forwarder;
+		    }
+		}
+		j_nd = j_nd->next;	
+	    }
+	    i_nd = i_nd->next;	
+	}
+	k_nd = k_nd->next;	
     }
-
-    Alarm(DEBUG, "\n\n\n\n");
-
-
 }
 
 
 /***********************************************************/
-/* Node* Get_Route(int32 dest)                             */
+/* Node* Get_Route(int32 source, int32 dest)               */
 /*                                                         */
 /* Gets the next node to forward the packet for a certain  */
 /* destination                                             */
@@ -235,6 +321,7 @@ void Set_Routes(void) {
 /*                                                         */
 /* Arguments                                               */
 /*                                                         */
+/* source : IP address of the source                       */
 /* dest : IP address of the destination                    */
 /*                                                         */
 /* Return Value                                            */
@@ -243,17 +330,17 @@ void Set_Routes(void) {
 /*                                                         */
 /***********************************************************/
 
-Node* Get_Route(int32 dest)
+Node* Get_Route(int32 source, int32 dest)
 {
-    stdhash_it it;
-    Node *nd;
-    
-    stdhash_find(&All_Nodes, &it, &dest);
-    if(stdhash_it_is_end(&it))
-	return NULL;
-    nd = *((Node **)stdhash_it_val(&it));
-    return nd->forwarder;
+    Route *route;
+
+    if((route = Find_Route(source, dest)) == NULL) {
+	return(NULL);
+    }
+    return(route->forwarder);
 }
+
+
 
 
 /* For debugging only */
@@ -262,27 +349,40 @@ void Print_Routes(void)
 {
     stdhash_it it;
     Node *nd;
+    Route *route;
 
     Alarm(PRINT, "\n\nROUTES:\n");
     stdhash_begin(&All_Nodes, &it); 
     while(!stdhash_it_is_end(&it)) {
         nd = *((Node **)stdhash_it_val(&it));
-	if(nd->forwarder != NULL) {
-	    Alarm(PRINT, "%d.%d.%d.%d via: %d.%d.%d.%d dist: %d; cost: %d\n", 
-		  IP1(nd->address), IP2(nd->address), 
-		  IP3(nd->address), IP4(nd->address), 
-		  IP1(nd->forwarder->address), IP2(nd->forwarder->address), 
-		  IP3(nd->forwarder->address), IP4(nd->forwarder->address),
-		  nd->distance, nd->cost);
-	}
-	else {
-	    Alarm(PRINT, "%d.%d.%d.%d  !!! NO ROUTE \n", 
+	
+	if(nd->address == My_Address) {
+	    Alarm(PRINT, "%d.%d.%d.%d \tLOCAL NODE \n", 
 		  IP1(nd->address), IP2(nd->address), 
 		  IP3(nd->address), IP4(nd->address)); 
+	    
+	    stdhash_it_next(&it);
+	    continue;
 	}
+	
+	route = Find_Route(My_Address, nd->address);
+	if(route != NULL) {
+	    if(route->forwarder != NULL) {
+		Alarm(PRINT, "%d.%d.%d.%d via: %d.%d.%d.%d dist: %d; cost: %d\n", 
+		      IP1(nd->address), IP2(nd->address), 
+		      IP3(nd->address), IP4(nd->address), 
+		      IP1(route->forwarder->address), IP2(route->forwarder->address), 
+		      IP3(route->forwarder->address), IP4(route->forwarder->address),
+		      route->distance, route->cost);
+		stdhash_it_next(&it);
+		continue;
+	    }	    
+	}
+	Alarm(PRINT, "%d.%d.%d.%d \t!!! NO ROUTE \n", 
+	      IP1(nd->address), IP2(nd->address), 
+	      IP3(nd->address), IP4(nd->address)); 
+
 	stdhash_it_next(&it);
     }
     Alarm(PRINT, "\n\n");
 }
-
-

@@ -27,7 +27,6 @@
 #ifndef NODE_H
 #define NODE_H
 
-#include "link.h"
 
 #define LOCAL_NODE               0x0001
 #define NEIGHBOR_NODE            0x0002
@@ -35,23 +34,20 @@
 #define NOT_YET_CONNECTED_NODE   0x0008
 #define REMOTE_NODE              0x0010
 
+#include "link.h"
 
 typedef struct Node_d {
     int32 address;               /* IP Address */
     int16 node_id;               /* Index in the global neighbor nodes array */
     int16 flags;                 /* Connected, Neighbor, etc. */
-    sp_time last_time_heard;     /* Last time I heard from this node */
-    int16 counter;               /* Number of unacked "hello" messages */
-    struct Link_d *link[MAX_LINKS_4_EDGE]; /* Links to this node, if any */
+    sp_time last_time_heard;     /* Last time I heard from this node (not fully implemented) */
+    int16 counter;               /* Number of outstanding "hello" messages */
+    struct Link_d *link[MAX_LINKS_4_EDGE]; /* Links to this node, if a neighbor */
 
     /* Routing info */
-    struct Node_d *forwarder;    /* Neighbor to route packets for this node */
-    int32 distance;              /* Number of hops to this node */
-    int32 cost;                  /* Cost of sending to this node */
-    struct Node_d *prev;         /* Used to build a linked list for Dijkstra's
-				  * algorithm */
-    struct Node_d *next;         /* Used to build a linked list for Dijkstra's
-				  * algorithm */
+    stdhash routes;              /* hash with routes to all the accessible nodes */
+    struct Node_d *prev;         /* Used to build an ordered linked list */
+    struct Node_d *next;         /* Used to build an ordered linked list */
 } Node;
 
 

@@ -62,11 +62,11 @@
 #include <string.h>
 #include <stdlib.h>
 
-#include "util/arch.h"
-#include "util/alarm.h"
-#include "util/data_link.h"
+#include "../util/arch.h"
+#include "../util/alarm.h"
+#include "../util/data_link.h"
 
-#include "spines_lib.h"
+#include "../spines_lib.h"
 
 
 #ifdef	ARCH_PC_WIN95
@@ -120,7 +120,7 @@ int main( int argc, char *argv[] )
 	 * chan = DL_init_channel( RECV_CHANNEL, Port, Address, 0 );
 	 */
 
-	chan = spines_socket(Port, localhost_ip);
+	chan = spines_socket(Port, localhost_ip, NULL);
 
 	if(chan <= 0) {
 	    printf("Disconnected by spines...\n");
@@ -128,8 +128,19 @@ int main( int argc, char *argv[] )
 	}
 
 
-	spines_bind(chan, recvPort);
+	ret = spines_bind(chan, recvPort);
+	if(ret <= 0) {
+	    printf("Bind error...\n");
+	    exit(0);
+	}
 
+	if(Address != 0) {
+	    ret = spines_join(chan, Address);
+	    if(ret <= 0) {
+		printf("Join error...\n");
+		exit(0);
+	    }
+	}
 
 	/*
 	 * scat.num_elements = 1;
@@ -235,7 +246,7 @@ static  void    Usage(int argc, char *argv[])
 		}else if( !strncmp( *argv, "-r", 2 ) ){
 			sscanf(argv[1], "%d", (int*)&recvPort );
 			argc--; argv++;
-                }else if( !strncmp( *argv, "-a", 2 ) ){
+                }else if( !strncmp( *argv, "-j", 2 ) ){
 			sscanf(argv[1], "%s", IP );
 
 			sscanf( IP ,"%d.%d.%d.%d",&i1, &i2, &i3, &i4);
@@ -246,7 +257,7 @@ static  void    Usage(int argc, char *argv[])
 			printf( "Usage: r\n%s\n%s\n%s\n%s\n",
 				"\t[-p <port number>] : to connect to on, default is 8100",
 				"\t[-r <port number>] : to receive on, default is 8200",
-				"\t[-a <multicast class D address>] : if receiving multicast is desirable, default is 0",
+				"\t[-j <multicast class D address>] : to join a multicast address",
 				"\t[-d ]              : print a detailed report whenever messages are missed");
 			exit( 0 );
 		}

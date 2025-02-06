@@ -54,7 +54,7 @@
 
 
 /***********************************************************/
-/* int spines_socket(int port, int address)                */
+/* int spines_socket(int port, int address, int *flags)    */
 /*                                                         */
 /* Connects the application to the Spines network          */
 /*                                                         */
@@ -62,6 +62,7 @@
 /*                                                         */
 /* port: the port Spines is running                        */
 /* address: the address of the on daemon                   */
+/* flags: flags for the call                               */
 /*                                                         */
 /*                                                         */
 /* Return Value                                            */
@@ -71,13 +72,18 @@
 /*                                                         */
 /***********************************************************/
 
-int spines_socket(int port, int address)
+int spines_socket(int port, int address, int *flags)
 {
     struct sockaddr_in host;
+    udp_header u_hdr;
+    sys_scatter scat;
+    int16u total_len;
+    int32 type;
     int ret, sk;
     int val = 1;
     int16u on_port;
     int32 on_address;
+    int32 flag_var;
     
     on_port = (int16u)port;
     on_address = (int32)address;
@@ -99,9 +105,44 @@ int spines_socket(int port, int address)
     
     ret = connect(sk, (struct sockaddr *)&host, sizeof(host));
     if( ret < 0) {
-	Alarm(EXIT, "spines_socket(): Can not initiate connection to on...\n");
+	Alarm(EXIT, "spines_socket(): Can not initiate connection to Spines...\n");
     }
 
+
+    if(flags == NULL) {
+	flag_var = UDP_LINKS;
+    }
+    else {
+	flag_var = *flags;
+    }
+
+    total_len = (int16u)(sizeof(udp_header) + 2*sizeof(int32));
+
+    scat.num_elements = 4;
+    scat.elements[0].len = 2;
+    scat.elements[0].buf = (char*)&total_len;
+ 
+    scat.elements[1].len = sizeof(udp_header);
+    scat.elements[1].buf = (char*)&u_hdr;
+       
+    scat.elements[2].len = sizeof(int32);
+    scat.elements[2].buf = (char*)&type;    
+    
+    scat.elements[3].len = sizeof(int32);
+    scat.elements[3].buf = (char*)&flag_var;
+        
+    u_hdr.source = 0;
+    u_hdr.dest   = 0;
+    u_hdr.len    = 0;
+
+    type = LINKS_TYPE_MSG;
+
+    ret = DL_send(sk, 0, 0, &scat );
+    
+    if(ret != sizeof(udp_header)+2+2*sizeof(int32)) {
+	Alarm(EXIT, "spines_socket(): Can not initiate connection to Spines...\n");
+    }
+	
     return sk;
 }
 
@@ -160,6 +201,11 @@ int spines_sendto(int sk, int address, int port_i, char *buff, int len_i)
     len = (int16u)len_i;
     total_len = len + sizeof(udp_header);
 
+    if(port == 0) {
+	Alarm(PRINT, "spines_sendto(): cannot send to port 0\n");
+	return(-1);
+    }
+
     scat.num_elements = 3;
     scat.elements[0].len = 2;
     scat.elements[0].buf = (char*)&total_len;
@@ -211,6 +257,12 @@ int spines_bind(int sk, int port_i)
     port = (int16u)port_i;
     total_len = (int16u)(2*sizeof(udp_header) + sizeof(int32));
 
+    if(port == 0) {
+	Alarm(PRINT, "spines_bind(): cannot bind on port 0\n");
+	return(-1);
+    }
+
+
     scat.num_elements = 4;
     scat.elements[0].len = 2;
     scat.elements[0].buf = (char*)&total_len;
@@ -242,6 +294,85 @@ int spines_bind(int sk, int port_i)
     else
 	return(-1);
 }
+
+
+
+/***********************************************************/
+/* int spines_setloss(int sk, int address_i, float rate)   */ 
+/*                                                         */
+/* Sets the loss rate on packets received from a daemon    */
+/*                                                         */
+/* Arguments                                               */
+/*                                                         */
+/* sk:      the socket defining the connection to Spines   */
+/* address: node from which the loss rate is set           */
+/* rate:    loss rate                                      */
+/*                                                         */
+/*                                                         */
+/* Return Value                                            */
+/*                                                         */
+/* (int)  1 if bind was ok                                 */
+/*       -1 otherwise                                      */
+/*                                                         */
+/***********************************************************/
+
+int spines_setloss(int sk, int address_i, float loss, float burst)
+{
+    udp_header u_hdr, cmd;
+    sys_scatter scat;
+    int16u total_len;
+    int32 address;
+    int32 loss_rate, burst_rate;
+    int32 type;
+    int ret;
+
+
+    address = address_i;
+    loss_rate = (int32)(loss*10000);
+    burst_rate = (int32)(burst*10000);
+    
+    total_len = (int16u)(2*sizeof(udp_header) + 3*sizeof(int32));   
+    
+    scat.num_elements = 6;
+    scat.elements[0].len = 2;
+    scat.elements[0].buf = (char*)&total_len;
+ 
+    scat.elements[1].len = sizeof(udp_header);
+    scat.elements[1].buf = (char*)&u_hdr;
+    
+    scat.elements[2].len = sizeof(int32);
+    scat.elements[2].buf = (char*)&type;    
+
+    scat.elements[3].len = sizeof(udp_header);
+    scat.elements[3].buf = (char*)&cmd;
+
+    scat.elements[4].len = sizeof(int32);
+    scat.elements[4].buf = (char*)&loss_rate;
+
+    scat.elements[5].len = sizeof(int32);
+    scat.elements[5].buf = (char*)&burst_rate;
+  
+
+    u_hdr.source = 0;
+    u_hdr.dest   = 0;
+    u_hdr.len    = 0;
+
+    type = SETLOSS_TYPE_MSG;
+
+    cmd.source = 0;
+    cmd.dest   = address;
+    cmd.dest_port   = 0;
+    cmd.len    = 2*sizeof(int32);
+    
+
+    ret = DL_send(sk, 0, 0, &scat);
+    
+    if(ret != 2*sizeof(udp_header)+2+3*sizeof(int32))
+	return(-1);
+
+    return(1);  
+}
+
 
 
 
@@ -292,8 +423,8 @@ int spines_recvfrom(int sk, int *sender, int *port, char *buff, int len) {
 	scat.elements[0].buf = ptr + received_bytes;
     }
 
-    if(msg_len > len)
-	Alarm(EXIT, "on_recv(): message too big\n");
+    if(msg_len > len + sizeof(udp_header))
+	Alarm(EXIT, "spines_recvfrom(): message too big: %d :: %d\n", msg_len, len);
 
     ptr = (char*)&u_hdr;
     scat.num_elements = 1;
@@ -337,10 +468,140 @@ int spines_recvfrom(int sk, int *sender, int *port, char *buff, int len) {
 
 
 
+/***********************************************************/
+/* int spines_join(int sk, int address_i)                  */ 
+/*                                                         */
+/* Joins a group on the Spines network                     */
+/*                                                         */
+/* Arguments                                               */
+/*                                                         */
+/* sk:        the socket defining the connection to Spines */
+/* address_i: the group multicast address                  */
+/*                                                         */
+/*                                                         */
+/* Return Value                                            */
+/*                                                         */
+/* (int)  1 if join was ok                                 */
+/*       -1 otherwise                                      */
+/*                                                         */
+/***********************************************************/
+
+int spines_join(int sk, int address_i)
+{
+    udp_header u_hdr, cmd;
+    sys_scatter scat;
+    int16u total_len;
+    int32 address;
+    int32 type;
+    int ret;
+
+    address = (int32)address_i;
+    total_len = (int16u)(2*sizeof(udp_header) + sizeof(int32));
+
+    scat.num_elements = 4;
+    scat.elements[0].len = 2;
+    scat.elements[0].buf = (char*)&total_len;
+ 
+    scat.elements[1].len = sizeof(udp_header);
+    scat.elements[1].buf = (char*)&u_hdr;
+       
+    scat.elements[2].len = sizeof(int32);
+    scat.elements[2].buf = (char*)&type;    
+    
+    scat.elements[3].len = sizeof(udp_header);
+    scat.elements[3].buf = (char*)&cmd;
+        
+    u_hdr.source = 0;
+    u_hdr.dest   = 0;
+    u_hdr.len    = 0;
+
+    type = JOIN_TYPE_MSG;
+
+    cmd.source = 0;
+    cmd.dest   = address;
+    cmd.dest_port   = 0;
+    cmd.len    = 0;
+    
+    ret = DL_send(sk, 0, 0, &scat );
+    
+    if(ret == 2*sizeof(udp_header)+2+sizeof(int32))
+	return(1);
+    else
+	return(-1);
+
+}
+
+
 
 
 /***********************************************************/
-/* int spines_connect(int sk, int address_i, int port_i)   */ 
+/* int spines_leave(int sk, int address_i)                 */ 
+/*                                                         */
+/* Leaves a group on the Spines network                    */
+/*                                                         */
+/* Arguments                                               */
+/*                                                         */
+/* sk:        the socket defining the connection to Spines */
+/* address_i: the group multicast address                  */
+/*                                                         */
+/*                                                         */
+/* Return Value                                            */
+/*                                                         */
+/* (int)  1 if leave was ok                                */
+/*       -1 otherwise                                      */
+/*                                                         */
+/***********************************************************/
+
+int spines_leave(int sk, int address_i)
+{
+    udp_header u_hdr, cmd;
+    sys_scatter scat;
+    int16u total_len;
+    int32 address;
+    int32 type;
+    int ret;
+
+    address = (int32)address_i;
+    total_len = (int16u)(2*sizeof(udp_header) + sizeof(int32));
+
+    scat.num_elements = 4;
+    scat.elements[0].len = 2;
+    scat.elements[0].buf = (char*)&total_len;
+ 
+    scat.elements[1].len = sizeof(udp_header);
+    scat.elements[1].buf = (char*)&u_hdr;
+       
+    scat.elements[2].len = sizeof(int32);
+    scat.elements[2].buf = (char*)&type;    
+    
+    scat.elements[3].len = sizeof(udp_header);
+    scat.elements[3].buf = (char*)&cmd;
+        
+    u_hdr.source = 0;
+    u_hdr.dest   = 0;
+    u_hdr.len    = 0;
+
+    type = LEAVE_TYPE_MSG;
+
+    cmd.source = 0;
+    cmd.dest   = address;
+    cmd.dest_port   = 0;
+    cmd.len    = 0;
+    
+    ret = DL_send(sk, 0, 0, &scat );
+    
+    if(ret == 2*sizeof(udp_header)+2+sizeof(int32))
+	return(1);
+    else
+	return(-1);
+
+}
+
+
+
+
+/***********************************************************/
+/* int spines_connect(int sk, int address_i, int port_i)   */
 /*                                                         */
 /* Connects to another application reliably using spines   */
 /*                                                         */
@@ -374,6 +635,14 @@ int spines_connect(int sk, int address_i, int port_i)
 
     total_len = (int16u)(2*sizeof(udp_header) + sizeof(int32));   
 
+
+    if(((address & 0xF0000000) != 0xE0000000)&&
+       (port == 0)) {
+	Alarm(PRINT, "spines_connect(): cannot connect to port 0\n");
+	return(-1);
+    }
+
+
     scat.num_elements = 4;
     scat.elements[0].len = 2;
     scat.elements[0].buf = (char*)&total_len;
@@ -405,7 +674,7 @@ int spines_connect(int sk, int address_i, int port_i)
 	return(-1);
 
     ret = spines_recv(sk, buf, sizeof(buf));
-    if(ret < 0)
+    if(ret <= 0)
 	return(-1);
 
     Alarm(PRINT, "Connect successfull !\n");
@@ -416,7 +685,7 @@ int spines_connect(int sk, int address_i, int port_i)
 
 
 /***********************************************************/
-/* int spines_send(int sk, char *buff, int len_i)          */
+/* int spines_send(int sk, char *buff, int len_i)          */ 
 /*                                                         */
 /* Sends reliable data through the Spines network          */
 /*                                                         */
@@ -520,8 +789,8 @@ int spines_recv(int sk, char *buff, int len) {
 	scat.elements[0].buf = ptr + received_bytes;
     }
 
-    if(msg_len > len)
-	Alarm(EXIT, "on_recv(): message too big\n");
+    if(msg_len > len+sizeof(udp_header)+sizeof(rel_udp_pkt_add))
+	Alarm(EXIT, "spines_recv(): message too big: %d::%d\n", msg_len, len);
 
     ptr = (char*)&u_hdr;
     scat.num_elements = 1;
@@ -535,11 +804,10 @@ int spines_recv(int sk, char *buff, int len) {
 	    return(received_bytes);
 	total_bytes += received_bytes;
 	if(total_bytes > sizeof(udp_header))
-	    Alarm(EXIT, "on_recv(): socket error\n");
+	    Alarm(EXIT, "spines_recv(): socket error\n");
 	scat.elements[0].len -= received_bytes;
 	scat.elements[0].buf = ptr + received_bytes;
     }
-
 
     ptr = (char*)&r_add;
     scat.num_elements = 1;
@@ -558,7 +826,6 @@ int spines_recv(int sk, char *buff, int len) {
 	scat.elements[0].buf = ptr + received_bytes;
     }
 
-
     ptr = buff;
     scat.num_elements = 1;
     scat.elements[0].len = msg_len - sizeof(udp_header) - 
@@ -574,7 +841,7 @@ int spines_recv(int sk, char *buff, int len) {
 	total_bytes += received_bytes;
 	if(total_bytes > (int)msg_len - (int)sizeof(udp_header) - 
 	   sizeof(rel_udp_pkt_add))
-	    Alarm(EXIT, "on_recv(): socket error\n");
+	    Alarm(EXIT, "spines_recv(): socket error\n");
 	scat.elements[0].len -= received_bytes;
 	scat.elements[0].buf = ptr + received_bytes;
     }
@@ -647,7 +914,7 @@ int spines_listen(int sk)
 
 /***********************************************************/
 /* int spines_accept(int sk, int on_port_i,                */
-/*                                      int on_address_i)  */ 
+/*                      int on_address_i, int *flags)      */ 
 /*                                                         */
 /* Accepts a conection, similarly to TCP accept            */
 /*                                                         */
@@ -656,6 +923,7 @@ int spines_listen(int sk)
 /* sk:           the socket defining the listen session    */
 /* on_port_i:    the port Spines is running                */
 /* on_address_i: the address of the on daemon              */
+/* flags:        flags for the call                        */
 /*                                                         */
 /*                                                         */
 /* Return Value                                            */
@@ -665,7 +933,7 @@ int spines_listen(int sk)
 /*                                                         */
 /***********************************************************/
 
-int spines_accept(int sk, int on_port_i, int on_address_i)
+int spines_accept(int sk, int on_port_i, int on_address_i, int *flags)
 {
     udp_header u_hdr, cmd;
     sys_scatter scat;
@@ -690,7 +958,7 @@ int spines_accept(int sk, int on_port_i, int on_address_i)
     data_size = ret;
 
 
-    new_sk = spines_socket(on_port, on_addr);
+    new_sk = spines_socket(on_port, on_addr, flags);
 
     if(new_sk < 0) 
 	return(-1);
@@ -740,3 +1008,5 @@ int spines_accept(int sk, int on_port_i, int on_address_i)
   
     return(new_sk);
 }
+
+

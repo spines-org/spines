@@ -4,16 +4,14 @@ Spines Documentation
 Spines is a software research platform that allows the deployment of
 overlay networks in the Internet. Spines instantiates overlay nodes on
 participating computers and creates virtual links between these
-nodes. Once a message is sent on a Spines overlay network it will be
-forwarded on the overlay links until it reaches the destination. Many
-Spines overlays can coexist in the Internet, and even overlap on some
+nodes. Many Spines overlays can coexist in the Internet, and even overlap on some
 of the nodes or links. Both the source and the destination of a
 connection that uses Spines should be part of the same Spines overlay
 network.
 
 Spines runs a software daemon on each of the overlay nodes. The daemon
 acts both as a router, forwarding packets toward other nodes, and as a
-server, providing network services to client applications.  Clients
+server, providing network services to client applications. Clients
 use a library to connect to a Spines daemon and send and receive
 messages. The API is very similar to the Unix Socket interface.
 Virtually any socket-based application can be easily adapted to work
@@ -25,8 +23,30 @@ connection to the daemon. The application can use that socket to bind,
 listen, connect, send and receive, using Spines library calls
 (e.g. spines_send() is the equivalent to the regular send() call,
 etc.). In the current implementation, the maximum size of a message 
-that can be sent through Spines is 1420 bytes.
+that can be sent through Spines is 1400 bytes.
 
+Each application can be uniquely identified in the overlay by the pair of 
+IP address of the node it is connected to, and an identifier at that node, 
+which we call port. The port of an application is either assigned automatically 
+by the overlay node upon application connect, or it is set explicitly by the 
+application in a call similar to the Unix bind(). Both reliable and best effort 
+unicast communication between two applications connected to the overlay are 
+done using the IP address and the port described above in a way similar to 
+TCP and UDP. Note that the port of an application is only defined in 
+relationship with a Apines overlay node, and is not related to an operating system 
+port of the computer the application, or the daemon is running on.
+
+A multicast group is defined as a class D multicast address. If an application 
+intends to join a group, it informs its server (overlay node) about this, and the 
+server will pass to the application the messages sent to that group. Leaving a group 
+follows a similar procedure. In order to multicast a message to a group, an 
+application simply sends the message (through its server) to the multicast address 
+representing the group. The overlay network handles the routing of the multicast 
+message according to the current membership of the group the message is sent to. 
+Applications can join, leave, send and receive messages to and from multicast groups 
+at any time. An application can join multiple groups, thus it can be member of more 
+than one group at the same time. An application does not need to be a member of a 
+group in order to send messages to that group.
 
 
 Spines Daemon
@@ -37,9 +57,9 @@ NAME
 
 
 SYNOPSIS
-    spines [-p spines_port] [-l local_address] [[-a destination] 
-    [-a destination]...] [-r] [-e error_rate] [-x time_to_live]
-    [-u up_down_interval]
+    spines [-p spines_port] [-l local_address] [-a destination] 
+    [-a destination]...] [-w <Route_Weight>] [-sf] [-m]
+    [-x time_to_live] [-u up_down_interval]
 
 
 DESCRIPTION
@@ -62,20 +82,22 @@ OPTIONS
     -a destination
           The address of an existing node participating in a Spines
 	  overlay network. The current daemon will create an overlay
-	  link together with the daemon running at this address. There
-	  can be at most 15 such addresses in the command
-	  line. However, a Spines daemon accepts overlay link requests
+	  link together with the daemon running at this address.
+	  A Spines daemon accepts overlay link requests
 	  from other daemons up to 255 links per node.
+    
+    -w Route_Weight 
+          sets the route metric for shortest path computation.
+          Route_Weight can be [distance, latency, loss], with 
+          default: distance
 
-    -r 
-          Sets the reliable link ON. If this option is set, all the
-          messages originating at the current node will be forwarded
-          using reliable overlay links.
-
-    -e error_rate
-          Sets the loss rate in percents (e.g. 15 means 15%). If a
-          loss rate is given the daemon will drop received packets
-          according to that rate.
+    -sf
+          Stream based fairness for reliable links. Makes an overlay
+          reliable link behave as multiple streams (individual streams
+          that actually go through the link) with regard to the TCP
+          congestion control
+    -m    
+          Accept monitor commands for setting losses (see setloss program) 
 
     -x time_to_live
           Sets the time (in seconds) until the daemon will exit. If no
@@ -100,7 +122,7 @@ NAME
 SYNOPSIS 
     #include "spines_lib.h"
 
-    int spines_socket(int port, int address);
+    int spines_socket(int port, int address, int *flags);
 
 
 DESCRIPTION
@@ -108,7 +130,9 @@ DESCRIPTION
     defined by the combination 'port' and 'address', and returns a
     socket to the application. The socket returned can be used for
     sending, receiving, binding to a port, etc. by means of functions
-    provided by the Spines API
+    provided by the Spines API. The flags paramerter defines the type of
+    overlay links used by the application, and it can be UDP_LINKS or 
+    RELIABLE_LINKS. 
 
 
 RETURN VALUE
@@ -326,7 +350,7 @@ NAME
 SYNOPSIS
     #include "spines_lib.h"
 
-    int spines_accept(int sk, int port int address);
+    int spines_accept(int sk, int port int address, int* flags);
     
 
 DESCRIPTION
@@ -334,12 +358,55 @@ DESCRIPTION
     Spines socket on which the application listens. Upon accepting the
     connection, it returns a new socket on which the application can
     send and receive messages on that connection. 'port' and 'address'
-    define the connction of the socket 'sk' to the Spines daemon, the
-    same as given in the spines_socket() call.
+    define the connction of the socket 'sk' to the Spines daemon, 
+    the same as given in the spines_socket() call. The flags paramerter 
+    defines the type of overlay links used by the new application socket, 
+    and it can be UDP_LINKS or RELIABLE_LINKS. 
 
 
 RETURN VALUE
     spines_accept() returns a new Spines socket for the accepted
     connection or -1 in case of an error.
 
+
+
+
+=====================================================================
+
+NAME
+
+    spines_join - Joins a group
+
+
+SYNOPSIS
+    #include "spines_lib.h"
+
+    int spines_join(int sk, int address);
+
+
+DESCRIPTION
+   spines_join() allows an application to join a group. 'sk' is the socket
+   defining the connection to the daemon and 'address' is the multicast address 
+   the application joins.
+
+
+
+
+=====================================================================
+
+NAME
+
+    spines_leave - Leaves a group
+
+
+SYNOPSIS
+    #include "spines_lib.h"
+
+    int spines_leave(int sk, int address);
+
+
+DESCRIPTION
+   spines_leave() allows an application to leave a group. 'sk' is the socket
+   defining the connection to the daemon and 'address' is the multicast address 
+   the application leaves.
 

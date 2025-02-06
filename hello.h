@@ -33,6 +33,7 @@
 void Init_Connections(void);
 void Send_Hello(int linkid, void* dummy);
 void Send_Hello_Request(int linkid, void* dummy);
+void Send_Hello_Request_Cnt(int linkid, void* dummy);
 void Send_Hello_Ping(int dummy_int, void* dummy);
 void Net_Send_Hello(int16 linkid, int mode);
 void Net_Send_Hello_Ping(int32 address);

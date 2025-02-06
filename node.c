@@ -31,15 +31,18 @@
 #include "stdutil/src/stdutil/stdhash.h"
 
 #include "objects.h"
-#include "node.h"
 #include "link.h"
+#include "node.h"
 #include "route.h"
-
+#include "state_flood.h"
+#include "link_state.h"
+#include "route.h"
+#include "multicast.h"
 
 /* Global variables */
 
-extern int32    Address[16];
-extern int16    Num_Nodes;
+extern int32    Address[256];
+extern int16    Num_Initial_Nodes;
 extern stdhash  All_Nodes;
 extern stdhash  All_Edges;
 extern stdhash  Changed_Edges;
@@ -47,6 +50,11 @@ extern Node*    Neighbor_Nodes[MAX_LINKS/MAX_LINKS_4_EDGE];
 extern int16    Num_Neighbors;
 extern Link*    Links[MAX_LINKS];
 extern int32    My_Address;
+extern Prot_Def Edge_Prot_Def;
+extern stdhash  All_Groups_by_Node; 
+extern stdhash  All_Groups_by_Name; 
+extern stdhash  Changed_Group_States;
+extern stdhash  Monitor_Loss;
 
 
 
@@ -75,21 +83,32 @@ void Init_Nodes(void) {
 
     stdhash_construct(&All_Nodes, sizeof(int32), sizeof(Node*), 
 		      stdhash_int_equals, stdhash_int_hashcode);
-    stdhash_construct(&All_Edges, sizeof(int32), sizeof(Edge*), 
+
+    stdhash_construct(&All_Edges, sizeof(int32), sizeof(State_Chain*), 
 		      stdhash_int_equals, stdhash_int_hashcode);
     stdhash_construct(&Changed_Edges, sizeof(int32), sizeof(Changed_Edge*), 
 		      stdhash_int_equals, stdhash_int_hashcode);
+
+    stdhash_construct(&All_Groups_by_Node, sizeof(int32), sizeof(State_Chain*), 
+		      stdhash_int_equals, stdhash_int_hashcode);
+    stdhash_construct(&All_Groups_by_Name, sizeof(int32), sizeof(State_Chain*), 
+		      stdhash_int_equals, stdhash_int_hashcode);
+    stdhash_construct(&Changed_Group_States, sizeof(int32), sizeof(Group_State*), 
+		      stdhash_int_equals, stdhash_int_hashcode);
+
+    stdhash_construct(&Monitor_Loss, sizeof(int32), sizeof(struct Loss_d), 
+		      stdhash_int_equals, stdhash_int_hashcode);
+
 
     for(i=0; i<MAX_LINKS; i++)
         Links[i] = NULL;
 
     Create_Node(My_Address, LOCAL_NODE);
 
-    for(i=0;i<Num_Nodes;i++) {
+    for(i=0;i<Num_Initial_Nodes;i++) {
         Create_Node(Address[i], NEIGHBOR_NODE | NOT_YET_CONNECTED_NODE);
 	Create_Link(Address[i], CONTROL_LINK);
     }
-    /*Print_Links(0, NULL);*/
 }
 
 
@@ -127,16 +146,8 @@ void Create_Node(int32 address, int16 mode) {
     node_p->counter = 0;
     node_p->last_time_heard = E_get_time();
     node_p->flags = mode;
-    if(address == My_Address) {
-	node_p->forwarder = node_p;
-	node_p->distance = 0;
-	node_p->cost = 0;
-    }
-    else {
-	node_p->forwarder = NULL;
-	node_p->distance = -1;
-	node_p->cost = -1;    
-    }
+    stdhash_construct(&node_p->routes, sizeof(int32), sizeof(Route*),
+		      stdhash_int_equals, stdhash_int_hashcode);
     node_p->prev = NULL;
     node_p->next = NULL;
 
@@ -178,7 +189,7 @@ void Create_Node(int32 address, int16 mode) {
 /***********************************************************/
 /* void Disconnect_Node(int32 address)                     */
 /*                                                         */
-/* Disconnects a neighbour node                            */
+/* Disconnects a neighbor node                             */
 /*                                                         */
 /* Arguments                                               */
 /*                                                         */
@@ -220,7 +231,7 @@ void Disconnect_Node(int32 address)
     
     edge = Destroy_Edge(My_Address, address, 1);
     if(edge != NULL) {
-        Add_to_changed_edges(My_Address, edge, NEW_CHANGE);
+        Add_to_changed_states(&Edge_Prot_Def, My_Address, (State_Data*)edge, NEW_CHANGE);
 	Set_Routes();
     }
 
@@ -254,7 +265,7 @@ void Disconnect_Node(int32 address)
 /***********************************************************/
 /* int Try_Remove_Node(int32 address)                      */
 /*                                                         */
-/* Disconnects a neighbour node                            */
+/* Garbage collect of orphan nodes (not attached to edges) */
 /*                                                         */
 /* Arguments                                               */
 /*                                                         */
@@ -272,45 +283,59 @@ void Disconnect_Node(int32 address)
 
 int Try_Remove_Node(int32 address)
 {
-    stdhash_it it, node_it;
+    stdhash_it it, node_it, src_it, route_it;
     int flag;
-    Edge* edge;
+    State_Chain *s_chain;
     Node* nd;
-    
+    Route* route;
+   
+
     if(address == My_Address)
 	return(0);
 
     /* See if the  node is the source of an existing edge */
-    stdhash_find(&All_Edges, &it, &address);
-    if(stdhash_it_is_end(&it)) {
+    stdhash_find(&All_Edges, &src_it, &address);
+    if(stdhash_it_is_end(&src_it)) {
 	/* it's not, so let's see if the node is a destination */
-	stdhash_begin(&All_Edges, &it);
+	stdhash_begin(&All_Edges, &src_it);
 	
 	flag = 0;
-	while(!stdhash_it_is_end(&it)) {
-	    edge = *((Edge **)stdhash_it_val(&it));
-	    if(edge->dest->address == address) {
+	while(!stdhash_it_is_end(&src_it)) {
+	    s_chain = *((State_Chain **)stdhash_it_val(&src_it));
+	    stdhash_find(&s_chain->states, &it, &address);
+	    if(!stdhash_it_is_end(&it)) {
 		flag = 1;
 		break;
 	    }
-	    stdhash_it_next(&it); 
+	    stdhash_it_next(&src_it); 
 	}
 		    
 	if(flag == 0) {
 	    /* The node is not a destination either. Delete the node */ 
 
+	    Alarm(PRINT, "Deleting node: %d.%d.%d.%d\n",
+		  IP1(address), IP2(address), IP3(address), IP4(address));
+
 	    stdhash_find(&All_Nodes, &node_it, &address);
 	    if(stdhash_it_is_end(&node_it)) { 
-		Alarm(DEBUG, "Try_Remove_Node(): No node structure !\n");
+		Alarm(PRINT, "Try_Remove_Node(): No node structure !\n");
 		return(-1);
 	    }
 			
 	    nd = *((Node **)stdhash_it_val(&node_it));
 			
 	    if(nd->flags & NEIGHBOR_NODE) {
-		Alarm(DEBUG, "Try_Remove_Node(): Node is a neighbour\n");
+		Alarm(PRINT, "Try_Remove_Node(): Node is a neighbor\n");
 		return(-1);
 	    }
+	    
+	    stdhash_begin(&nd->routes, &route_it);
+	    while(!stdhash_it_is_end(&route_it)) {
+		route = *((Route **)stdhash_it_val(&route_it));	    
+		dispose(route);
+		stdhash_it_next(&route_it);
+	    }
+	    stdhash_destruct(&nd->routes);
 	    stdhash_erase(&node_it);
 	    dispose(nd);
 	    return(1);

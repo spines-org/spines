@@ -35,31 +35,38 @@
 #include "net_types.h"
 #include "node.h"
 #include "route.h"
-#include "reliable_link.h"
+#include "reliable_datagram.h"
 #include "udp.h"
 #include "link.h"
 #include "session.h"
 #include "reliable_udp.h"
+#include "state_flood.h"
+#include "multicast.h"
 
 /* Global vriables */
 
 extern int32     My_Address;
 extern stdhash   All_Nodes;
+extern stdhash   All_Groups_by_Node; 
+extern stdhash   All_Groups_by_Name; 
+extern stdhash   Neighbors;
+extern int       Padding;
 
 
 /* Local variables */
-static const sp_time zero_timeout        = {     0,    0};
+static const sp_time zero_timeout        = {     0,     0};
+static const sp_time short_timeout       = {     0, 10000};
 
 
 
 /***********************************************************/
-/* void Process_udp_data_packet(int32 sender_id,           */
+/* void Process_rel_udp_data_packet(int32 sender_id,       */
 /*                              char *buff,                */
 /*                              int16u data_len,           */
 /*                              int16u ack_len,            */
 /*                              int32u type, int mode)     */
 /*                                                         */
-/* Processes a UDP data packet                             */
+/* Processes a reliable UDP data packet                    */
 /*                                                         */
 /*                                                         */
 /* Arguments                                               */
@@ -83,12 +90,14 @@ void Process_rel_udp_data_packet(int32 sender_id, char *buff,
 				 int16u data_len, int16u ack_len,
 				 int32u type, int mode)
 {
-    stdhash_it it;
+    stdhash_it it, ngb_it, grp_it, st_it;
     udp_header *hdr;
     Node *sender_node, *next_hop;
     Link *lk;
     reliable_tail *r_tail;
     Reliable_Data *r_data;
+    Group_State *g_state;
+    State_Chain *s_chain_grp;
     int flag, ret;
 
 
@@ -96,22 +105,17 @@ void Process_rel_udp_data_packet(int32 sender_id, char *buff,
     stdhash_find(&All_Nodes, &it, &sender_id);
     if(stdhash_it_is_end(&it)) { /* I had no idea about the sender node */
 	/* This guy should first send hello messages to setup 
-	   the link, etc. The only reason for getting this link state update 
-	   is that I crashed, recovered, and the sender didn't even notice. 
-	   Create the node as it seems that it will be a neighbor in the 
-	   future. Still, for now I will just make it remote. Hello protocol
-	   will take care to make it a neighbor if needed */
-	
-	Create_Node(sender_id, REMOTE_NODE);
-	stdhash_find(&All_Nodes, &it, &sender_id);
+	   the link, etc. Ignore the packet. It's either a bug, 
+	   race condition, or an attack */
+
+	   return;
     }
 
     /* Take care about the reliability stuff. First, get the other side node */
     sender_node = *((Node **)stdhash_it_val(&it));
    
     /* See if we have a valid link to this guy, and take care about the acks.
-     * If we don't have, ignore the acks and just consider the data in the packet,
-     * it might be useful */
+     * If we don't have, ignore the packet. */
     if(sender_node->node_id >= 0) {
 	/* Ok, this node is a neighbor. Let's see the link to it */
         /* Alarm(DEBUG, "Neighbor node\n"); */
@@ -124,8 +128,10 @@ void Process_rel_udp_data_packet(int32 sender_id, char *buff,
 	    
 	    return;
 	}
-	if(lk->r_data == NULL)
-	    Alarm(EXIT, "Process_rel_udp_packet(): Not a reliable link\n");
+	if(lk->r_data == NULL) {
+	    Alarm(PRINT, "Process_rel_udp_packet(): Not a reliable link\n");
+	    return;
+	}
 	r_data = lk->r_data;
 
 	if(r_data->flags&CONNECTED_LINK) {
@@ -167,21 +173,64 @@ void Process_rel_udp_data_packet(int32 sender_id, char *buff,
 		Flip_udp_hdr(hdr);
 	    
 	    if(hdr->len + sizeof(udp_header) == data_len) {
-		if(hdr->dest == My_Address) {
-		    ret = Deliver_UDP_Data(buff, data_len, type);
-		}
-		else {
-		    next_hop = Get_Route(hdr->dest);
+		if((hdr->dest & 0xF0000000) != 0xE0000000) {
+		    /* This is not a multicast address */
+		    
+		    /* Is this for me ? */
+		    if(hdr->dest == My_Address) {
+			ret = Deliver_UDP_Data(buff, data_len, 0);
+			return;
+		    }
+		    
+		    /* Nope, it's for smbd else. See where we should forward it */
+		    next_hop = Get_Route(hdr->source, hdr->dest);
 		    if(next_hop != NULL) {
-			ret = Forward_Rel_UDP_Data(next_hop, buff, data_len, type);
+			ret = Forward_Rel_UDP_Data(next_hop, buff, data_len, 0);
+			return;
 		    }
 		    else {
 			return;
 		    }
 		}
+		else { /* This is multicast */
+		    if(Find_State(&All_Groups_by_Node, My_Address, hdr->dest) != NULL) {
+			/* Hey, I joined this group !*/
+			Deliver_UDP_Data(buff, data_len, 0);
+		    }
+		    stdhash_find(&All_Groups_by_Name, &grp_it, &hdr->dest);
+		    if(!stdhash_it_is_end(&grp_it)) {
+			s_chain_grp = *((State_Chain **)stdhash_it_val(&grp_it));
+			stdhash_begin(&s_chain_grp->states, &st_it);
+			while(!stdhash_it_is_end(&st_it)) {
+			    g_state = *((Group_State **)stdhash_it_val(&st_it));
+			    if(g_state->flags & ACTIVE_GROUP) {
+				next_hop = Get_Route(hdr->source, g_state->source_addr);
+				if(next_hop != NULL) {
+				    stdhash_find(&Neighbors, &ngb_it, &next_hop->address);
+				    if(stdhash_it_is_end(&ngb_it)) {
+					stdhash_insert(&Neighbors, &ngb_it, &next_hop->address, &next_hop);
+				    }
+				}
+			    }
+			    stdhash_it_next(&st_it);
+			}
+		    }
+		    
+		    ret = NO_ROUTE;
+		    
+		    stdhash_begin(&Neighbors, &ngb_it);
+		    while(!stdhash_it_is_end(&ngb_it)) {
+			next_hop = *((Node **)stdhash_it_val(&ngb_it));
+			ret = Forward_Rel_UDP_Data(next_hop, buff, data_len, 0);
+			stdhash_it_next(&ngb_it);
+		    }
+		    stdhash_clear(&Neighbors);
+		    return;
+		}
 	    }
 	    else {
-		Alarm(EXIT, "Process_rel_udp_data: Packed data... not available yet\n");
+		Alarm(PRINT, "Process_rel_udp_data: Packed data... not available yet\n");
+		return;
 	    }
 	}
     }
@@ -219,71 +268,46 @@ int Forward_Rel_UDP_Data(Node *next_hop, char *buff, int16u buf_len, int32u type
     Link *lk;
     int ret;
     int32u send_type;
+    Reliable_Data *r_data;
+    int buff_size;
 
     
+    if(next_hop->address == My_Address) {
+	Process_udp_data_packet(My_Address, buff, buf_len, 
+				 type|UDP_DATA_TYPE, UDP_LINK);
+	
+	return(BUFF_EMPTY);
+    }
+
     lk = next_hop->link[RELIABLE_UDP_LINK];
     if(lk == NULL) {
 	return(BUFF_DROP);
     }
+    r_data = lk->r_data;
+    if(r_data == NULL) {
+	return(BUFF_DROP);
+    }
+    buff_size = stdcarr_size(&(r_data->msg_buff));
+    if(buff_size > 2*MAX_BUFF_LINK) {
+	return(BUFF_DROP);
+    }
+    
 
     send_type = type & (ECN_DATA_MASK | ECN_ACK_MASK);
     send_type = send_type | REL_UDP_DATA_TYPE;
 
     ret = Reliable_Send_Msg(lk->link_id, buff, buf_len, send_type);
-    
+
     Alarm(DEBUG, "Sent %d bytes\n", ret); 
     
+    if(Padding == 1) {
+	if(r_data != NULL) {
+	    E_dequeue(Pad_Link, (int)lk->link_id, NULL);
+	    r_data->padded = 0;
+	    E_queue(Pad_Link, (int)lk->link_id, NULL, short_timeout);
+	}
+    }
+
     return(BUFF_OK);
 }
 
-
-
-
-/* This shouldn't be here. Just for testing... */
-
-void Random_Send(int dest_t, void *dummy_p)
-{
-    sp_time timeout, now;
-    double size_pkt;
-    char* pkt;
-    udp_header *hdr;
-    Node *next_hop;
-    int32 dest = (int32)dest_t;
-    static int16u seq = 0;
-
-    timeout.sec = 1;
-    timeout.usec = 0;
-    now = E_get_time();
-
-    srand(now.usec);
-    size_pkt = rand();
-    size_pkt /= RAND_MAX;
-    size_pkt *= sizeof(packet_body) - sizeof(udp_header) - sizeof(reliable_tail);
-
-    if((pkt = (char*) new_ref_cnt(PACK_BODY_OBJ))==NULL) 
-	Alarm(EXIT, "Random_Send(): Cannot allocte pack_body object\n");
-
-    hdr = (udp_header*)pkt;
-    hdr->source = My_Address;
-    hdr->dest = dest;
-    hdr->dest_port = 1234;
-    hdr->source_port = 1235;
-    hdr->len = (int)size_pkt;
-    hdr->seq_no = seq;
-    seq = (seq+1)%PACK_MAX_SEQ;
-
-    
-    next_hop = Get_Route(dest);
-    if(next_hop != NULL) {
-	Alarm(PRINT, "Sending UDP packet of %d bytes\n", (int)size_pkt + sizeof(udp_header));
-
-	
-	Forward_Rel_UDP_Data(next_hop, pkt, (int16u)((int)size_pkt + 
-						 sizeof(udp_header)), 0);
-	 
-    }
-
-    dec_ref_cnt(pkt);
-
-    E_queue(Random_Send, dest_t, NULL, timeout);
-}

@@ -40,7 +40,7 @@
 #include "node.h"
 #include "link.h"
 #include "network.h"
-#include "reliable_link.h"
+#include "reliable_datagram.h"
 #include "link_state.h"
 #include "hello.h"
 #include "udp.h"
@@ -48,6 +48,8 @@
 #include "protocol.h"
 #include "route.h"
 #include "session.h"
+#include "state_flood.h"
+#include "multicast.h"
 
 /* Global vriables */
 
@@ -55,8 +57,11 @@ extern int32     My_Address;
 extern stdhash   All_Nodes;
 extern Link*     Links[MAX_LINKS];
 extern int       network_flag;
-extern int       Reliable_Flag;
 extern channel   Local_Send_Channels[MAX_LINKS_4_EDGE + 1]; 
+extern stdhash   All_Groups_by_Node; 
+extern stdhash   All_Groups_by_Name; 
+extern stdhash   Neighbors;
+
 
 
 /* Local constatnts */
@@ -105,6 +110,9 @@ void Process_udp_data_packet(int32 sender_id, char *buff, int16u data_len,
 {
     udp_header *hdr;
     Node* next_hop;
+    stdhash_it ngb_it, grp_it, st_it;
+    Group_State *g_state;
+    State_Chain *s_chain_grp;
     int ret;
 
 
@@ -114,27 +122,65 @@ void Process_udp_data_packet(int32 sender_id, char *buff, int16u data_len,
     if(!Same_endian(type))
 	Flip_udp_hdr(hdr);
 
-    if(hdr->len + sizeof(udp_header) == data_len) {
-	if(hdr->dest == My_Address) {
-	    ret = Deliver_UDP_Data(buff, data_len, 0);
-	}
-	else {
-	    next_hop = Get_Route(hdr->dest);
+    if(hdr->len + sizeof(udp_header) == data_len) {	
+	if((hdr->dest & 0xF0000000) != 0xE0000000) {
+	    /* This is not a multicast address */
+	    
+	    /* Is this for me ? */
+	    if(hdr->dest == My_Address) {
+		ret = Deliver_UDP_Data(buff, data_len, 0);
+		return;
+	    }
+	    
+	    /* Nope, it's for smbd else. See where we should forward it */
+	    next_hop = Get_Route(hdr->source, hdr->dest);
 	    if(next_hop != NULL) {
-		if(Reliable_Flag == 1) {
-		    ret = Forward_Rel_UDP_Data(next_hop, buff, data_len, 0);
-		}
-		else {
-		    ret = Forward_UDP_Data(next_hop, buff, data_len);
-		}
+		ret = Forward_UDP_Data(next_hop, buff, data_len);
+		return;
 	    }
 	    else {
 		return;
 	    }
 	}
+	else { /* This is multicast */
+	    if(Find_State(&All_Groups_by_Node, My_Address, hdr->dest) != NULL) {
+		/* Hey, I joined this group !*/
+		Deliver_UDP_Data(buff, data_len, 0);
+	    }
+	    stdhash_find(&All_Groups_by_Name, &grp_it, &hdr->dest);
+	    if(!stdhash_it_is_end(&grp_it)) {
+		s_chain_grp = *((State_Chain **)stdhash_it_val(&grp_it));
+		stdhash_begin(&s_chain_grp->states, &st_it);
+		while(!stdhash_it_is_end(&st_it)) {
+		    g_state = *((Group_State **)stdhash_it_val(&st_it));
+		    if(g_state->flags & ACTIVE_GROUP) {
+			next_hop = Get_Route(hdr->source, g_state->source_addr);
+			if(next_hop != NULL) {
+			    stdhash_find(&Neighbors, &ngb_it, &next_hop->address);
+			    if(stdhash_it_is_end(&ngb_it)) {
+				stdhash_insert(&Neighbors, &ngb_it, &next_hop->address, &next_hop);
+			    }
+			}
+		    }
+		    stdhash_it_next(&st_it);
+		}
+	    }
+	    
+	    ret = NO_ROUTE;
+	    
+	    stdhash_begin(&Neighbors, &ngb_it);
+	    while(!stdhash_it_is_end(&ngb_it)) {
+		next_hop = *((Node **)stdhash_it_val(&ngb_it));
+		ret = Forward_UDP_Data(next_hop, buff, data_len);
+		stdhash_it_next(&ngb_it);
+	    }
+	    stdhash_clear(&Neighbors);
+	    return;
+	}
     }
     else {
-	Alarm(EXIT, "Process_udp_data: Packed data... not available yet\n");
+	Alarm(PRINT, "Process_udp_data: Packed data... not available yet\n");
+	return;
     }
 }
 
@@ -164,57 +210,24 @@ void Process_udp_data_packet(int32 sender_id, char *buff, int16u data_len,
 
 int Forward_UDP_Data(Node *next_hop, char *buff, int16u buf_len)
 {
-    Link *lk, *lk_ctr;
-    UDP_Data *u_data;
+    Link *lk;
     packet_header hdr;
     sys_scatter scat;
     int ret;
 
     
+    if(next_hop->address == My_Address) {
+	Process_udp_data_packet(My_Address, buff, buf_len, 
+				 Set_endian(UDP_DATA_TYPE), UDP_LINK);
+	
+	return(BUFF_EMPTY);
+    }
+
     lk = next_hop->link[UDP_LINK];
     if(lk == NULL) {
 	return(BUFF_DROP);
     }
     
-    u_data = (UDP_Data*)lk->prot_data;
-    if(u_data == NULL) {
-	Alarm(EXIT, "Forward_UDP_Data: UDP link w/o udp data\n");
-    }
-
-    lk_ctr = lk->other_side_node->link[CONTROL_LINK];
-    if(lk_ctr == NULL) {
-	Alarm(EXIT, "Forward_UDP_Data(): Non existing control link !");
-    }  
-
-
-
-#if 0
-    /* This is for links having send buffer. NOT YET IMPLEMENTED  */
-    if((u_data->block_flag != 0)||
-       (!stdcarr_empty(&(u_data->udp_net_buff)))||
-       (!stdcarr_empty(&(u_data->udp_ses_buff)))) {
-	
-	if(stdcarr_size(&u_data->udp_net_buff) >= MAX_BUFF) {
-	    return(BUFF_DROP);
-	}
-
-	if((u_cell = (UDP_Cell*) new(UDP_CELL))==NULL) {
-	    Alarm(EXIT, "Forward_UDP_Data(): Cannot allocte udp cell\n");
-	}
-	u_cell->len = buf_len;
-	u_cell->buff = buff;
-	stdcarr_push_back(&u_data->udp_net_buff, &u_cell);
-	inc_ref_cnt(buff);
-	return(BUFF_OK);
-    }
-
-    /* If I got up to here, there is nothing in the buffer,
-     * and I'm not blocked. So let's try to send the packet */
-
-
-#endif
-
-
     scat.num_elements = 2;
     scat.elements[0].len = sizeof(packet_header);
     scat.elements[0].buf = (char *) &hdr;
@@ -224,14 +237,10 @@ int Forward_UDP_Data(Node *next_hop, char *buff, int16u buf_len)
     hdr.type    = UDP_DATA_TYPE;
     hdr.type    = Set_endian(hdr.type);
 
-    u_data->my_seq_no++;
-    if(u_data->my_seq_no >= PACK_MAX_SEQ)
-	u_data->my_seq_no = 0;
-
-    /*    hdr.seq_no    = u_data->my_seq_no;*/
     hdr.sender_id = My_Address;
     hdr.data_len  = buf_len;
     hdr.ack_len   = 0;
+    hdr.seq_no    = Set_Loss_SeqNo(lk->other_side_node);
 	
     if(network_flag == 1) {
 	ret = DL_send(lk->chan, 
@@ -247,114 +256,6 @@ int Forward_UDP_Data(Node *next_hop, char *buff, int16u buf_len)
 }
 
 
-/***********************************************************/
-/* void UDP_Check_Link_Loss(int32 sender, int16u seq_no)   */
-/*                                                         */
-/* Checks the link loss probability on a UDP channel       */
-/* between two neighbours                                  */
-/* THIS FUNCTION IS FOR FUTURE DEVELOPMENT                 */
-/* IT IS NOT USED YET !!!                                  */
-/*                                                         */
-/*                                                         */
-/* Arguments                                               */
-/*                                                         */
-/* sender: IP of the neighbour                             */
-/* seq_no: sequence number of the UDP packet received      */
-/*                                                         */
-/* Return Value                                            */
-/*                                                         */
-/* NONE                                                    */
-/*                                                         */
-/***********************************************************/
-
-
-
-void UDP_Check_Link_Loss(int32 sender, int16u seq_no) {
-    Link *lk;
-    stdhash_it it;
-    Node *sender_node;
-    UDP_Data *u_data;
-    int last_interval;
-    
-
-    if(seq_no != 0xffff) {
-	/* Get the link to the sender */
-	stdhash_find(&All_Nodes, &it, &sender);
-	if(stdhash_it_is_end(&it)) { /* I had no idea about the sender node */
-	    return;
-	}
-	sender_node = *((Node **)stdhash_it_val(&it));
-	lk = sender_node->link[UDP_LINK];
-	if(lk == NULL)
-	    return;
-	if(lk->prot_data == NULL)
-	    return;
-	u_data = (UDP_Data*)lk->prot_data;
-
-	if(seq_no == u_data->other_side_seq_no) {
-	    /* this is an old packet */
-	    return;
-	}
-	else if(seq_no > u_data->other_side_seq_no) {
-	    if(seq_no - u_data->other_side_seq_no > PACK_MAX_SEQ/2) {
-		/* this is an old packet */
-		Alarm(PRINT, "old seq: %d\n", seq_no);
-		return;
-	    }
-	    
-	    if(seq_no == u_data->other_side_seq_no + 1) {
-		u_data->other_side_seq_no++;
-	    }
-	    else {
-		/* Ok, there was a loss here */
-		last_interval = PACK_MAX_SEQ;
-		last_interval *= u_data->no_of_rounds_wo_loss;
-		last_interval += u_data->other_side_seq_no - 
-		    u_data->last_seq_noloss;
-		
-		Alarm(PRINT, "\nLOSS! new: %d; old: %d; last interval: %d\n\n", 
-		      seq_no, u_data->other_side_seq_no, last_interval);
-
-		u_data->last_seq_noloss = seq_no;
-		u_data->other_side_seq_no = seq_no;
-		u_data->no_of_rounds_wo_loss = 0;
-	    }
-	}
-	else {
-	    if(u_data->other_side_seq_no - seq_no < PACK_MAX_SEQ/2) {
-		/* this is an old packet */
-		Alarm(PRINT, "old seq: %d; last:%d\n", 
-		      seq_no, u_data->other_side_seq_no);
-		return;
-	    }
-
-	    Alarm(PRINT, "End of sequence: seq_no: %d; last_seq: %d\n",
-		  seq_no, u_data->other_side_seq_no);
-
-	    if((u_data->other_side_seq_no == PACK_MAX_SEQ - 1)&&
-	       (seq_no == 0)) {
-		u_data->other_side_seq_no = 0;
-		u_data->no_of_rounds_wo_loss++;
-	    }
-	    else {
-		/* Ok, there was a loss here */
-		last_interval = PACK_MAX_SEQ;
-		last_interval *= u_data->no_of_rounds_wo_loss;
-		last_interval += u_data->other_side_seq_no - 
-		    u_data->last_seq_noloss;
-		
-		Alarm(PRINT, "\nLOSS! last interval: %d\n\n", last_interval);
-
-		u_data->last_seq_noloss = seq_no;
-		u_data->other_side_seq_no = seq_no;
-		u_data->no_of_rounds_wo_loss = 0;
-	    }	    
-	}
-    }
-    else {
-	printf("\n\n^^^^^ seq_no special !\n\n");
-    }
-}
 
 
 

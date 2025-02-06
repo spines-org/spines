@@ -36,7 +36,7 @@
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <errno.h>
-#include "spines_lib.h"
+#include "../spines_lib.h"
 
 
 
@@ -51,7 +51,8 @@ static int  sendPort;
 static int  recvPort;
 static int  Address;
 static int  Send_Flag;
-static int  Reliable_Flag;
+static int  Sping_Flag;
+static int  Protocol;
 
 static void Usage(int argc, char *argv[]);
 
@@ -65,18 +66,21 @@ int main( int argc, char *argv[] )
     int  i, ret;
     int  localhost_ip;
     struct timeval *t1, *t2;
-    struct timeval local_recv_time, start, now;
+    struct timeval local_recv_time, start, now, report_time;
     struct timezone tz;
     int  *pkt_no, *msg_size;
     long long int duration_now, int_delay, oneway_time;
     long long int cnt;
     double rate_now;
+    int sent_packets = 0;
+    long elapsed_time;
     FILE *f1;
 
     key_t key;
     int shmid, size, opperm_flags;
     char *mem_addr;
     long long int *avg_clockdiff;
+    long long int zero_diff = 0;
     long long int min_clockdiff, max_clockdiff;
 
     struct sockaddr_in host;
@@ -109,7 +113,7 @@ int main( int argc, char *argv[] )
 	host.sin_family = AF_INET;
 	host.sin_port   = htons(sendPort);
 
-        sk = spines_socket(spinesPort, localhost_ip);
+        sk = spines_socket(spinesPort, localhost_ip, &Protocol);
         if (sk < 0) {
 	    printf("flooder_client: socket error\n");
 	    exit(1);
@@ -118,7 +122,7 @@ int main( int argc, char *argv[] )
         ret = spines_connect(sk, Address, sendPort);
         if( ret < 0)
         {
-                printf( "flooder: could not connect to server\n"); 
+                printf( "sp_flooder: could not connect to server\n"); 
                 exit(1);
         }
 
@@ -144,6 +148,8 @@ int main( int argc, char *argv[] )
 	}
 
 	gettimeofday(&start, &tz);
+	report_time.tv_sec = start.tv_sec;
+	report_time.tv_usec = start.tv_usec;
 
 	for(i=0; i<Num_pkts; i++)
 	{
@@ -156,8 +162,26 @@ int main( int argc, char *argv[] )
 		printf("error in writing: %d...\n", ret);
 		exit(0);
 	    }
+
+	    gettimeofday(&now, &tz);
+
+	    if(fileflag == 1) {
+		sent_packets++;
+		elapsed_time  = (now.tv_sec - report_time.tv_sec);
+		elapsed_time *= 1000000;
+		elapsed_time += now.tv_usec - report_time.tv_usec;
+		
+		if(elapsed_time >= 1000000) {
+		    fprintf(f1, "%ld.%ld\t%ld\n", (long)now.tv_sec, (long)now.tv_usec, 
+			    sent_packets*1000000/elapsed_time);
+		
+		    sent_packets = 0;
+		    report_time.tv_sec = now.tv_sec;
+		    report_time.tv_usec = now.tv_usec;
+		}
+	    }
+
 	    if((Rate > 0)&&(i != Num_pkts-1)) {
-		gettimeofday(&now, &tz);
 		duration_now  = (now.tv_sec - start.tv_sec);
 		duration_now *= 1000000;
 		duration_now += now.tv_usec - start.tv_usec;
@@ -205,26 +229,31 @@ int main( int argc, char *argv[] )
     else {
 	printf("Just answering flooder msgs on port %d\n", recvPort);
 
-	key = 0x01234567;
-	size = sizeof(long long int); 
-	opperm_flags = SHM_R | SHM_W;
-	
-	shmid = shmget (key, size, opperm_flags); 
-	if(shmid == -1) {
-	    perror("shmget:");
-	    exit(0);
-	}    
-
-	mem_addr = (char*)shmat(shmid, 0, SHM_RND);    
-	if(mem_addr == (char*)-1) {
-	    perror("shmat:");
-	    exit(0);
+	if(Sping_Flag == 1) {
+	    key = 0x01234567;
+	    size = sizeof(long long int); 
+	    opperm_flags = SHM_R | SHM_W;
+	    
+	    shmid = shmget (key, size, opperm_flags); 
+	    if(shmid == -1) {
+		perror("shmget:");
+		exit(0);
+	    }    
+	    
+	    mem_addr = (char*)shmat(shmid, 0, SHM_RND);    
+	    if(mem_addr == (char*)-1) {
+		perror("shmat:");
+		exit(0);
+	    }
+	    
+	    avg_clockdiff = (long long int*)mem_addr;
 	}
-	
-	avg_clockdiff = (long long int*)mem_addr;
+	else {
+	    avg_clockdiff = &zero_diff;
+	}
 
 
-	sk_listen = spines_socket(spinesPort, localhost_ip);
+	sk_listen = spines_socket(spinesPort, localhost_ip, &Protocol);
 	if(sk_listen <= 0) {
 	    printf("error socket...\n");
 	    exit(0);
@@ -237,7 +266,7 @@ int main( int argc, char *argv[] )
 	}	
     
 	spines_listen(sk_listen);
-	sk = spines_accept(sk_listen, spinesPort, localhost_ip);
+	sk = spines_accept(sk_listen, spinesPort, localhost_ip, &Protocol);
 
 	cnt = 0;
 	while(1) {
@@ -251,7 +280,7 @@ int main( int argc, char *argv[] )
 		printf("corrupted packet...\n");
 		exit(0);
 	    }
-
+	    
 	    if(*pkt_no == -1)
 		break;
 
@@ -271,20 +300,18 @@ int main( int argc, char *argv[] )
 	   
 
 	    cnt++;
-	    if(cnt%100 == 0)
-		printf("%d\t%lld\n", (*pkt_no)+1, oneway_time);
 	    if(fileflag == 1) {
 		fprintf(f1, "%d\t%lld\n", *pkt_no+1, oneway_time);
 	    }
 	}
 
-	ret = shmdt(mem_addr);
-	if(ret == -1) {
-	    perror("shmdt:");
-	    exit(0);
+	if(Sping_Flag == 1) {
+	    ret = shmdt(mem_addr);
+	    if(ret == -1) {
+		perror("shmdt:");
+		exit(0);
+	    }
 	}
-	printf("# min_clockdiff: %lld; max_clockdiff: %lld; => %lld\n",
-	       min_clockdiff, max_clockdiff, max_clockdiff - min_clockdiff);
 	if(fileflag == 1) {
 	    fprintf(f1, "# min_clockdiff: %lld; max_clockdiff: %lld; => %lld\n",
 		    min_clockdiff, max_clockdiff, max_clockdiff - min_clockdiff);
@@ -314,8 +341,9 @@ static  void    Usage(int argc, char *argv[])
     recvPort = 8400;
     Address = 0;
     fileflag = 0;
+    Sping_Flag = 0;
     Send_Flag = 0;
-    Reliable_Flag = 0;
+    Protocol = 0;
     strcpy( IP, "127.0.0.1" );
     while( --argc > 0 ) {
 	argv++;
@@ -324,7 +352,7 @@ static  void    Usage(int argc, char *argv[])
 	    sscanf(argv[1], "%d", (int*)&spinesPort );
 	    argc--; argv++;
 	}else if( !strncmp( *argv, "-d", 2 ) ){
-	    sscanf(argv[1], "%d", (int*)&recvPort );
+	    sscanf(argv[1], "%d", (int*)&sendPort );
 	    argc--; argv++;
 	}else if( !strncmp( *argv, "-r", 2 ) ){
 	    sscanf(argv[1], "%d", (int*)&recvPort );
@@ -343,12 +371,17 @@ static  void    Usage(int argc, char *argv[])
 	    argc--; argv++;
 	}else if( !strncmp( *argv, "-s", 2 ) ){
 	    Send_Flag = 1;
+	}else if( !strncmp( *argv, "-g", 2 ) ){
+	    Sping_Flag = 1;
+	}else if( !strncmp( *argv, "-P", 2 ) ){
+	    sscanf(argv[1], "%d", (int*)&Protocol );
+	    argc--; argv++;
 	}else if( !strncmp( *argv, "-f", 2 ) ){
 	    sscanf(argv[1], "%s", filename );
 	    fileflag = 1;
 	    argc--; argv++;
 	}else{
-	    printf( "Usage: sp_flooder\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n",
+	    printf( "Usage: sp_flooder\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n",
 		    "\t[-p <port number>] : port where spines runs, default is 8100",
 		    "\t[-d <port number>] : to send packets on, default is 8400",
 		    "\t[-r <port number>] : to receive packets on, default is 8400",
@@ -356,6 +389,9 @@ static  void    Usage(int argc, char *argv[])
 		    "\t[-b <size>       ] : size of the packets (in bytes)",
 		    "\t[-R <rate>       ] : sending rate (in 1000's of bits per sec)",
 		    "\t[-n <rounds>     ] : number of packets",
+		    "\t[-f <filename>   ] : file where to save statistics",
+		    "\t[-g              ] : run with sping for clock sync",
+		    "\t[-P <0, 1 or 2>  ] : overlay links (0 : UDP; 1; Rliable)",
 		    "\t[-s              ] : sender flooder");
 	    exit( 0 );
 	}

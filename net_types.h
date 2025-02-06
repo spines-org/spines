@@ -24,8 +24,8 @@
  */
 
 
-#ifndef	INC_NET_TYPES
-#define	INC_NET_TYPES
+#ifndef	NET_TYPES
+#define	NET_TYPES
 
 
 /*      Dont forget that 0x80000080 is kept for endians */
@@ -43,6 +43,7 @@
 #define         HELLO_MASK              0x30000000
 
 #define		LINK_STATE_TYPE		0x01000000
+#define		GROUP_STATE_TYPE	0x02000000
 #define         ROUTE_MASK              0x0f000000
 
 
@@ -66,10 +67,15 @@
 
 /* Fourth byte */
 
-#define         UDP_DATA_TYPE           0x00000001
-#define         REL_UDP_DATA_TYPE       0x00000002
-#define         LINK_ACK_TYPE           0x00000003
+#define         LINK_ACK_TYPE           0x00000001
+#define         UDP_DATA_TYPE           0x00000002
+#define         REL_UDP_DATA_TYPE       0x00000003
 #define         DATA_MASK               0x0000007f
+
+
+/* Other types */
+#define         REL_MCAST_ACK_TYPE      0x00000001
+
 
 
 /* Type macros */
@@ -81,6 +87,7 @@
 #define		Is_hello_close(type)	((type & HELLO_MASK)==HELLO_CLOSE_TYPE)
 
 #define		Is_link_state(type)	((type & ROUTE_MASK) == LINK_STATE_TYPE)
+#define		Is_group_state(type)	((type & ROUTE_MASK) == GROUP_STATE_TYPE)
 
 #define		Is_udp_data(type)	((type & DATA_MASK) == UDP_DATA_TYPE)
 #define		Is_rel_udp_data(type)	((type & DATA_MASK) == REL_UDP_DATA_TYPE)
@@ -97,6 +104,8 @@ typedef	struct	dummy_packet_header {
 			          the originator of the message */
     int16u          data_len;  /* Length of the data */
     int16u          ack_len;   /* Length of the acknowledgement tail */
+    int16u          seq_no;    /* Sequence number of the packet for link loss_rate */
+    int16u          dummy;     /* Nothing yet... */
 } packet_header;
 
 typedef	char       packet_body[MAX_PACKET_SIZE-sizeof(packet_header)];
@@ -107,7 +116,7 @@ typedef	struct	dummy_udp_pkt_header {
     int16u          source_port;
     int16u          dest_port;
     int16u          len;
-    int16u          seq_no;    /* Sequence number of the packet */
+    int16u          seq_no;    /* sequence number for end-to-end loss_rate */
 } udp_header;
 
 typedef struct dummy_rel_udp_pkt_add {
@@ -129,14 +138,16 @@ typedef	struct	dummy_hello_packet {
     int32           my_time_sec;
     int32           my_time_usec;
     int32           diff_time;
+    int32           loss_rate;   /* estimated loss rate of data */
+                                 /* (from 0 to LOSS_RATE_SCALE for 0% to 100%) */
 } hello_packet;
 
 
 typedef	struct	dummy_link_state_packet {
     int32 	    source;
     int16u	    num_edges;
-    int16           node_data; /* Data about the source node itself. 
-		  		  Not used yet */
+    int16           src_data; /* Data about the source itself. 
+				 Not used yet */
 } link_state_packet;
 
 
@@ -144,12 +155,46 @@ typedef	struct	dummy_edge_cell_packet {
     int32           dest;
     int32           timestamp_sec;
     int32           timestamp_usec;
-    int32 	    cost;
+    int16           cost;
+    int16 	    age;
 } edge_cell_packet;
+
+typedef	struct	dummy_group_state_packet {
+    int32 	    source;
+    int16u	    num_cells;
+    int16           src_data; /* Data about the source itself. 
+				 Not used yet */
+} group_state_packet;
+
+
+typedef	struct	dummy_group_cell_packet {
+    int32           dest; /* This is actually the multicast address */
+    int32           timestamp_sec;
+    int32           timestamp_usec;
+    int16           flags;
+    int16 	    age;
+} group_cell_packet;
+
 
 typedef struct dummy_reliable_tail {
     int32u          seq_no;            /* seq no of this reliable message */ 
     int32u          cummulative_ack;   /* cummulative in order ack */
 } reliable_tail;
 
-#endif	/* INC_NET_TYPES */
+
+typedef struct dummy_reliable_mcast_ack {
+    int32           type;
+    int32           mcast_address;
+    int32           seq_no;
+    int32           timestamp_sec;
+    int32           timestamp_usec;
+} reliable_mcast_ack;
+
+
+typedef struct dummy_rel_mcast_tail {
+    int32u          seq_no;            /* seq no of this reliable message */
+    int32           acker;             /* who will ack this message*/
+} rel_mcast_tail;
+
+
+#endif	/* NET_TYPES */
