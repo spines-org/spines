@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2015 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2016 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -58,7 +58,7 @@
 #include "multipath.h"
 
 /* MAX defines */
-#define MAX_MESS_PER_FLOW           250     /* low-bandwidth = 10*/
+#define MAX_MESS_PER_FLOW           500     /* low-bandwidth = 10*/
 
 #define HBH_ACK_TO                  100000  /* 100 ms */
 #define E2E_ACK_TO                  150000  /* 150 ms */
@@ -122,7 +122,7 @@ typedef struct Session_Obj_d {
 } Session_Obj;
 
 typedef struct Session_Manage_d {
-    unsigned char   blocked;
+    unsigned char   size;
     Session_Obj     head;
     Session_Obj     *tail;
 } Session_Manage;
@@ -220,8 +220,8 @@ void Copy_rel_flood_header( rel_flood_header *from_flood_hdr,
         rel_flood_header *to_flood_hdr );
 void Init_Reliable_Flooding();
 int Fill_Packet_Header_Reliable_Flood( char* hdr, int16u num_paths );
-int Reliable_Flood_Manage_Session( int32 s_id, int32u dst_id );
-int Reliable_Flood_End_Manage_Session( int32 s_id, int32u dst_id );
+int Reliable_Flood_Can_Flow_Send( Session *ses, int32u dst_id );
+int Reliable_Flood_Block_Session( Session *ses, int32u dst_id );
 int E2E_TO_cmp(const void *l, const void *r);
 
 /* Dissemination and Sending Functions */

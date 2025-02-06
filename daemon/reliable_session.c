@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2015 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2016 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -128,17 +128,17 @@ int Init_Reliable_Session(Session *ses, Node_ID address, int16u port)
 
 
     if((r_data = (Reliable_Data*) new(RELIABLE_DATA))==NULL)
-	Alarm(EXIT, "Process_Session_Packet: Cannot allocte reliable_data object\n");
+        Alarm(EXIT, "Process_Session_Packet: Cannot allocte reliable_data object\n");
     r_data->flags = UNAVAILABLE_LINK;
     r_data->seq_no = 0;
     stdcarr_construct(&(r_data->msg_buff), sizeof(Buffer_Cell*), 0);
     for(i=0;i<MAX_WINDOW;i++) {
-	r_data->window[i].buff = NULL;
-	r_data->window[i].data_len = 0;
+        r_data->window[i].buff = NULL;
+        r_data->window[i].data_len = 0;
 
-	r_data->recv_window[i].flag = EMPTY_CELL;
-	r_data->recv_window[i].data.len = 0;
-	r_data->recv_window[i].data.buff = NULL;
+        r_data->recv_window[i].flag = EMPTY_CELL;
+        r_data->recv_window[i].data.len = 0;
+        r_data->recv_window[i].data.buff = NULL;
     }
     r_data->head = 0;
     r_data->tail = 0;
@@ -198,11 +198,10 @@ int Init_Reliable_Connect(Session *ses, Node_ID address, int16u port)
     Init_Reliable_Session(ses, address, port);
 
     if(ses->r_data == NULL) {
-	return(-1);
+        return(-1);
     }
     ses->rel_orig_port = port;
     ses->r_data->flags = CONNECT_WAIT_LINK;
-    
     
     /* send the first packet of the handshake */
 
@@ -336,7 +335,7 @@ void Ses_Send_Rel_Hello(int sesid, void* dummy)
 
     stdhash_find(&Sessions_ID, &it, &sesid);
     if(stdhash_is_end(&Sessions_ID, &it)) {
-	/* The session is gone */
+        /* The session is gone */
         return;
     }
 
@@ -355,10 +354,13 @@ void Ses_Send_Rel_Hello(int sesid, void* dummy)
 	return;
     }
 
+    Alarm(DEBUG, "Calling Get_Route("IPF","IPF")\n", IP(My_Address), IP(ses->rel_otherside_addr));
+
     next_hop = Get_Route(My_Address, ses->rel_otherside_addr);
     if((next_hop == NULL)&&(ses->rel_otherside_addr != My_Address)) {
 	/* I don't have a route to the destination. 
 	   It might be temporary */
+        Alarm(DEBUG, "Ses_Send_Rel_Hello: No Route to Destination, trying later\n");
 	E_queue(Ses_Send_Rel_Hello, ses->sess_id, NULL, one_sec_timeout);    
 	return;
     }
@@ -377,6 +379,7 @@ void Ses_Send_Rel_Hello(int sesid, void* dummy)
     u_hdr->dest_port = ses->rel_otherside_port;
     u_hdr->len = sizeof(rel_udp_pkt_add) + sizeof(ses_hello_packet);
     u_hdr->ttl = SPINES_TTL_MAX;
+    u_hdr->routing = ses->routing_used;
 
     r_add = (rel_udp_pkt_add*)(send_buff + sizeof(udp_header));
     r_add->type = Set_endian(HELLO_TYPE);
@@ -438,15 +441,19 @@ void Ses_Send_Rel_Hello(int sesid, void* dummy)
     scat->elements[1].len = u_hdr->len+sizeof(udp_header);
 
     if(ses->rel_otherside_addr != My_Address) {
-	if(ses->links_used == SOFT_REALTIME_LINKS) {
-	    Forward_RT_UDP_Data(next_hop, scat);
-	}
-	else if(ses->links_used == RELIABLE_LINKS) {
-	    Forward_Rel_UDP_Data(next_hop, scat, 0);
-	}
-	else {
-	    Forward_UDP_Data(next_hop, scat);
-	}
+        if(ses->links_used == SOFT_REALTIME_LINKS) {
+            Forward_RT_UDP_Data(next_hop, scat);
+        }
+        else if(ses->links_used == RELIABLE_LINKS) {
+            Forward_Rel_UDP_Data(next_hop, scat, 0);
+        }
+        else if (ses->links_used == UDP_LINKS) {
+            Forward_UDP_Data(next_hop, scat);
+        }
+        else {
+            Alarm(PRINT, "Ses_Send_Rel_Hello: Reliable Session not supported for this link_type!\n");
+            Session_Close(sesid, SOCK_ERR);
+        }
     }
     else {
 	/* This is for a session connected locally */
@@ -714,6 +721,7 @@ int Process_Reliable_Session_Packet(Session *ses)
     u_hdr->dest = ses->rel_otherside_addr;
     u_hdr->dest_port = ses->rel_otherside_port;
     u_hdr->ttl = SPINES_TTL_MAX;
+    /* u_hdr->routing = ses->routing_used; */
 
 
     /* Setting the reliability tail of the packet */
@@ -1232,7 +1240,6 @@ void Process_Rel_Ses_Hello(Session *ses, char *buff, int len, int32 orig_type)
 /*                                                         */
 /***********************************************************/
 
-
 int Net_Rel_Sess_Send(Session *ses, char *buff, int16u len)
 {
     int32 total_bytes, data_bytes;
@@ -1273,7 +1280,8 @@ int Net_Rel_Sess_Send(Session *ses, char *buff, int16u len)
 	}
 
 	Alarm(DEBUG, "session send: %d\n", ses->sk);
-	ret = DL_send(ses->sk,  My_Address, ses->port,  &scat );
+	ret = DL_send_connected(ses->sk,  &scat );
+
 	Alarm(DEBUG, "sent: %d -> %d\n", ses->sk, ret);
 
 	Alarm(DEBUG,"Net_Rel_Sess_Send(): %d %d %d %d\n", ret, ses->sk, ses->port, len); 
@@ -1658,7 +1666,7 @@ int Reliable_Ses_Send(Session* ses)
     send_buff = ses->data;
     r_data = ses->r_data;
     if(r_data == NULL) {
-	Alarm(EXIT, "Reliable_Ses_Send: No reliable data struct !");
+	    Alarm(EXIT, "Reliable_Ses_Send: No reliable data struct !");
     }
 
     u_hdr = (udp_header*)send_buff;
@@ -1783,12 +1791,15 @@ int Reliable_Ses_Send(Session* ses)
 
     } else {
 
-      if(ses->links_used == SOFT_REALTIME_LINKS) {
+      if (ses->links_used == SOFT_REALTIME_LINKS) {
         ret = Forward_RT_UDP_Data(next_hop, scat);
-      } else if(ses->links_used == RELIABLE_LINKS) {
+      } else if (ses->links_used == RELIABLE_LINKS) {
 	ret = Forward_Rel_UDP_Data(next_hop, scat, 0);
-      } else {
+      } else if (ses->links_used == UDP_LINKS) {
 	ret = Forward_UDP_Data(next_hop, scat);
+      } else {
+        Alarm(PRINT, "Rel_Ses_Send: Link Type not supported!\n");
+        ret = NO_ROUTE;
       }
     }
    
@@ -2298,14 +2309,18 @@ void Ses_Send_Ack(int sesid, void* dummy)
       Deliver_UDP_Data(scat, 0);
 
     } else {
-      if(ses->links_used == SOFT_REALTIME_LINKS) {
+      if (ses->links_used == SOFT_REALTIME_LINKS) {
 	Forward_RT_UDP_Data(next_hop, scat);
 
-      } else if(ses->links_used == RELIABLE_LINKS) {
+      } else if (ses->links_used == RELIABLE_LINKS) {
 	Forward_Rel_UDP_Data(next_hop, scat, ack_congestion_flag);
 
-      } else {
+      } else if (ses->links_used == UDP_LINKS) {
 	Forward_UDP_Data(next_hop, scat);
+      }
+
+      else {
+        Alarm(PRINT, "Ses_Send_Ack: Link Type not supported\n");
       }
     }
 
@@ -2483,10 +2498,18 @@ void Ses_Reliable_Timeout(int sesid, void *dummy)
 	
 	
 	/* Send the Packet */
+    /* SCAT FIX */
     scat = new_ref_cnt(SYS_SCATTER);
+    scat->num_elements = 2;
+    scat->elements[0].buf = new_ref_cnt(PACK_HEAD_OBJ);
+    scat->elements[0].len = sizeof(packet_header);
+    scat->elements[1].buf = send_buff;
+    scat->elements[1].len = u_hdr->len+sizeof(udp_header);
+
+    /* scat = new_ref_cnt(SYS_SCATTER);
     scat->num_elements = 1;
     scat->elements[0].buf = send_buff;
-    scat->elements[0].len = u_hdr->len+sizeof(udp_header);
+    scat->elements[0].len = u_hdr->len+sizeof(udp_header); */
 	
 	if(ses->links_used == SOFT_REALTIME_LINKS) {
 	    Forward_RT_UDP_Data(next_hop, scat);
@@ -2494,10 +2517,16 @@ void Ses_Reliable_Timeout(int sesid, void *dummy)
 	else if(ses->links_used == RELIABLE_LINKS) {
 	    Forward_Rel_UDP_Data(next_hop, scat, 0);
 	}
-	else {
+	else if (ses->links_used == UDP_LINKS) {
 	    Forward_UDP_Data(next_hop, scat);
 	}
+        else {
+            Alarm(PRINT, "Ses_Rel_Timeout: Link Type not supported\n");
+        }
 
+    /* dec_ref_cnt(scat); */
+    /* SCAT FIX */
+    dec_ref_cnt(scat->elements[0].buf);
     dec_ref_cnt(scat);
     }
 
@@ -2701,21 +2730,35 @@ void Ses_Send_Nack_Retransm(int sesid, void *dummy)
 	
 
 	/* Send the Packet */
+    /* SCAT FIX */
     scat = new_ref_cnt(SYS_SCATTER);
+    scat->num_elements = 2;
+    scat->elements[0].buf = new_ref_cnt(PACK_HEAD_OBJ);
+    scat->elements[0].len = sizeof(packet_header);
+    scat->elements[1].buf = send_buff;
+    scat->elements[1].len = u_hdr->len+sizeof(udp_header);
+
+    /* scat = new_ref_cnt(SYS_SCATTER);
     scat->num_elements = 1;
     scat->elements[0].buf = send_buff;
-    scat->elements[0].len = u_hdr->len+sizeof(udp_header);
+    scat->elements[0].len = u_hdr->len+sizeof(udp_header); */
 	
-	if(ses->links_used == SOFT_REALTIME_LINKS) {
+	if (ses->links_used == SOFT_REALTIME_LINKS) {
 	    Forward_RT_UDP_Data(next_hop, scat);
 	}
-	else if(ses->links_used == RELIABLE_LINKS) {
+	else if (ses->links_used == RELIABLE_LINKS) {
 	    Forward_Rel_UDP_Data(next_hop, scat, 0);
 	}
-	else {
+	else if (ses->links_used == UDP_LINKS) {
 	    Forward_UDP_Data(next_hop, scat);
 	}
+        else {
+            Alarm(PRINT, "Ses_Send_Nack_Retransm: Link Type not supported\n");
+        }
     
+    /* dec_ref_cnt(scat); */
+    /* SCAT FIX */
+    dec_ref_cnt(scat->elements[0].buf);
     dec_ref_cnt(scat);
 
     }

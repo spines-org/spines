@@ -19,7 +19,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2015 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2016 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -302,7 +302,7 @@ static  int 	get_parsed_proc_info( char *name, proc *p )
 %}
 %start Config
 %token OPENBRACE CLOSEBRACE EQUALS COLON BANG
-%token DEBUGFLAGS CRYPTO SIGLENBITS MPBITMASKSIZE DIRECTEDEDGES PATHSTAMPDEBUG
+%token DEBUGFLAGS CRYPTO SIGLENBITS MPBITMASKSIZE DIRECTEDEDGES PATHSTAMPDEBUG UNIXDOMAINPATH
 %token RRCRYPTO
 %token ITCRYPTO ORDEREDDELIVERY REINTRODUCEMSGS TCPFAIRNESS SESSIONBLOCKING MSGPERSAA
 %token SENDBATCHSIZE ITMODE RELIABLETIMEOUTFACTOR NACKTIMEOUTFACTOR INITNACKTOFACTOR 
@@ -328,10 +328,11 @@ ConfigStructs	:	ParamStruct ConfigStructs
 
 ParamStruct	: 
         CRYPTO EQUALS SP_BOOL { Conf_set_all_crypto($3.boolean); } 
-    |   SIGLENBITS EQUALS NUMBER {Conf_set_signature_len_bits($3.number); }
-    |   MPBITMASKSIZE EQUALS NUMBER {Conf_set_multipath_bitmask_size($3.number); }
-    |   DIRECTEDEDGES EQUALS SP_BOOL {Conf_set_directed_edges($3.boolean); }
-    |   PATHSTAMPDEBUG EQUALS SP_BOOL {Conf_set_path_stamp_debug($3.boolean); }
+    |   SIGLENBITS EQUALS NUMBER { Conf_set_signature_len_bits($3.number); }
+    |   MPBITMASKSIZE EQUALS NUMBER { Conf_set_multipath_bitmask_size($3.number); }
+    |   DIRECTEDEDGES EQUALS SP_BOOL { Conf_set_directed_edges($3.boolean); }
+    |   PATHSTAMPDEBUG EQUALS SP_BOOL { Conf_set_path_stamp_debug($3.boolean); }
+    |   UNIXDOMAINPATH EQUALS STRING { Conf_set_unix_domain_path($3.string); }
 
     |   ITCRYPTO EQUALS SP_BOOL { Conf_set_IT_crypto($3.boolean); }
     |   ORDEREDDELIVERY EQUALS SP_BOOL { Conf_set_IT_ordered_delivery($3.boolean); }

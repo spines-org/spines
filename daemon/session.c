@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2015 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2016 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -202,8 +202,12 @@ Frag_Packet* Delete_Frag_Element(Frag_Packet **head, Frag_Packet *frag_pkt)
 void Init_Session(void)
 {
     int sk_local;
-    struct sockaddr_in name;
     int i, ret, val;
+    size_t s_len;
+    struct sockaddr_in name;
+#ifndef ARCH_PC_WIN95
+    struct sockaddr_un unix_name;
+#endif
 
     Session_Num = 0;
     last_sess_port = 40000;
@@ -228,9 +232,58 @@ void Init_Session(void)
     stdhash_construct(&Sessions_Sock, sizeof(int32), sizeof(Session*),
                       NULL, NULL, 0);
 
+#ifndef ARCH_PC_WIN95
+    /* Open Socket for IPC Stream Control */
+    sk_local = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (sk_local < 0)
+        Alarm(EXIT, "Init_Session(): AF_UNIX socket failed\n");
+
+    memset(&unix_name, 0, sizeof(unix_name));
+    unix_name.sun_family = AF_UNIX;
+    /* Check room for length of "data" suffix and NULL byte */
+    s_len = SUN_PATH_LEN - strlen(SPINES_UNIX_DATA_SUFFIX) - 1;
+    ret = snprintf(unix_name.sun_path, s_len, "%s", Unix_Domain_Prefix);
+    if (ret > s_len) {
+        Alarm(EXIT, "Init_Session: Unix Domain ctrl pathname too long (%u), "
+                "max allowed = %u\n", ret, s_len);
+    }
+
+    if (bind(sk_local, (struct sockaddr *) &unix_name, sizeof(unix_name)) < 0)
+        Alarm(EXIT, "Init_Session(): AF_UNIX unable to bind to path: %s\n", 
+                        unix_name.sun_path);
+    if (listen(sk_local, 4) < 0)
+        Alarm(EXIT, "Session_Init(): AF_UNIX Listen failure\n");
+    E_attach_fd(sk_local, READ_FD, Session_Accept, SESS_CTRL, NULL, LOW_PRIORITY);
+
+    /* Open Socket for IPC Stream Data */
+    sk_local = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (sk_local < 0)
+        Alarm(EXIT, "Init_Session(): AF_UNIX socket failed\n");
+
+    memset(&unix_name, 0, sizeof(unix_name));
+    unix_name.sun_family = AF_UNIX;
+    /* Check room for NULL byte */
+    s_len = SUN_PATH_LEN - 1;
+    ret = snprintf(unix_name.sun_path, s_len, "%s%s", Unix_Domain_Prefix, 
+            SPINES_UNIX_DATA_SUFFIX);
+    if (ret > s_len) {
+        Alarm(EXIT, "Init_Session: Unix Domain data pathname too long (%u), "
+                "max allowed = %u\n", ret, s_len);
+    }
+
+    if (bind(sk_local, (struct sockaddr *) &unix_name, sizeof(unix_name)) < 0)
+        Alarm(EXIT, "Init_Session(): AF_UNIX unable to bind to path: %s\n", 
+                        unix_name.sun_path);
+    if (listen(sk_local, 4) < 0)
+        Alarm(EXIT, "Session_Init(): AF_UNIX Listen failure\n");
+    E_attach_fd(sk_local, READ_FD, Session_Accept, SESS_DATA, NULL, HIGH_PRIORITY);
+#endif
+
+
+    /* Open Socket for TCP Stream Data */
     sk_local = socket(AF_INET, SOCK_STREAM, 0);
     if (sk_local<0) {
-      Alarm(EXIT, "Int_Session(): socket failed\n");
+      Alarm(EXIT, "Init_Session(): socket failed\n");
     }
 
     memset(&name, 0, sizeof(name));
@@ -263,7 +316,7 @@ void Init_Session(void)
 
     Link_Sessions_Blocked_On = -1;
 
-    E_attach_fd(sk_local, READ_FD, Session_Accept, SESS_PORT, NULL, HIGH_PRIORITY );
+    E_attach_fd(sk_local, READ_FD, Session_Accept, SESS_DATA, NULL, HIGH_PRIORITY );
 
     /* For Datagram sockets */
 
@@ -308,11 +361,36 @@ void Init_Session(void)
 
     Alarm(DEBUG, "listen successful on socket: %d\n", sk_local);
 
-    E_attach_fd(sk_local, READ_FD, Session_Accept, SESS_CTRL_PORT, NULL, LOW_PRIORITY );
-
+    E_attach_fd(sk_local, READ_FD, Session_Accept, SESS_CTRL, NULL, LOW_PRIORITY );
 }
 
+/***********************************************************/
+/* void Session_Finish (void)                              */
+/*                                                         */
+/* Cleanup IPC path bindings                               */
+/*                                                         */
+/*                                                         */
+/* Arguments                                               */
+/*                                                         */
+/* NONE                                                    */
+/*                                                         */
+/* Return Value                                            */
+/*                                                         */
+/* NONE                                                    */
+/*                                                         */
+/***********************************************************/
+void Session_Finish(void)
+{
+#ifndef ARCH_PC_WIN95
+    char name[SUN_PATH_LEN];
+    
+    snprintf(name, sizeof(name), "%s", Unix_Domain_Prefix);
+    unlink(name);
 
+    snprintf(name, sizeof(name), "%s%s", Unix_Domain_Prefix, SPINES_UNIX_DATA_SUFFIX);
+    unlink(name);
+#endif
+}
 
 /***********************************************************/
 /* void Session_Accept(int sk_local, int dummy,            */
@@ -336,16 +414,17 @@ void Init_Session(void)
 
 void Session_Accept(int sk_local, int port, void *dummy_p)
 {
-    struct sockaddr_in acc_sin;
-    u_int acc_sin_len = sizeof(acc_sin);
     u_int val, lenval, ioctl_cmd;
     channel sk;
     Session *ses;
     stdit it;
     int ret, i, tot_bytes;
     int32 endianess_type;
+    spines_sockaddr acc_sin;
+    socklen_t acc_sin_len = sizeof(acc_sin);
 
     sk = accept(sk_local, (struct sockaddr*)&acc_sin, &acc_sin_len);
+    Alarm(DEBUG, "Accepting socket of type %d\n", acc_sin.family);
 
     /* Increasing the buffer on the socket */
     for(i=10; i <= 200; i+=5) { 
@@ -367,13 +446,14 @@ void Session_Accept(int sk_local, int port, void *dummy_p)
         if(val < i*1024 ) break;
         Alarm(DEBUG, "Sess_accept: set rcvbuf %d, ret is %d\n", val, ret);
     }
-    Alarm(PRINT, "Sess_accept: set sndbuf/rcvbuf to %d\n", 1024*(i-5));
-
+    Alarm(DEBUG, "Sess_accept: set sndbuf/rcvbuf to %d\n", 1024*(i-5));
 
     /* Setting no delay option on the socket */
-    val = 1;
-    if (setsockopt(sk, IPPROTO_TCP, TCP_NODELAY, (char *)&val, sizeof(val))) {
+    if (acc_sin.family == AF_INET) {
+        val = 1;
+        if (setsockopt(sk, IPPROTO_TCP, TCP_NODELAY, (char *)&val, sizeof(val))) {
             Alarm(PRINT, "Session_Accept: Failed to set TCP_NODELAY\n");
+        }
     }
 
     /* set file descriptor to non blocking */
@@ -388,7 +468,7 @@ void Session_Accept(int sk_local, int port, void *dummy_p)
     /* If this is a Control channel setup, just store socket in a 
        safe place, and send socket to the client so that it can
        tell me how to link it's session to the appropiate control channel */
-    if (port == SESS_CTRL_PORT) {
+    if (port == SESS_CTRL) {
         tot_bytes = 0;
         while(tot_bytes < sizeof(int32)) {
             ret = send(sk, ((char*)(&sk))+tot_bytes, sizeof(int32)-tot_bytes, 0);
@@ -409,8 +489,9 @@ void Session_Accept(int sk_local, int port, void *dummy_p)
         return;
     }
 
+    /* Otherwise, this is a Data channel setup, create the session structure */
     if((ses = (Session*) new(SESSION_OBJ))==NULL) {
-        Alarm(EXIT, "Session_Accept(): Cannot allocte session object\n");
+        Alarm(EXIT, "Session_Accept(): Cannot allocate session object\n");
     }
 
     ses->sess_id = Session_Num++;
@@ -430,12 +511,14 @@ void Session_Accept(int sk_local, int port, void *dummy_p)
     ses->recv_fd_flag = 0;
     ses->fd = -1;
     ses->multicast_loopback = 1;
+    ses->routing_used   = 0;
+    ses->session_semantics = 0;
     ses->priority_lvl   = Conf_Prio.Default_Priority;;
     ses->expire.sec     = Conf_Prio.Default_Expire_Sec;
     ses->expire.usec    = Conf_Prio.Default_Expire_USec;
     ses->disjoint_paths = 0;
-    ses->managed        = 0;
-    ses->rf_dst         = 0;
+    ses->blocked = 0;
+    ses->scat = NULL;
 
     if((ses->data = (char*) new_ref_cnt(MESSAGE_OBJ))==NULL) {
             Alarm(EXIT, "Session_Accept(): Cannot allocate message object\n");
@@ -490,11 +573,10 @@ void Session_Accept(int sk_local, int port, void *dummy_p)
     while(tot_bytes < sizeof(int32)) {
         ret = send(sk, ((char*)(&endianess_type))+tot_bytes, sizeof(int32)-tot_bytes, 0);
         tot_bytes += ret;
-    }   
+    }  
     if(tot_bytes != sizeof(int32)) {
         Session_Close(ses->sess_id, SOCK_ERR);
     }
-
 }
 
 
@@ -543,7 +625,7 @@ void Session_Read(int sk, int dummy, void *dummy_p)
 
     if(received_bytes <= 0) {
 
-        Alarm(PRINT, "\nsocket err; len: %d; read_len: %d; partial_len: %d; STATE: %d\n",  
+        Alarm(DEBUG, "\nsocket err; len: %d; read_len: %d; partial_len: %d; STATE: %d\n",  
               scat.elements[0].len, ses->read_len, ses->partial_len, ses->state);
 
         /* This is non-blocking socket. Not all the errors are treated as
@@ -619,9 +701,14 @@ void Session_Read(int sk, int dummy, void *dummy_p)
                 }
             }
             if (i == MAX_CTRL_SK_REQUESTS) {
-                Alarm(EXIT, "Session_Read(): No such control channel: %d\n", ses->ctrl_sk);
+                Alarm(PRINT, "Session_Read(): No such control channel: %d\n", ses->ctrl_sk);
+                Session_Close(ses->sess_id, SOCK_ERR);
+                return;
             }
             Alarm(PRINT, "linked Spines Socket Channel %d with Control Channel %d\n", ses->sk, ses->ctrl_sk);
+            ses->received_len = 0;
+            ses->read_len = sizeof(int32);
+            ses->partial_len = 0;
             ses->state = READY_LEN;
         }
         else if(ses->state == READY_LEN) {
@@ -643,8 +730,8 @@ void Session_Read(int sk, int dummy, void *dummy_p)
                 }
                 ses->frag_idx = 0;
             }
-            else if (ses->routing_used == BEST_EFFORT_FLOOD_ROUTING ||
-                        ses->routing_used == RELIABLE_FLOOD_ROUTING) {
+            else if (ses->routing_used == IT_PRIORITY_ROUTING ||
+                        ses->routing_used == IT_RELIABLE_ROUTING) {
                 ses->read_len = ses->total_len;
                 ses->frag_num = 1;
                 ses->frag_idx = 0;
@@ -733,8 +820,9 @@ void Session_Read(int sk, int dummy, void *dummy_p)
                 }
                 ses->state = READY_DATA;
             }
-            Alarm(DEBUG,"Finished READY_DATA, ses->total_len = %u, ses->read_len = %u, ses->partial_len = %u\r\n",
-                        ses->total_len, ses->read_len, ses->partial_len);
+            Alarm(DEBUG,"Finished READY_DATA, ses->total_len = %u, "
+                            "ses->read_len = %u, ses->partial_len = %u\r\n",
+                            ses->total_len, ses->read_len, ses->partial_len);
         }
     }
 }
@@ -783,11 +871,9 @@ void Session_Close(int sesid, int reason)
 
     ses->close_reason = reason;
 
-    /* Remove this session from being managed in Reliable Flooding */
-    if (ses->managed == 1) {
-        Reliable_Flood_End_Manage_Session(ses->sess_id, ses->rf_dst);
-        ses->managed = 0;
-        ses->rf_dst = 0;
+    /* Remove any stored scatter message */
+    if (ses->scat != NULL) {
+        Cleanup_Scatter(ses->scat); ses->scat = NULL;
     }
 
     /* Detach the socket so it won't bother us */
@@ -961,26 +1047,16 @@ int Process_Session_Packet(Session *ses)
     udp_header *hdr;
     udp_header *cmd;
     int32 *cmd_int, *pkt_len;
-    int ret, tot_bytes, routing, prot_sig_len = 0;
+    int ret, tot_bytes, routing;
     int msg_size_avail = MAX_MESSAGE_SIZE;
-    unsigned int sign_len;
-    int32 dummy_port, dest_addr, src_id, dst_id;
-    stdit it, ip_it;
+    int32 dummy_port, dest_addr;
+    stdit it;
     int32 *type;
     Lk_Param lkp;
     spines_trace *spines_tr;
     char *buf, *read_ptr;
-    sys_scatter *scat;
-    unsigned char temp_ttl;
-    unsigned char temp_path[8];
-    unsigned char *path = NULL, *sign_ptr;
     int i, remaining, link_overhead, paths;
     packet_header *phdr;
-    sp_time now;
-    prio_flood_header *f_hdr;
-    rel_flood_header *r_hdr;
-    rel_flood_tail    *rt;
-    EVP_MD_CTX md_ctx;
     Session *ses_seek;
 
     /* Process the packet */
@@ -1116,20 +1192,27 @@ int Process_Session_Packet(Session *ses)
             /* spines_socket() */
             ses->links_used = *cmd_int;
             ses->routing_used = *(cmd_int+1);
-            ses->rnd_num  = *(cmd_int+2);
-            ses->udp_addr = *(cmd_int+3);
-            ses->udp_port = *(cmd_int+4);
+            ses->session_semantics = *(cmd_int+2);
+            ses->rnd_num  = *(cmd_int+3);
+            ses->udp_addr = *(cmd_int+4);
+            ses->udp_port = *(cmd_int+5);
             if(!Same_endian(ses->endianess_type)) {
                 ses->links_used = Flip_int32(ses->links_used);
+                ses->routing_used = Flip_int32(ses->routing_used);
+                ses->session_semantics = Flip_int32(ses->session_semantics);
                 ses->rnd_num  = Flip_int32(ses->rnd_num);
                 ses->udp_addr = Flip_int32(ses->udp_addr);
                 ses->udp_port = Flip_int32(ses->udp_port);
             }
             ses->seq_no   = ses->rnd_num%MAX_PKT_SEQ;
 
+            Alarm(DEBUG, "ses->routing = %d, 0x%x, ses->semantics = %d, 0x%x\n", 
+                    ses->routing_used >> ROUTING_BITS_SHIFT, ses->routing_used,
+                    ses->session_semantics >> SESSION_BITS_SHIFT, ses->session_semantics);
+
             if ( ses->links_used != INTRUSION_TOL_LINKS &&
-                (ses->routing_used == BEST_EFFORT_FLOOD_ROUTING ||
-                 ses->routing_used == RELIABLE_FLOOD_ROUTING))
+                (ses->routing_used == IT_PRIORITY_ROUTING ||
+                 ses->routing_used == IT_RELIABLE_ROUTING))
             {
                 Alarm(PRINT, "Cannot support this choice of dissemination (%u) and"
                                 " link (%u) protocols\n", 
@@ -1141,8 +1224,8 @@ int Process_Session_Packet(Session *ses)
 
             if (Config_File_Found == 0 && 
                     (ses->links_used == INTRUSION_TOL_LINKS ||
-                    ses->routing_used == BEST_EFFORT_FLOOD_ROUTING ||
-                    ses->routing_used == RELIABLE_FLOOD_ROUTING) )
+                    ses->routing_used == IT_PRIORITY_ROUTING ||
+                    ses->routing_used == IT_RELIABLE_ROUTING) )
             {
                 Alarm(PRINT, "Cannot support this choice of dissemination (%u) and"
                                 " link (%u) protocols without Configuration File\n", 
@@ -1433,37 +1516,37 @@ int Process_Session_Packet(Session *ses)
             } 
             dec_ref_cnt(buf);
             return(BUFF_EMPTY);
-    } 
-    else if (*type == PRIORITY_TYPE_MSG) {
-        cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
-        if(!Same_endian(ses->endianess_type)) {
-            Flip_udp_hdr(cmd);
+        } 
+        else if (*type == PRIORITY_TYPE_MSG) {
+            cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
+            if(!Same_endian(ses->endianess_type)) {
+                Flip_udp_hdr(cmd);
+            }
+            if ( (int16u)(cmd->dest) >= 1 && (int16u)(cmd->dest) <= MAX_PRIORITY ) {
+                ses->priority_lvl = (int16u)(cmd->dest);
+            }
+            return(BUFF_EMPTY);
         }
-        if ( (int16u)(cmd->dest) >= 1 && (int16u)(cmd->dest) <= MAX_PRIORITY ) {
-            ses->priority_lvl = (int16u)(cmd->dest);
+        else if (*type == EXPIRATION_TYPE_MSG) {
+            cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
+            if(!Same_endian(ses->endianess_type)) {
+                Flip_udp_hdr(cmd);
+            }
+            ses->expire.sec = (int32u)(cmd->source);
+            ses->expire.usec = (int32u)(cmd->dest);
+            return(BUFF_EMPTY);
         }
-        return(BUFF_EMPTY);
-    }
-    else if (*type == EXPIRATION_TYPE_MSG) {
-        cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
-        if(!Same_endian(ses->endianess_type)) {
-            Flip_udp_hdr(cmd);
+        else if (*type == DIS_PATHS_TYPE_MSG) {
+            cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
+            if(!Same_endian(ses->endianess_type)) {
+                Flip_udp_hdr(cmd);
+            }
+            if ( (int16u)(cmd->dest) > 0 ) {
+                ses->disjoint_paths = (int16u)(cmd->dest);
+                printf("\t\tKPATHS = %hu\n", ses->disjoint_paths);
+            }
+            return(BUFF_EMPTY);
         }
-        ses->expire.sec = (int32u)(cmd->source);
-        ses->expire.usec = (int32u)(cmd->dest);
-        return(BUFF_EMPTY);
-    }
-    else if (*type == DIS_PATHS_TYPE_MSG) {
-        cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
-        if(!Same_endian(ses->endianess_type)) {
-            Flip_udp_hdr(cmd);
-        }
-        if ( (int16u)(cmd->dest) > 0 ) {
-            ses->disjoint_paths = (int16u)(cmd->dest);
-            printf("\t\tKPATHS = %hu\n", ses->disjoint_paths);
-        }
-        return(BUFF_EMPTY);
-    }
         else {
             Alarm(PRINT, "Session unknown command: %X\n", *type);
             return(BUFF_EMPTY);
@@ -1499,14 +1582,14 @@ int Process_Session_Packet(Session *ses)
                 return(NO_ROUTE);
             }
                 
-            if ((scat = (sys_scatter*) new_ref_cnt(SYS_SCATTER)) == NULL)
+            if ((ses->scat = (sys_scatter*) new_ref_cnt(SYS_SCATTER)) == NULL)
                 Alarm(EXIT, "Process_Session_Packet: Could not allocate sys_scatter\r\n");
 
-            if ((scat->elements[0].buf = new_ref_cnt(PACK_HEAD_OBJ)) == NULL)
+            if ((ses->scat->elements[0].buf = new_ref_cnt(PACK_HEAD_OBJ)) == NULL)
                 Alarm(EXIT, "Process_Session_Packet: Could not allocate packet_header\r\n");
 
-            scat->elements[0].len = sizeof(packet_header);
-            scat->num_elements = 1;
+            ses->scat->elements[0].len = sizeof(packet_header);
+            ses->scat->num_elements = 1;
 
             i = 1; 
             remaining = ses->read_len;
@@ -1514,229 +1597,29 @@ int Process_Session_Packet(Session *ses)
             link_overhead = Link_Header_Size(Get_Ses_Mode(ses->links_used));
 
             while (remaining > 0) {
-                if ((scat->elements[i].buf = new_ref_cnt(PACK_BODY_OBJ)) == NULL)
+                if ((ses->scat->elements[i].buf = new_ref_cnt(PACK_BODY_OBJ)) == NULL)
                     Alarm(EXIT, "Process_Session_Packet: Could not allocate packet_body\r\n");
                 if (remaining + link_overhead + sizeof(fragment_header) > MAX_PACKET_SIZE) {
-                    scat->elements[i].len = MAX_PACKET_SIZE - link_overhead - sizeof(fragment_header);
-                    memcpy(scat->elements[i].buf, read_ptr, scat->elements[i].len);
+                    ses->scat->elements[i].len = MAX_PACKET_SIZE - link_overhead - sizeof(fragment_header);
+                    memcpy(ses->scat->elements[i].buf, read_ptr, ses->scat->elements[i].len);
                 }
                 else {
-                    scat->elements[i].len = remaining;
-                    memcpy(scat->elements[i].buf, read_ptr, remaining);
+                    ses->scat->elements[i].len = remaining;
+                    memcpy(ses->scat->elements[i].buf, read_ptr, remaining);
                 }
-                read_ptr += scat->elements[i].len;
-                remaining -= scat->elements[i].len;
-                scat->num_elements++;
+                read_ptr += ses->scat->elements[i].len;
+                remaining -= ses->scat->elements[i].len;
+                ses->scat->num_elements++;
                 i++;
             }
             
             /* Setup the type field in the Spines packet_header for the signature */
-            phdr = (packet_header*) scat->elements[0].buf;
+            phdr = (packet_header*) ses->scat->elements[0].buf;
             phdr->type = Get_Link_Data_Type(Get_Ses_Mode(ses->links_used));
             phdr->type = Set_endian(phdr->type);
 
-            /* Reassign hdr so that it points to the copy of the udp_header that we
-             *      will be altering for the signature */
-            hdr = (udp_header*) scat->elements[1].buf;
-
-            /* If this is min weight routing, call deliver and forward, since
-             *      bitmask stamping, crypto, etc. is not needed for this 
-             *      type of routing */
-            if (routing == MIN_WEIGHT_ROUTING) {
-                /* When regular routing has crypto, this should move into the protocol.c function */
-                /* if (Conf_RR.Crypto)... */
-                return Deliver_and_Forward_Data(scat, Get_Ses_Mode(ses->links_used), NULL);
-            }
-    
-            /* Otherwise, e.g. BEST_EFFORT / RELIABLE, continue with message
-             *      fragmentation, bitmask stamping, crypto, etc. */
-            else if (routing == BEST_EFFORT_FLOOD_ROUTING) {
-                now = E_get_time();
-                
-                i = scat->num_elements;
-                if ((scat->elements[i].buf = new_ref_cnt(PACK_BODY_OBJ)) == NULL)
-                    Alarm(EXIT, "Process_Session_Packet: Could not allocate packet body for f_hdr\r\n");
-                scat->elements[i].len = 0;
-                scat->num_elements++;
-
-                f_hdr = (prio_flood_header*) scat->elements[i].buf;
-                scat->elements[i].len += sizeof(prio_flood_header);
-
-                if (Path_Stamp_Debug == 1)
-                    path = ((unsigned char *)scat->elements[1].buf) + sizeof(udp_header) + 16;
-
-                Fill_Packet_Header( (char*)f_hdr, routing, ses->disjoint_paths );
-                f_hdr->priority    = ses->priority_lvl;
-                f_hdr->origin_sec  = now.sec;
-                f_hdr->origin_usec = now.usec;
-                f_hdr->expire_sec  = E_add_time(now,ses->expire).sec;
-                f_hdr->expire_usec = E_add_time(now,ses->expire).usec;
-
-                /* Check if "overwriting" currently active, if so, overwrite dest */
-                if((Is_mcast_addr(hdr->dest) || Is_acast_addr(hdr->dest)) && overwrite_ip != 0)
-                    hdr->dest = overwrite_ip;
-                
-                /* Look for the destination (target) of the message in the lookup table */
-                if(Is_mcast_addr(hdr->dest) || Is_acast_addr(hdr->dest)) {
-                    if (ses->disjoint_paths != 0) {
-                        Alarm(PRINT, "Process_Session_Packet: can only do multicast with Flooding\r\n");
-                        Cleanup_Scatter(scat);
-                        return NO_ROUTE;
-                    }
-                    dst_id = 0; /* Special case for multicast and anycast packets */
-                }
-                else {
-                    stdhash_find(&Node_Lookup_Addr_to_ID, &ip_it, &hdr->dest);
-                    if (stdhash_is_end(&Node_Lookup_Addr_to_ID,  &ip_it)) {
-                        Alarm(PRINT, "Process_Session_Packet(): \
-                                    destination not in config file\r\n");
-                        Cleanup_Scatter(scat);
-                        return NO_ROUTE;
-                    }
-                    dst_id = *(int32u *)stdhash_it_val(&ip_it);
-                }
-
-                if (MultiPath_Stamp_Bitmask(dst_id, ses->disjoint_paths, 
-                        (unsigned char*)((char*)f_hdr + sizeof(prio_flood_header))) == 0)
-                {
-                    Cleanup_Scatter(scat);
-                    return NO_ROUTE;
-                }
-                
-                scat->elements[i].len += MultiPath_Bitmask_Size;
-                sign_ptr = (unsigned char*)f_hdr + sizeof(prio_flood_header) + MultiPath_Bitmask_Size;
-            }
-            else if (routing == RELIABLE_FLOOD_ROUTING) {
-                
-                i = scat->num_elements;
-                if ((scat->elements[i].buf = new_ref_cnt(PACK_BODY_OBJ)) == NULL)
-                    Alarm(EXIT, "Process_Session_Packet: Could not allocate packet body for f_hdr\r\n");
-                scat->elements[i].len = 0;
-                scat->num_elements++;
-                
-                r_hdr = (rel_flood_header*) scat->elements[i].buf;
-                scat->elements[i].len += sizeof(rel_flood_header);
-
-                if (Path_Stamp_Debug == 1) {
-                    now = E_get_time();
-                    path = ((unsigned char *)scat->elements[1].buf) + sizeof(udp_header) + 16;
-                    *((int*) (((unsigned char *)scat->elements[1].buf) + sizeof(udp_header) + 4)) = htonl(now.sec);
-                    *((int*) (((unsigned char *)scat->elements[1].buf) + sizeof(udp_header) + 8)) = htonl(now.usec);
-                }
-
-                /* Look for the source (originator) of the message in the lookup table */
-                stdhash_find(&Node_Lookup_Addr_to_ID, &ip_it, &My_Address);
-                if (stdhash_is_end(&Node_Lookup_Addr_to_ID,  &ip_it)) {
-                    Alarm(PRINT, "Process_Session_Packet(): source not in config file\r\n");
-                    Cleanup_Scatter(scat);
-                    return(NO_ROUTE);
-                }
-                src_id = *(int32u *)stdhash_it_val(&ip_it);
-
-                stdhash_find(&Node_Lookup_Addr_to_ID, &ip_it, &hdr->dest);
-                if (stdhash_is_end(&Node_Lookup_Addr_to_ID,  &ip_it)) {
-                    Alarm(PRINT, "Process_Session_Packet(): dest not in config file\r\n");
-                    Cleanup_Scatter(scat);
-                    return(NO_ROUTE);
-                }
-                dst_id = *(int32u *)stdhash_it_val(&ip_it);
-
-                /* Check if this session is being managed already */
-                if (ses->managed == 0) {
-                    if (Reliable_Flood_Manage_Session(ses->sess_id, dst_id) == 0) {
-                        Alarm(PRINT, "Process_Session_Packet(): cannot manage session"
-                                 " with id = %d and dst = %d\r\n", ses->sess_id, dst_id);
-                        Cleanup_Scatter(scat);
-                        return(NO_ROUTE);
-                    }
-                    ses->managed = 1;
-                    ses->rf_dst = dst_id;
-                }
-
-                r_hdr->src  = src_id;
-                r_hdr->dest = dst_id;
-                if (Fill_Packet_Header( (char*)r_hdr, routing, ses->disjoint_paths ) == 0) {
-                    Cleanup_Scatter(scat);
-                    return(NO_ROUTE);
-                }
-               
-                if (MultiPath_Stamp_Bitmask(dst_id, ses->disjoint_paths, 
-                        (unsigned char*)((char*)r_hdr + sizeof(rel_flood_header))) == 0) {
-                    Cleanup_Scatter(scat);
-                    return NO_ROUTE;
-                }
-
-                scat->elements[i].len += MultiPath_Bitmask_Size;
-                sign_ptr = (unsigned char*)r_hdr + sizeof(rel_flood_header) + MultiPath_Bitmask_Size;
-            }
-            if ( (routing == RELIABLE_FLOOD_ROUTING    && Conf_Rel.Crypto  == 1)  ||
-                 (routing == BEST_EFFORT_FLOOD_ROUTING && Conf_Prio.Crypto == 1) )
-            {
-                if (routing == RELIABLE_FLOOD_ROUTING)
-                    prot_sig_len = Rel_Signature_Len;
-                else /* routing == BEST_EFFORT_FLOOD_ROUTING */
-                    prot_sig_len = Prio_Signature_Len;
-
-                /* Sign with Priv_Key */
-                temp_ttl = hdr->ttl;
-                hdr->ttl = 0;
-                if (Path_Stamp_Debug == 1) {
-                    for (i = 0; i<8; i++) {
-                        temp_path[i] = path[i];
-                        path[i] = (unsigned char) 0;
-                    }
-                }
-                ret = EVP_SignInit(&md_ctx, EVP_sha256()); 
-                if (ret != 1) {
-                    Alarm(PRINT, "Process_Session_Packet: SignInit failed\r\n");
-                    Cleanup_Scatter(scat);
-                    return(NO_ROUTE);
-                }
-                /* Add each part of the message to be signed into the md_ctx */
-                /*      Sign over the type in the packet_header */
-                ret = EVP_SignUpdate(&md_ctx, (unsigned char*)&phdr->type, sizeof(phdr->type));
-                /*      Sign over the remaining elements in the message */
-                for (i = 1; i < scat->num_elements; i++) {
-                    ret = EVP_SignUpdate(&md_ctx, (unsigned char*)scat->elements[i].buf, scat->elements[i].len);
-                    if (ret != 1) {
-                        Alarm(PRINT, "Process_Session_Packet: SignUpdate failed\r\n");
-                        Cleanup_Scatter(scat);
-                        return(NO_ROUTE);
-                    }
-                }
-                ret = EVP_SignFinal(&md_ctx, sign_ptr, &sign_len, Priv_Key);
-                if (ret != 1) {
-                    Alarm(PRINT, "Process_Session_Packet: SignFinal failed\r\n");
-                    Cleanup_Scatter(scat);
-                    return(NO_ROUTE);
-                }
-                if (sign_len != prot_sig_len) {
-                    Alarm(PRINT, "Process_Session_Packet: sign_len (%d) != Key_Len (%d)\r\n",
-                                    sign_len, prot_sig_len);
-                    Cleanup_Scatter(scat);
-                    return(NO_ROUTE);
-                }
-                scat->elements[scat->num_elements-1].len += prot_sig_len;
-                hdr->ttl = temp_ttl;
-                if (Path_Stamp_Debug == 1) {
-                    for (i = 0; i<8; i++) {
-                        path[i] = temp_path[i];
-                    }
-                }
-            }
-            if ( routing == RELIABLE_FLOOD_ROUTING ) {
-                /* Create the scat element for the reliable_flood tail */
-                if ((scat->elements[scat->num_elements].buf = new_ref_cnt(PACK_BODY_OBJ)) == NULL)
-                    Alarm(EXIT, "Process_Session_Packet: Could not allocate packet body for f_hdr\r\n");
-                scat->elements[scat->num_elements].len = sizeof(rel_flood_tail);
-                rt = (rel_flood_tail*)(scat->elements[scat->num_elements].buf);
-                rt->ack_len = 0;
-                scat->num_elements++;
-            }
-            Injected_Messages++;
-            ret = Deliver_and_Forward_Data(scat, Get_Ses_Mode(ses->links_used), NULL);
-            Cleanup_Scatter(scat);
-            return ret;
+            /* Prepare and Send the Message */
+            return Session_Send_Message(ses);
         }
         else {
             Alarm(PRINT, "Process_Session_Packet: Packed data... not available yet\n");
@@ -1745,6 +1628,250 @@ int Process_Session_Packet(Session *ses)
         }
     }
     return(NO_ROUTE);
+}
+
+/***********************************************************/
+/* int Session_Send_Message(session *ses)                  */
+/*                                                         */
+/* Prepares and Sends Message from Session                 */
+/*                                                         */
+/* Arguments                                               */
+/*                                                         */
+/* ses:  pointer to the session creating this message      */
+/*                                                         */
+/*                                                         */
+/* Return Value                                            */
+/*                                                         */
+/* (int) return value                                      */
+/*                                                         */
+/***********************************************************/
+int Session_Send_Message(Session *ses)
+{
+    udp_header *hdr;
+    int i, ret, routing, prot_sig_len = 0;
+    unsigned int sign_len;
+    stdit ip_it;
+    int32 src_id, dst_id;
+    sp_time now;
+    unsigned char temp_ttl;
+    unsigned char temp_path[8];
+    unsigned char *path = NULL, *sign_ptr;
+    packet_header *phdr;
+    prio_flood_header *f_hdr;
+    rel_flood_header *r_hdr;
+    rel_flood_tail *rt;
+    EVP_MD_CTX md_ctx;
+
+    if (ses->scat == NULL)
+        return NO_ROUTE;
+
+    /* Setup appropriate pointers */
+    phdr = (packet_header*) ses->scat->elements[0].buf;
+    hdr = (udp_header*) ses->scat->elements[1].buf;
+    routing = (int) hdr->routing << ROUTING_BITS_SHIFT;
+
+    if (routing == MIN_WEIGHT_ROUTING) {
+        /* When regular routing has crypto, this should move into the protocol.c function */
+        /* if (Conf_RR.Crypto)... */
+    }
+    else if (routing == IT_PRIORITY_ROUTING) {
+        now = E_get_time();
+        
+        i = ses->scat->num_elements;
+        if ((ses->scat->elements[i].buf = new_ref_cnt(PACK_BODY_OBJ)) == NULL)
+            Alarm(EXIT, "Send_SBR_Message: Could not allocate packet body for f_hdr\r\n");
+        ses->scat->elements[i].len = 0;
+        ses->scat->num_elements++;
+
+        f_hdr = (prio_flood_header*) ses->scat->elements[i].buf;
+        ses->scat->elements[i].len += sizeof(prio_flood_header);
+
+        if (Path_Stamp_Debug == 1)
+            path = ((unsigned char *)ses->scat->elements[1].buf) + sizeof(udp_header) + 16;
+
+        Fill_Packet_Header( (char*)f_hdr, routing, ses->disjoint_paths );
+        f_hdr->priority    = ses->priority_lvl;
+        f_hdr->origin_sec  = now.sec;
+        f_hdr->origin_usec = now.usec;
+        f_hdr->expire_sec  = E_add_time(now,ses->expire).sec;
+        f_hdr->expire_usec = E_add_time(now,ses->expire).usec;
+
+        /* Check if "overwriting" currently active, if so, overwrite dest */
+        if((Is_mcast_addr(hdr->dest) || Is_acast_addr(hdr->dest)) && overwrite_ip != 0)
+            hdr->dest = overwrite_ip;
+        
+        /* Look for the destination (target) of the message in the lookup table */
+        if(Is_mcast_addr(hdr->dest) || Is_acast_addr(hdr->dest)) {
+            if (ses->disjoint_paths != 0) {
+                Alarm(PRINT, "Send_SBR_Message: can only do multicast with Flooding\r\n");
+                Cleanup_Scatter(ses->scat); ses->scat = NULL;
+                return NO_ROUTE;
+            }
+            dst_id = 0; /* Special case for multicast and anycast packets */
+        }
+        else {
+            stdhash_find(&Node_Lookup_Addr_to_ID, &ip_it, &hdr->dest);
+            if (stdhash_is_end(&Node_Lookup_Addr_to_ID,  &ip_it)) {
+                Alarm(PRINT, "Send_SBR_Message: \
+                            destination not in config file\r\n");
+                Cleanup_Scatter(ses->scat); ses->scat = NULL;
+                return NO_ROUTE;
+            }
+            dst_id = *(int32u *)stdhash_it_val(&ip_it);
+        }
+
+        if (MultiPath_Stamp_Bitmask(dst_id, ses->disjoint_paths, 
+                (unsigned char*)((char*)f_hdr + sizeof(prio_flood_header))) == 0)
+        {
+            Cleanup_Scatter(ses->scat); ses->scat = NULL;
+            return NO_ROUTE;
+        }
+        
+        ses->scat->elements[i].len += MultiPath_Bitmask_Size;
+        sign_ptr = (unsigned char*)f_hdr + sizeof(prio_flood_header) + MultiPath_Bitmask_Size;
+    }
+    else if (routing == IT_RELIABLE_ROUTING) {
+
+        /* Look for the source (originator) of the message in the lookup table */
+        stdhash_find(&Node_Lookup_Addr_to_ID, &ip_it, &My_Address);
+        if (stdhash_is_end(&Node_Lookup_Addr_to_ID,  &ip_it)) {
+            Alarm(PRINT, "Send_SBR_Message: source not in config file\r\n");
+            Cleanup_Scatter(ses->scat); ses->scat = NULL;
+            return(NO_ROUTE);
+        }
+        src_id = *(int32u *)stdhash_it_val(&ip_it);
+
+        /* Look for the destination of the message in the lookup table */
+        stdhash_find(&Node_Lookup_Addr_to_ID, &ip_it, &hdr->dest);
+        if (stdhash_is_end(&Node_Lookup_Addr_to_ID,  &ip_it)) {
+            Alarm(PRINT, "Send_SBR_Message: dest not in config file\r\n");
+            Cleanup_Scatter(ses->scat); ses->scat = NULL;
+            return(NO_ROUTE);
+        }
+        dst_id = *(int32u *)stdhash_it_val(&ip_it);
+
+        /* Check if we can send now, or if the flow buffer is full - in this case, *
+         *    depending on the session semantics, we will either:
+         *    (0) become blocked wait until flow has room and/or handshakes complete 
+         *    (1) silently drop messages  */
+        if (Reliable_Flood_Can_Flow_Send(ses, dst_id) == 0) {
+            if (ses->session_semantics == RELIABLE_STREAM_SESSION) {
+                Alarm(DEBUG, "Send_SBR_Message: RELIABLE_STREAM SESSION to %d\r\n", dst_id);
+                Reliable_Flood_Block_Session(ses, dst_id);
+            } else { /* ses->session_semantics == RELIABLE_DGRAM_SESSION_NO_BACKPRESSURE */
+                Alarm(DEBUG, "Send_SBR_Message: RELIABLE_DGRA_NO_BACKPRESSURE: dropping msg to %d\r\n", dst_id);
+                Cleanup_Scatter(ses->scat); ses->scat = NULL;
+            }
+            return NO_ROUTE;
+        }
+       
+        /* Getting here means that we can send right now */
+        i = ses->scat->num_elements;
+        if ((ses->scat->elements[i].buf = new_ref_cnt(PACK_BODY_OBJ)) == NULL)
+            Alarm(EXIT, "Send_SBR_Message: Could not allocate packet body for r_hdr\r\n");
+        ses->scat->elements[i].len = 0;
+        ses->scat->num_elements++;
+        
+        r_hdr = (rel_flood_header*) ses->scat->elements[i].buf;
+        ses->scat->elements[i].len += sizeof(rel_flood_header);
+
+        if (Path_Stamp_Debug == 1) {
+            now = E_get_time();
+            path = ((unsigned char *)ses->scat->elements[1].buf) + sizeof(udp_header) + 16;
+            *((int*) (((unsigned char *)ses->scat->elements[1].buf) + sizeof(udp_header) + 4)) = htonl(now.sec);
+            *((int*) (((unsigned char *)ses->scat->elements[1].buf) + sizeof(udp_header) + 8)) = htonl(now.usec);
+        }
+
+        r_hdr->src  = src_id;
+        r_hdr->dest = dst_id;
+        if (Fill_Packet_Header( (char*)r_hdr, routing, ses->disjoint_paths ) == 0) {
+            Cleanup_Scatter(ses->scat); ses->scat = NULL;
+            return(NO_ROUTE);
+        }
+       
+        if (MultiPath_Stamp_Bitmask(dst_id, ses->disjoint_paths, 
+                (unsigned char*)((char*)r_hdr + sizeof(rel_flood_header))) == 0) {
+            Cleanup_Scatter(ses->scat); ses->scat = NULL;
+            return NO_ROUTE;
+        }
+
+        ses->scat->elements[i].len += MultiPath_Bitmask_Size;
+        sign_ptr = (unsigned char*)r_hdr + sizeof(rel_flood_header) + MultiPath_Bitmask_Size;
+    }
+
+    /* Sign Messages */
+    if ( (routing == IT_RELIABLE_ROUTING && Conf_Rel.Crypto  == 1)  ||
+         (routing == IT_PRIORITY_ROUTING && Conf_Prio.Crypto == 1) )
+    {
+        if (routing == IT_RELIABLE_ROUTING)
+            prot_sig_len = Rel_Signature_Len;
+        else /* routing == IT_PRIORITY_ROUTING */
+            prot_sig_len = Prio_Signature_Len;
+
+        /* Sign with Priv_Key */
+        temp_ttl = hdr->ttl;
+        hdr->ttl = 0;
+        if (Path_Stamp_Debug == 1) {
+            for (i = 0; i<8; i++) {
+                temp_path[i] = path[i];
+                path[i] = (unsigned char) 0;
+            }
+        }
+        ret = EVP_SignInit(&md_ctx, EVP_sha256()); 
+        if (ret != 1) {
+            Alarm(PRINT, "Process_Session_Packet: SignInit failed\r\n");
+            Cleanup_Scatter(ses->scat); ses->scat = NULL;
+            return(NO_ROUTE);
+        }
+        /* Add each part of the message to be signed into the md_ctx */
+        /*      Sign over the type in the packet_header */
+        ret = EVP_SignUpdate(&md_ctx, (unsigned char*)&phdr->type, sizeof(phdr->type));
+        /*      Sign over the remaining elements in the message */
+        for (i = 1; i < ses->scat->num_elements; i++) {
+            ret = EVP_SignUpdate(&md_ctx, (unsigned char*)ses->scat->elements[i].buf, ses->scat->elements[i].len);
+            if (ret != 1) {
+                Alarm(PRINT, "Process_Session_Packet: SignUpdate failed\r\n");
+                Cleanup_Scatter(ses->scat); ses->scat = NULL;
+                return(NO_ROUTE);
+            }
+        }
+        ret = EVP_SignFinal(&md_ctx, sign_ptr, &sign_len, Priv_Key);
+        if (ret != 1) {
+            Alarm(PRINT, "Process_Session_Packet: SignFinal failed\r\n");
+            Cleanup_Scatter(ses->scat); ses->scat = NULL;
+            return(NO_ROUTE);
+        }
+        if (sign_len != prot_sig_len) {
+            Alarm(PRINT, "Process_Session_Packet: sign_len (%d) != Key_Len (%d)\r\n",
+                            sign_len, prot_sig_len);
+            Cleanup_Scatter(ses->scat); ses->scat = NULL;
+            return(NO_ROUTE);
+        }
+        ses->scat->elements[ses->scat->num_elements-1].len += prot_sig_len;
+        hdr->ttl = temp_ttl;
+        if (Path_Stamp_Debug == 1) {
+            for (i = 0; i<8; i++) {
+                path[i] = temp_path[i];
+            }
+        }
+    }
+
+    /* For Reliable, Add the Hop-By-Hop Tail */
+    if (routing == IT_RELIABLE_ROUTING) {
+        /* Create the scat element for the reliable_flood tail */
+        if ((ses->scat->elements[ses->scat->num_elements].buf = new_ref_cnt(PACK_BODY_OBJ)) == NULL)
+            Alarm(EXIT, "Process_Session_Packet: Could not allocate packet body for f_hdr\r\n");
+        ses->scat->elements[ses->scat->num_elements].len = sizeof(rel_flood_tail);
+        rt = (rel_flood_tail*)(ses->scat->elements[ses->scat->num_elements].buf);
+        rt->ack_len = 0;
+        ses->scat->num_elements++;
+    }
+
+    /* Send The Message */
+    Injected_Messages++;
+    ret = Deliver_and_Forward_Data(ses->scat, Get_Ses_Mode(ses->links_used), NULL);
+    Cleanup_Scatter(ses->scat); ses->scat = NULL;
+    return ret;
 }
 
 /***********************************************************/
@@ -1782,10 +1909,10 @@ int Deliver_UDP_Data(sys_scatter *scat, int32u type) {
     write_ptr = msg;
     
     switch(type) {
-        case (int32u)BEST_EFFORT_FLOOD_ROUTING:
+        case (int32u)IT_PRIORITY_ROUTING:
             num_elements = scat->num_elements - 1;
             break;
-        case (int32u)RELIABLE_FLOOD_ROUTING:
+        case (int32u)IT_RELIABLE_ROUTING:
             num_elements = scat->num_elements - 2;
             break;
         case (int32u)MIN_WEIGHT_ROUTING:
@@ -2126,7 +2253,7 @@ int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int 
                 }
                 
                 if((u_cell = (UDP_Cell*) new(UDP_CELL))==NULL) {
-                    Alarmp(SPLOG_FATAL, SESSION, "Session_Deliver_Data(): Cannot allocte udp cell\n");
+                    Alarmp(SPLOG_FATAL, SESSION, "Session_Deliver_Data(): Cannot allocate udp cell\n");
                 }
                 u_cell->len = frag_pkt->scat.elements[i].len;
                             u_cell->total_len = sum_len;
@@ -2153,7 +2280,7 @@ int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int 
                 }
                 stop_flag = 0;
                 while((ses->sent_bytes < total_bytes)&&(stop_flag == 0)) {
-                            if(ses->sent_bytes < sizeof(int32)) {
+                if(ses->sent_bytes < sizeof(int32)) {
                     scat.num_elements = 3;
                     scat.elements[0].len = sizeof(int32) - ses->sent_bytes;
                     scat.elements[0].buf = ((char*)(&sum_len)) + ses->sent_bytes;
@@ -2168,7 +2295,7 @@ int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int 
                     scat.elements[0].buf = ((char*)(first_frag_udp_hdr)) + (ses->sent_bytes - sizeof(int32));
                     scat.elements[1].len = frag_pkt->scat.elements[0].len - sizeof(udp_header);
                     scat.elements[1].buf = frag_pkt->scat.elements[0].buf + sizeof(udp_header);
-                            } else {
+                } else {
                     scat.num_elements = 1;
                     scat.elements[0].len = frag_pkt->scat.elements[i].len - 
                     (ses->sent_bytes - sizeof(int32));
@@ -2177,7 +2304,7 @@ int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int 
                 }
 
                 /* The session communicates via TCP */
-                ret = DL_send(ses->sk,  My_Address, ses->port,  &scat);
+                ret = DL_send_connected(ses->sk,  &scat);
                 
                 Alarm(DEBUG,"Session_deliver_data(): %d %d %d %d\n",
                       ret, ses->sk, ses->port, frag_pkt->scat.elements[i].len);
@@ -2200,7 +2327,7 @@ int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int 
 #endif
                     {
                     if((u_cell = (UDP_Cell*) new(UDP_CELL))==NULL) {
-                        Alarm(EXIT, "Deliver_UDP_Data(): Cannot allocte udp cell\n");
+                        Alarm(EXIT, "Deliver_UDP_Data(): Cannot allocate udp cell\n");
                     }
                     u_cell->len = frag_pkt->scat.elements[i].len;
                     u_cell->buff = frag_pkt->scat.elements[i].buf;
@@ -2292,7 +2419,7 @@ int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int 
             }
             
             if((u_cell = (UDP_Cell*) new(UDP_CELL))==NULL) {
-                Alarm(EXIT, "Deliver_UDP_Data(): Cannot allocte udp cell\n");
+                Alarm(EXIT, "Deliver_UDP_Data(): Cannot allocate udp cell\n");
             }
             u_cell->total_len = len;
             u_cell->len = len;
@@ -2324,12 +2451,11 @@ int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int 
         }
         if((ses->udp_port == -1)||(flags == 3)) {
             /* The session communicates via TCP */
-            ret = DL_send(ses->sk,  My_Address, ses->port,  &scat);
+            ret = DL_send_connected(ses->sk, &scat);
         }
         else {
 
           /* The session communicates via UDP */
-
           ret = DL_send(Ses_UDP_Channel,  ses->udp_addr, ses->udp_port,  &scat);
 
           Alarm(DEBUG,
@@ -2357,7 +2483,7 @@ int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int 
 #endif
             {
                 if((u_cell = (UDP_Cell*) new(UDP_CELL))==NULL) {
-                    Alarm(EXIT, "Deliver_UDP_Data(): Cannot allocte udp cell\n");
+                    Alarm(EXIT, "Deliver_UDP_Data(): Cannot allocate udp cell\n");
                 }
                 u_cell->total_len = len;
                 u_cell->len = len;
@@ -2521,7 +2647,7 @@ void Session_Write(int sk, int sess_id, void *dummy_p)
                 scat.elements[0].buf = buff + sizeof(udp_header) + (ses->sent_bytes - sizeof(int32) - sizeof(udp_header));
             }
 
-            ret = DL_send(ses->sk,  My_Address, ses->port,  &scat);
+            ret = DL_send_connected(ses->sk,  &scat);
 
             Alarm(DEBUG, "Session_Write(): ret = %d; sk = %d; port = %d; len = %d; sent_bytes = %d; total_bytes = %d\n", ret, ses->sk, ses->port, len, ses->sent_bytes, total_bytes);
 
@@ -2575,19 +2701,19 @@ void Session_Write(int sk, int sess_id, void *dummy_p)
             }
             ses->sent_bytes += ret;
         }
-    if (ses->routing_used == MIN_WEIGHT_ROUTING) {
-        if(ses->r_data == NULL && u_hdr->frag_num > 1 && (u_hdr->frag_idx < u_hdr->frag_num -1)) {
-            Alarm(DEBUG, "Session_Write: Not the last Fragmented Packet," 
+        if (ses->routing_used == MIN_WEIGHT_ROUTING) {
+            if(ses->r_data == NULL && u_hdr->frag_num > 1 && (u_hdr->frag_idx < u_hdr->frag_num -1)) {
+                Alarm(DEBUG, "Session_Write: Not the last Fragmented Packet," 
                              " seq = %d, %d of %d, send_bytes = %d, total_bytes = %d\n", 
                              u_hdr->seq_no, u_hdr->frag_idx, u_hdr->frag_num, ses->sent_bytes, total_bytes);
-            ses->sent_bytes = sizeof(udp_header) + sizeof(int32);
+                ses->sent_bytes = sizeof(udp_header) + sizeof(int32);
+            }
+            else {
+                ses->sent_bytes = 0;
+            }
         }
-        else {
+        else 
             ses->sent_bytes = 0;
-        }
-    }
-    else 
-        ses->sent_bytes = 0;
 
         if (first_frag_udp_hdr != NULL) {
             dec_ref_cnt(first_frag_udp_hdr);
@@ -2625,7 +2751,8 @@ void Session_Write(int sk, int sess_id, void *dummy_p)
 /***********************************************************/
 /* void Ses_Send_ID(Session* ses)                          */
 /*                                                         */
-/* Sends to a session its own ID + port it is assigned     */
+/* Sends to a session its own ID + port + addr it          */
+/*      is assigned                                        */
 /*                                                         */
 /* Arguments                                               */
 /*                                                         */
@@ -2642,6 +2769,7 @@ void Ses_Send_ID(Session *ses)
     char *buf;
     int32 *ses_id;
     int32 *vport;
+    int32 *vaddr;
     udp_header *u_hdr;
 
     buf = (char *) new_ref_cnt(PACK_BODY_OBJ);
@@ -2654,7 +2782,7 @@ void Ses_Send_ID(Session *ses)
     u_hdr->dest = 0;
     u_hdr->source_port = 0;
     u_hdr->dest_port = 0;
-    u_hdr->len = 2 * sizeof(int32); /* sess ID + virtual port */
+    u_hdr->len = 3 * sizeof(int32); /* sess ID + virtual port + virtual address */
     u_hdr->seq_no = 0;
     u_hdr->frag_num = 1;
     u_hdr->frag_idx = 0;
@@ -2666,7 +2794,10 @@ void Ses_Send_ID(Session *ses)
     vport   = (int32 *)(buf+sizeof(udp_header)+sizeof(ses->sess_id));
     *vport  = ses->port;
 
-    Session_Deliver_Data(ses, buf, sizeof(udp_header)+(2*sizeof(int32)), 0, 3);
+    vaddr   = (int32 *)(buf+sizeof(udp_header)+sizeof(ses->sess_id)+sizeof(int32));
+    *vaddr  = My_Address;
+
+    Session_Deliver_Data(ses, buf, sizeof(udp_header)+(3*sizeof(int32)), 0, 3);
     dec_ref_cnt(buf);
 }
 
@@ -2865,7 +2996,7 @@ void Session_UDP_Read(int sk, int dmy, void * dmy_p)
     }
 
     if((ses->data = (char*) new_ref_cnt(MESSAGE_OBJ))==NULL) {
-        Alarm(EXIT, "Session_Read(): Cannot allocte packet_body\n");
+        Alarm(EXIT, "Session_Read(): Cannot allocate packet_body\n");
     }
 }
 
@@ -3043,7 +3174,7 @@ void Session_Flooder_Send(int sesid, void *dummy)
     if(get_ref_cnt(ses->data) > 1) {
         dec_ref_cnt(ses->data);
         if((ses->data = (char*) new_ref_cnt(MESSAGE_OBJ))==NULL) {
-            Alarm(EXIT, "Session_Flooder_Send(): Cannot allocte packet_body\n");
+            Alarm(EXIT, "Session_Flooder_Send(): Cannot allocate packet_body\n");
         }
     }
 
@@ -3078,7 +3209,7 @@ void Session_Flooder_Send(int sesid, void *dummy)
             if(get_ref_cnt(ses->data) > 1) {
                 dec_ref_cnt(ses->data);
                 if((ses->data = (char*) new_ref_cnt(MESSAGE_OBJ))==NULL) {
-                    Alarm(EXIT, "Session_Flooder_Send(): Cannot allocte packet_body\n");
+                    Alarm(EXIT, "Session_Flooder_Send(): Cannot allocate packet_body\n");
                 }
             }
         }

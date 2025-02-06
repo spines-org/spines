@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2015 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2016 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -280,6 +280,22 @@ struct	sockaddr_un {
 #define SUN_LEN(su) \
 	(sizeof(*(su)) - sizeof((su)->sun_path) + strlen((su)->sun_path))
 #endif /* SUN_LEN */
+
+#ifndef MEMBER_SIZE
+#define MEMBER_SIZE(type, member) sizeof(((type *)0)->member)
+#endif /* MEMBER_SIZE */
+
+#ifndef SUN_PATH_LEN
+#  ifndef ARCH_PC_WIN95
+#    define SUN_PATH_LEN MEMBER_SIZE(struct sockaddr_un, sun_path)
+#  else
+#    ifdef MAX_PATH
+#      define SUN_PATH_LEN MAX_PATH
+#    else
+#      define SUN_PATH_LEN 256
+#    endif
+#  endif /* ARCH_PC_WIN95 */
+#endif /* SUN_PATH_LEN */
 
 #if !defined(HAVE_MEMMOVE) && defined(HAVE_BCOPY)
 # define memmove(s1, s2, n) bcopy((s2), (s1), (n))

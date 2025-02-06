@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2016 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -91,12 +91,34 @@
 #endif
 
 #define MAX_APP_CLIENTS  1024
-
 #define MAX_CTRL_SOCKETS 51
 
-/* Local variables */ 
+typedef struct Lib_Client_d {
+    int tcp_sk;
+    int udp_sk;
+    int type;
+    int endianess_type;
+    int sess_id;
+    int rnd_num;
+    spines_sockaddr addr_storage;
+    struct sockaddr *srv_addr;
+    int protocol;
+    int my_addr;
+    int my_port;
+    int connect_addr;
+    int connect_port;
+    int connect_flag;
+    int session_semantics;   /* blocking, silent, or feedback session */
+    int virtual_local_port;  /* stored in host byte order */
+    int virtual_addr;        /* stored in host byte order */
+    int ip_ttl;              /* ttl to stamp all unicast "DATA" UDP packets */ 
+    int mcast_ttl;           /* ttl to stamp all multicast "DATA" UDP packets */
+    int routing;
+} Lib_Client;
 
-static struct sockaddr spines_addr;
+/* Local variables */ 
+static spines_sockaddr Spines_Addr;
+static int             Local_Address = 0;
 static int             Max_Client = 0;
 static int             Control_sk[MAX_CTRL_SOCKETS];
 
@@ -104,7 +126,6 @@ static Lib_Client      all_clients[MAX_APP_CLIENTS];
 static int             init_flag  = 0;
 
 static stdmutex	       data_mutex = { 0 };
-
 
 static void	Flip_udp_hdr( udp_header *udp_hdr )
 {
@@ -118,72 +139,137 @@ static void	Flip_udp_hdr( udp_header *udp_hdr )
     udp_hdr->sess_id	  = Flip_int16( udp_hdr->sess_id );
 }
 
+static void Set_large_socket_buffers(int s)
+{
+    int i, on, ret;
+    sockopt_len_t onlen;
+
+    for(i = 64; i <= 256; i += 8) {
+	    on = 1024*i;
+
+	    ret = setsockopt(s, SOL_SOCKET, SO_SNDBUF, (void *)&on, sizeof(on));
+	    if (ret < 0) break;
+
+	    ret = setsockopt(s, SOL_SOCKET, SO_RCVBUF, (void *)&on, sizeof(on));
+	    if (ret < 0) break;
+
+        onlen = sizeof(on);
+        ret = getsockopt(s, SOL_SOCKET, SO_SNDBUF, (void *)&on,  &onlen);
+        if(on < i*1024) break;
+        Alarm(DEBUG, "Set_large_socket_buffers: set sndbuf %d, ret is %d\n", on, ret);
+
+        onlen = sizeof(on);
+        ret= getsockopt(s, SOL_SOCKET, SO_RCVBUF, (void *)&on, &onlen);
+        if(on < i*1024 ) break;
+        Alarm(DEBUG, "Set_large_socket_buffers: set rcvbuf %d, ret is %d\n", on, ret);
+    }
+    Alarm(DEBUG, "Set_large_socket_buffers: set sndbuf/rcvbuf to %d\n", 1024*(i-5));
+}
+
 void spines_set_errno(int err_val) {
-  errno = err_val;
+    errno = err_val;
 }
 
 /***********************************************************/
 /* int spines_init(const struct sockaddr *serv_addr)       */
 /*                                                         */
-/* Sets the address of the Spines overlay node             */
+/* Initializes data structures for client-side Spines      */
 /*                                                         */
 /* Arguments                                               */
 /*                                                         */
-/* srvr: Address of the Spines node                        */
+/* serv_addr: Address of Spines node, including family of  */
+/*              protocol used (e.g. AF_INET)               */
 /*                                                         */
 /*                                                         */
 /* Return Value                                            */
 /*                                                         */
 /* (int)  1 if the initialization succeded                 */
 /*        0 if the init was already called                 */
-/*       -1 if the there was an error                      */
 /*                                                         */
 /***********************************************************/
 
 int spines_init(const struct sockaddr *serv_addr)
 {
-    int i;
-    struct sockaddr_in my_addr, *tmp_addr;
-    char   machine_name[256];
-    struct hostent  *host_ptr;
+    int i, ret; 
+    size_t s_len;
+    char machine_name[256];
+    struct hostent *host_ptr;
+    sp_time t_now;
   
     if(init_flag != 0) {
+      spines_set_errno(SP_ERROR_LIB_ALREADY_INITED);
       return 0;
     }
 
     init_flag = 1;
-    
-    if(serv_addr == NULL) {
-      gethostname(machine_name,sizeof(machine_name)); 
-      host_ptr = gethostbyname(machine_name);
-      
-      if(host_ptr == NULL) {
-	printf("spines_init ERROR: could not get my ip address (my name is %s)\n", machine_name );
-	init_flag = 0;
-	return(-1);
-      }
-      
-      if(host_ptr->h_addrtype != AF_INET) {
-	printf("spines_init ERROR: Sorry, cannot handle addr types other than IPv4\n");
-	init_flag = 0;
-	return(-1);
-      }
-      
-      if(host_ptr->h_length != 4) {
-	printf("spines_init ERROR: Bad IPv4 address length\n");
-	init_flag = 0;
-	return(-1);
-      }
-      
-      memcpy(&my_addr.sin_addr, host_ptr->h_addr, sizeof(struct in_addr));
-      my_addr.sin_port = htons(DEFAULT_SPINES_PORT) ;
-      tmp_addr = &my_addr;
-      
+   
+    /* Seed global random number generator */
+    t_now = E_get_time();
+    srand(t_now.sec + t_now.usec);
+
+    /* Once we know we will go through with the init, initialize Spines_Addr and Local_Address */
+    memset(&Spines_Addr, 0, sizeof(Spines_Addr));
+    Local_Address = 0;
+
+    /* Grab my hostname, used for default WIN connection, local_address in UDP_CONNECT for
+     * Spines daemon to respond to, etc. */
+    gethostname(machine_name,sizeof(machine_name)); 
+    host_ptr = gethostbyname(machine_name);
+    if (host_ptr == NULL) {
+        Alarm(PRINT, "spines_init WARNING: could not get my ip address (my name is %s)\n", machine_name);
+    } else if (host_ptr->h_addrtype != AF_INET) {
+        Alarm(PRINT, "spines_init WARNING: Sorry, cannot handle addr types other than IPv4\n");
+    } else if (host_ptr->h_length != 4) {
+        Alarm(PRINT, "spines_init WARNING: Bad IPv4 address length\n");
     } else {
-      tmp_addr = (struct sockaddr_in*)serv_addr;
+        memcpy(&Local_Address, host_ptr->h_addr, sizeof(struct in_addr));
+        Local_Address = ntohl(Local_Address);
     }
-    
-    memcpy(&spines_addr, tmp_addr, sizeof(struct sockaddr));
+
+    /* Setup the Spines_Addr based on the family of the serv_addr parameter */
+    if (serv_addr == NULL) {
+#ifndef ARCH_PC_WIN95
+        Spines_Addr.unix_addr.sun_family = AF_UNIX;
+        /* Check room for length of "data" suffix and NULL byte */
+        s_len = sizeof(Spines_Addr.unix_addr.sun_path) - strlen(SPINES_UNIX_DATA_SUFFIX) - 1;
+        ret = snprintf(Spines_Addr.unix_addr.sun_path, s_len, "%s%hu", 
+                        SPINES_UNIX_SOCKET_PATH, DEFAULT_SPINES_PORT);
+        if (ret > s_len) {
+            Alarm(PRINT, "spines_init ERROR: Unix domain path name too long (len = %d), must be"
+                            " less than %u bytes\n", ret, s_len);
+            spines_set_errno(SP_ERROR_INPUT_ERR);
+            init_flag = 0;
+            return(-1);
+        }
+#else
+        if (Local_Address == 0) {
+            Alarm(PRINT, "spines_init ERROR: gethostbyname failed, exiting!\r\n");
+            init_flag = 0;
+            return(-1);
+        }
+        Spines_Addr.inet_addr.sin_family = AF_INET;
+        Spines_Addr.inet_addr.sin_port = htons(DEFAULT_SPINES_PORT);
+        memcpy(&Spines_Addr.inet_addr.sin_addr, host_ptr->h_addr, sizeof(struct in_addr));
+#endif
+#ifndef ARCH_PC_WIN95
+    } else if (serv_addr->sa_family == AF_UNIX) {
+        memcpy(&Spines_Addr.unix_addr, (struct sockaddr_un *)serv_addr, sizeof(struct sockaddr_un));
+#endif
+    } else if (serv_addr->sa_family == AF_INET) {
+        memcpy(&Spines_Addr.inet_addr, (struct sockaddr_in *)serv_addr, sizeof(struct sockaddr_in));
+#ifdef IPV6_SUPPORT
+    } else if (serv_addr->sa_family == AF_INET6) {
+        Alarm(PRINT, "spines_init ERROR: currently do not support AF_INET6\n");
+        init_flag = 0;
+        spines_set_errno(SP_ERROR_INPUT_ERR);
+        return(-1);
+#endif
+    } else {
+        Alarm(PRINT, "spines_init ERROR: unsupported family on this arch: %d\n", serv_addr->sa_family);
+        init_flag = 0;
+        spines_set_errno(SP_ERROR_INPUT_ERR);
+        return(-1);
+    }
 
 #ifdef _REENTRANT    
     stdmutex_construct(&data_mutex, STDMUTEX_FAST);
@@ -192,9 +278,9 @@ int spines_init(const struct sockaddr *serv_addr)
 #endif
 
     stdmutex_grab(&data_mutex); {
-      for(i=0; i<MAX_APP_CLIENTS; i++) {
-	all_clients[i].udp_sk = -1; 
-      }
+        for(i=0; i<MAX_APP_CLIENTS; i++) {
+            all_clients[i].udp_sk = -1; 
+        }
     } stdmutex_drop(&data_mutex);
     
     return 1;
@@ -218,15 +304,20 @@ int spines_init(const struct sockaddr *serv_addr)
  * int rnd_num   random nuber
  *
 */
-int Send_Initial_UDP_Packet_To_Server(int s, int srv_addr, int srv_port, int my_addr,
+int Send_Initial_UDP_Packet_To_Server(int s, struct sockaddr *saddr, int my_addr,
     int my_port, int sess_id, int rnd_num )
 {
-    udp_header	    u_hdr;
-    sys_scatter	    scat;
-    int		    port, address;
-    int		    ret;
-    int32	    len;
-    int		    num_sends;
+    udp_header          u_hdr;
+    sys_scatter         scat;
+    int                 port, address, daemon_port, daemon_addr;
+    int                 ret;
+    int32               len;
+    int                 num_sends;
+    struct sockaddr_in  *inet_addr;
+
+    inet_addr = (struct sockaddr_in *)saddr;
+    if (inet_addr->sin_family != AF_INET)
+        return(-1);    
 
     len = 0;
 
@@ -239,7 +330,7 @@ int Send_Initial_UDP_Packet_To_Server(int s, int srv_addr, int srv_port, int my_
     u_hdr.source_port   =	my_port;    
     u_hdr.dest          =	(int32)address;
     u_hdr.dest_port     =	port;
-    u_hdr.len		=	len;
+    u_hdr.len		    =	len;
 
 #if 0
     TODO -- Set ttl?
@@ -262,10 +353,13 @@ int Send_Initial_UDP_Packet_To_Server(int s, int srv_addr, int srv_port, int my_
     scat.elements[2].len = sizeof(udp_header);
     scat.elements[2].buf = (char*)&u_hdr;
 
+    daemon_addr = (int32)ntohl(inet_addr->sin_addr.s_addr);
+    daemon_port = (int32)ntohs(inet_addr->sin_port);;
+
     for ( num_sends = 0; num_sends < 3; num_sends++ ) {
-	ret = DL_send(s, srv_addr, srv_port+SESS_UDP_PORT, &scat);
+        ret = DL_send(s, daemon_addr, daemon_port+SESS_UDP_PORT, &scat);
         if(ret != 2*sizeof(int32)+sizeof(udp_header)+len) {
-	    return(-1);
+	        return(-1);
         }
     }
 
@@ -298,54 +392,66 @@ int Send_Initial_UDP_Packet_To_Server(int s, int srv_addr, int srv_port, int my_
 int  spines_socket(int domain, int type, int protocol, 
 		   const struct sockaddr *serv_addr)
 {
-    struct sockaddr_in ctrl_host, host;
     udp_header *u_hdr;
     char buf[MAX_PACKET_SIZE];
     int32 *total_len;
     int32 *msg_type;
+    size_t s_len;
     int ret, sk, u_sk, ctrl_sk, s_ctrl_sk, client;
-    int val = 1;
-    int32 *flag_var, *route_var, *rnd_var, *port_var, *addr_var;
-    struct hostent  *host_ptr;
-    char   machine_name[256];
-    int address, port, udp_port, local_addr;
-    int rnd_num, sess_id;
-    sp_time t_now;
-    int link_prot, route_prot, connect_flag;
+    int32 *flag_var, *route_var, *sess_var, *rnd_var, *port_var, *addr_var;
+    int udp_port, rnd_num, sess_id;
+    int link_prot, route_prot, connect_flag, session_prot;
     int tot_bytes, recv_bytes;
-    int v_local_port;
+    int v_local_port, v_addr;
     int32 endianess_type;
-    int i;
-    unsigned int lenval;
 
+    spines_sockaddr sp_addr;
     struct sockaddr *ctrl_sk_addr     = NULL;
-    socklen_t        ctrl_sk_addr_len = 0;
+    socklen_t        ctrl_sk_len      = 0;
     struct sockaddr *sk_addr          = NULL;
-    socklen_t        sk_addr_len      = 0;
+    socklen_t        sk_len           = 0;
 
-#if 0
-    struct	sockaddr_un	unix_ctrl_sk_addr;
-    struct	sockaddr_un	unix_sk_addr;
+    struct sockaddr_in inet_ctrl_addr, inet_addr;
+#ifndef ARCH_PC_WIN95
+    struct sockaddr_un	unix_ctrl_addr, unix_addr;
 #endif	/* ARCH_PC_WIN95 */
 
     if (type != SOCK_DGRAM && type != SOCK_STREAM) {
-      Alarm(PRINT, "spines_socket(): Unknown socket type: %d\n", type);
-      spines_set_errno(SP_ERROR_INPUT_ERR);
-      return(-1);
+        Alarm(PRINT, "spines_socket(): Unknown socket type: %d\n", type);
+        spines_set_errno(SP_ERROR_INPUT_ERR);
+        return(-1);
     }
 
     link_prot    = protocol & RESERVED_LINKS_BITS;
     route_prot   = protocol & RESERVED_ROUTING_BITS;
     connect_flag = protocol & UDP_CONNECT;
+    session_prot = protocol & RESERVED_SESSION_BITS;
 
-    if (connect_flag && type != SOCK_DGRAM) {
-      Alarm(PRINT, "spines_socket(): Type (%d) must be SOCK_DGRAM if using UDP_CONNECT\r\n", type);
+    /* Check for valid client-specified protocol options */
+    if (type != SOCK_DGRAM && connect_flag == UDP_CONNECT) {
+        Alarm(PRINT, "spines_socket(): Type (%d) must be SOCK_DGRAM if using UDP_CONNECT\r\n", type);
+        spines_set_errno(SP_ERROR_INPUT_ERR);
+        return(-1);
+    }
+    if ((route_prot == IT_PRIORITY_ROUTING || route_prot == IT_RELIABLE_ROUTING) && 
+            link_prot != INTRUSION_TOL_LINKS)
+    { 
+        Alarm(PRINT, "spines_socket(): Invalid Link Protocol: %d.\r\nPlease use Intrusion-Tolerant "
+                    "Link protocol with Intrusion-Tolerant Dissemination methods\r\n", link_prot);
+        spines_set_errno(SP_ERROR_INPUT_ERR);
+        return(-1);
+    }
+    if (session_prot == RELIABLE_DGRAM_SESSION_WITH_BACKPRESSURE) {
+        Alarm(PRINT, "spines_socket(): Invalid session semantics: "
+                    "RELIABLE_DGRAM_SESSION_WITH_BACKPRESSURE.\r\nThis is experimental "
+                    "and is not currently available in the open source\r\n");
+        spines_set_errno(SP_ERROR_INPUT_ERR);
+        return(-1);
     }
 
-    spines_init(serv_addr);
-
-    t_now = E_get_time();
-    srand(t_now.sec + t_now.usec);
+    /* Call spines_init only the first time */
+    if (!init_flag) spines_init(serv_addr);
+    
     rnd_num = rand();
     udp_port = -1;
 
@@ -354,226 +460,184 @@ int  spines_socket(int domain, int type, int protocol,
     msg_type  = (int32*)(buf+sizeof(int32)+sizeof(udp_header));
     flag_var  = (int32*)(buf+sizeof(int32)+sizeof(udp_header)+sizeof(int32));
     route_var = (int32*)(buf+sizeof(int32)+sizeof(udp_header)+2*sizeof(int32));
-    rnd_var   = (int32*)(buf+sizeof(int32)+sizeof(udp_header)+3*sizeof(int32));
-    addr_var  = (int32*)(buf+sizeof(int32)+sizeof(udp_header)+4*sizeof(int32));
-    port_var  = (int32*)(buf+sizeof(int32)+sizeof(udp_header)+5*sizeof(int32));
+    sess_var  = (int32*)(buf+sizeof(int32)+sizeof(udp_header)+3*sizeof(int32));
+    rnd_var   = (int32*)(buf+sizeof(int32)+sizeof(udp_header)+4*sizeof(int32));
+    addr_var  = (int32*)(buf+sizeof(int32)+sizeof(udp_header)+5*sizeof(int32));
+    port_var  = (int32*)(buf+sizeof(int32)+sizeof(udp_header)+6*sizeof(int32));
 
-    /* lookup local machine address */
+    /* Setup sp_addr based on serv_addr parameter */
+    memset(&sp_addr, 0, sizeof(sp_addr));
 
-    gethostname(machine_name, sizeof(machine_name)); 
-    host_ptr = gethostbyname(machine_name);
-
-    if (host_ptr == NULL || host_ptr->h_addrtype != AF_INET || host_ptr->h_length != 4) {
-      Alarm(PRINT, "spines_socket(): could not get my default IPv4 interface (my name is '%s')\n", machine_name);
-      local_addr = 0;
-
-      if (type == SOCK_DGRAM && connect_flag == UDP_CONNECT) {
-        spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
-	return(-1);      
-      }
-
+    if (serv_addr == NULL) {
+        memcpy(&sp_addr, &Spines_Addr, sizeof(sp_addr));
+#ifndef ARCH_PC_WIN95
+    } else if (serv_addr->sa_family == AF_UNIX) {
+        memcpy(&sp_addr.unix_addr, (struct sockaddr_un *)serv_addr, sizeof(struct sockaddr_un));
+#endif
+    } else if (serv_addr->sa_family == AF_INET) {
+        memcpy(&sp_addr.inet_addr, (struct sockaddr_in *)serv_addr, sizeof(struct sockaddr_in));
+#ifdef IPV6_SUPPORT
+    } else if (serv_addr->sa_family == AF_INET6) {
+        Alarm(PRINT, "spines_socket ERROR: currently do not support AF_INET6\n");
+        spines_set_errno(SP_ERROR_INPUT_ERR);
+        return(-1);
+#endif
     } else {
-      memcpy(&local_addr, host_ptr->h_addr, sizeof(struct in_addr));
-      local_addr = ntohl(local_addr);
+        Alarm(PRINT, "spines_socket ERROR: unsupported family on this arch: %d\n", serv_addr->sa_family);
+        spines_set_errno(SP_ERROR_INPUT_ERR);
+        return(-1);
     }
 
-    /* lookup daemon address */
-
-    if (serv_addr != NULL) {
-	memcpy(&host, serv_addr, sizeof(struct sockaddr_in));
-    }
-    else {
-	memcpy(&host, &spines_addr, sizeof(struct sockaddr_in));
-    }
-
-    address = ntohl(host.sin_addr.s_addr);
-    port    = ntohs(host.sin_port);
-
-#if 0
-
-    /* check if daemon address is a local address: use unix IPC */
-
-    if (address == local_addr || address == ((127 << 24) | (0 << 16) | (0 << 8) | 1)) {
-
-      printf("HELLO WORLD: Using unix sockets!\n");
-
-      memset(&unix_ctrl_sk_addr, 0, sizeof(unix_ctrl_sk_addr));
-      memset(&unix_sk_addr,      0, sizeof(unix_sk_addr));
-
-      unix_ctrl_sk_addr.sun_family = AF_UNIX;
-      unix_sk_addr.sun_family      = AF_UNIX;
-
-      sprintf(unix_ctrl_sk_addr.sun_path, "%s/%hu", SPINES_UNIX_SOCKET_DIR, (unsigned short) (port + SESS_CTRL_PORT));
-      sprintf(unix_sk_addr.sun_path,      "%s/%hu", SPINES_UNIX_SOCKET_DIR, (unsigned short) (port + SESS_PORT));
-
-      ctrl_sk_addr = (struct sockaddr*) &unix_ctrl_sk_addr;
-      sk_addr      = (struct sockaddr*) &unix_sk_addr;
-
-      ctrl_sk_addr_len = sizeof(unix_ctrl_sk_addr);
-      sk_addr_len      = sizeof(unix_sk_addr);
-      
-      ctrl_sk = socket(AF_UNIX, SOCK_STREAM, 0);
-      sk      = socket(AF_UNIX, SOCK_STREAM, 0);
-
-      if (sk < 0 || ctrl_sk < 0) {
-	  Alarm( PRINT, "spines_socket: unable to create unix socket %d %d %d '%s'\n", sk, ctrl_sk, errno, strerror(errno));
-	  return(-1);
-      }
-
-    } else {  /* daemon is remote */
-
-#endif
-
-      memset(&ctrl_host, 0, sizeof(ctrl_host));
-      memset(&host, 0, sizeof(host));
-
-      ctrl_host.sin_family = AF_INET;
-      host.sin_family      = AF_INET;
-
-      ctrl_host.sin_port = htons((int16)(port + SESS_CTRL_PORT));
-      host.sin_port      = htons((int16)(port + SESS_PORT));
-
-      ctrl_host.sin_addr.s_addr = htonl( address );
-      host.sin_addr.s_addr = htonl( address );
-
-      ctrl_sk_addr  = (struct sockaddr*) &ctrl_host;
-      sk_addr       = (struct sockaddr*) &host;
-
-      ctrl_sk_addr_len = sizeof(ctrl_host);
-      sk_addr_len      = sizeof(host);
-
-      ctrl_sk = socket(AF_INET, SOCK_STREAM, 0);        
-      sk      = socket(AF_INET, SOCK_STREAM, 0);
-
-      ret  = setsockopt(sk,      IPPROTO_TCP, TCP_NODELAY, (val = 1, &val), sizeof(val));
-      ret += setsockopt(ctrl_sk, IPPROTO_TCP, TCP_NODELAY, (val = 1, &val), sizeof(val));
-      
-      if (sk < 0 || ctrl_sk < 0 || ret < 0) {
-	Alarm(PRINT, "spines_socket(): Failed to create and/or set socket option TCP_NODELAY\n");
-	close(sk);
-	close(ctrl_sk);
-	/* errno set by OS level call */
-	return(-1);
-      }
-
-#if 0
+#ifndef ARCH_PC_WIN95
+    if (sp_addr.family == AF_UNIX && connect_flag == UDP_CONNECT) {
+        Alarm(PRINT, "spines_socket(): Currently, UDP_CONNECT over AF_UNIX connection unsupported\r\n");
+        spines_set_errno(SP_ERROR_INPUT_ERR);
+        return(-1);
     }
 #endif
 
-    /* Increase the buffer on the socket used for sending and receiving Moon
-     * data. */
-    for(i=64; i <= 256; i+=8) {
-	val = 1024*i;
+    /* Setup sockaddr pointers to appropriate structs for connection */
+    switch (sp_addr.family) {
+#ifndef ARCH_PC_WIN95
+        case AF_UNIX:
+            memset(&unix_ctrl_addr, 0, sizeof(unix_ctrl_addr));
+            unix_ctrl_addr.sun_family = AF_UNIX;
+            /* Check room for length of "data" suffix and NULL byte */
+            s_len = sizeof(unix_addr.sun_path) - strlen(SPINES_UNIX_DATA_SUFFIX) - 1;
+            ret = snprintf(unix_ctrl_addr.sun_path, s_len, "%s", sp_addr.unix_addr.sun_path);
+            if (ret > s_len) {
+                Alarm(PRINT, "spines_socket(): Unix Pathname too long: len = %d, max allowed is %u\n",
+                                ret, s_len);
+                spines_set_errno(SP_ERROR_INPUT_ERR);
+                return(-1);
+            }
+            ctrl_sk_addr = (struct sockaddr *)&unix_ctrl_addr;
+            ctrl_sk_len = sizeof(unix_ctrl_addr);
+           
+            memset(&unix_addr, 0, sizeof(unix_addr));
+            memcpy(&unix_addr, &unix_ctrl_addr, sizeof(unix_addr));
+            /* Check room for NULL byte */
+            s_len = sizeof(unix_addr.sun_path) - 1;
+            ret = snprintf(unix_addr.sun_path, s_len, "%s%s", unix_ctrl_addr.sun_path, SPINES_UNIX_DATA_SUFFIX);
+            if (ret > s_len) {
+                Alarm(PRINT, "spines_socket(): Data suffix did not fit! total len = %d, max allowed is %u\n",
+                                ret, s_len);
+                spines_set_errno(SP_ERROR_INPUT_ERR);
+                return(-1);
+            }
+            sk_addr = (struct sockaddr *)&unix_addr;
+            sk_len = sizeof(unix_addr);
+            break;
+#endif
+        case AF_INET:
+            memset(&inet_ctrl_addr, 0, sizeof(inet_ctrl_addr));
+            memcpy(&inet_ctrl_addr, &sp_addr.inet_addr, sizeof(inet_ctrl_addr));
+            inet_ctrl_addr.sin_port = htons(ntohs(inet_ctrl_addr.sin_port) + SESS_CTRL_PORT);
+            ctrl_sk_addr = (struct sockaddr *)&inet_ctrl_addr;
+            ctrl_sk_len = sizeof(inet_ctrl_addr);
 
-	ret = setsockopt(sk, SOL_SOCKET, SO_SNDBUF, (void *)&val, sizeof(val));
-	if (ret < 0) break;
-
-	ret = setsockopt(sk, SOL_SOCKET, SO_RCVBUF, (void *)&val, sizeof(val));
-	if (ret < 0) break;
-
-	lenval = sizeof(val);
-	ret = getsockopt(sk, SOL_SOCKET, SO_SNDBUF, (void *)&val,  &lenval);
-	if(val < i*1024) break;
-	Alarm(DEBUG, "spines_socket: set sndbuf %d, ret is %d\n", val, ret);
-
-	lenval = sizeof(val);
-	ret= getsockopt(sk, SOL_SOCKET, SO_RCVBUF, (void *)&val, &lenval);
-	if(val < i*1024 ) break;
-	Alarm(DEBUG, "spines_socket: set rcvbuf %d, ret is %d\n", val, ret);
+            memset(&inet_addr, 0, sizeof(inet_addr));
+            memcpy(&inet_addr, &sp_addr.inet_addr, sizeof(inet_addr));
+            inet_addr.sin_port = htons(ntohs(inet_addr.sin_port) + SESS_PORT);
+            sk_addr = (struct sockaddr *)&inet_addr;
+            sk_len = sizeof(inet_addr);
+            break;
+        default:
+            Alarm(PRINT, "spines_socket: unsupported family: %d!\r\n", sp_addr.family);
+            spines_set_errno(SP_ERROR_INPUT_ERR);
+            return(-1);
     }
 
-    Alarm(DEBUG, "spines_socket: set sndbuf/rcvbuf to %d\n", 1024*(i-5));
+    ctrl_sk = socket(sp_addr.family, SOCK_STREAM, 0);
+    sk = socket(sp_addr.family, SOCK_STREAM, 0);
+    if (sk < 0 || ctrl_sk < 0) {
+        Alarm(PRINT, "spines_socket: unable to create socket %d %d %d '%s'\n", 
+                sk, ctrl_sk, errno, strerror(errno));
+        close(ctrl_sk);
+        close(sk);
+        spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
+        return(-1);
+    }
+
+    /* Increase buffer on the socket used for sending/receiving Spines data */
+    Set_large_socket_buffers(sk);
 
     u_sk = sk;
 
     /* Connect the control socket for receiving control information.
        Required for receiving control information without interfering 
        with the regular flow of data packets in the regular spines socket 
-       Never send any packet with this socket.  Only for receiving. */
-
+       Never send any packet with this socket.  Only for receiving.  Upon
+       connecting, receive from Spines daemon the control socket that the
+       session is using for this connection - needed for later */
     Alarm(PRINT, "spines_socket: Connecting!\r\n");
 
-    ret = connect(ctrl_sk, ctrl_sk_addr, ctrl_sk_addr_len);
+    ret = connect(ctrl_sk, ctrl_sk_addr, ctrl_sk_len);
 
-    if( ret < 0) {
-      Alarm(PRINT, "spines_socket(): Can not initiate ctrl connection to Spines!\r\n");
-      close(sk);
-      close(ctrl_sk);
-      spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
-      return(-1);
+    if(ret < 0) {
+        Alarm(PRINT, "spines_socket(): Can not initiate ctrl connection to Spines!\r\n");
+        close(sk);
+        close(ctrl_sk);
+        spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
+        return(-1);
     }
     recv_bytes = 0;
     while(recv_bytes < sizeof(int32)) {
-	ret = recv(ctrl_sk, ((char*)&s_ctrl_sk)+recv_bytes, sizeof(int32)-recv_bytes, 0);
-	if(ret <= 0) {
-	  Alarm(PRINT, "spines_socket(): Can not recv on control socket\r\n");
-	  close(sk);
-	  close(ctrl_sk);
-	  spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
-	  return(-1);	    
-	}
-	recv_bytes += ret;
+        ret = recv(ctrl_sk, ((char*)&s_ctrl_sk)+recv_bytes, sizeof(int32)-recv_bytes, 0);
+        if(ret <= 0) {
+	        Alarm(PRINT, "spines_socket(): Can not recv on control socket\r\n");
+            close(sk);
+	        close(ctrl_sk);
+            spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
+            return(-1);	    
+	    }
+	    recv_bytes += ret;
     }
 
     /* Create Spines socket, for sending/receiving data and sending control/commands */
+    ret = connect(sk, sk_addr, sk_len);
 
-    ret = connect(sk, sk_addr, sk_addr_len);
-
-    if( ret < 0) {
+    if(ret < 0) {
         Alarm(PRINT, "spines_socket(): Can not initiate connection to Spines!\r\n");
-	spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
-	return(-1);
-    }
-
-    if (type == SOCK_DGRAM && connect_flag == UDP_CONNECT) {
-      u_sk = socket(AF_INET, SOCK_DGRAM, 0);
-
-      if (u_sk < 0) {
-	Alarm(PRINT, "spines_socket(): Can not initiate socket...\n");
-	close(sk);
-	close(ctrl_sk);
         spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
-	return(-1);
-      }
-
-      /* Increase the buffer on the socket used for sending and receiving
-       * data. This code is similar to the code used to increase the size of
-       * the tcp socket. TODO APRIL 23, 2009 Verify that the buffer should be
-       * set this high. */
-      for(i=64; i <= 256; i+=8) {
-	  val = 1024*i;
-
-	  ret = setsockopt(u_sk, SOL_SOCKET, SO_SNDBUF, (void *)&val, sizeof(val));
-	  if (ret < 0) break;
-
-	  ret = setsockopt(u_sk, SOL_SOCKET, SO_RCVBUF, (void *)&val, sizeof(val));
-	  if (ret < 0) break;
-
-	  lenval = sizeof(val);
-	  ret = getsockopt(u_sk, SOL_SOCKET, SO_SNDBUF, (void *)&val,  &lenval);
-	  if(val < i*1024) break;
-	  Alarm(DEBUG, "spines_socket: set sndbuf %d, ret is %d\n", val, ret);
-
-	  lenval = sizeof(val);
-	  ret= getsockopt(u_sk, SOL_SOCKET, SO_RCVBUF, (void *)&val, &lenval);
-	  if(val < i*1024 ) break;
-	  Alarm(DEBUG, "spines_socket: set rcvbuf %d, ret is %d\n", val, ret);
-      }
-      Alarm(DEBUG, "spines_socket: set u_sk sndbuf/rcvbuf to %d\n", 1024*(i-5));
+        return(-1);
     }
 
+    /* If using UDP_CONNECT, create separate socket stored in u_sk and
+     * gethostbyname to use as the return address for UDP_CONNECT */
+    if (type == SOCK_DGRAM && connect_flag == UDP_CONNECT) {
+        u_sk = socket(AF_INET, SOCK_DGRAM, 0);
+
+        if (u_sk < 0) {
+            Alarm(PRINT, "spines_socket(): Can not initiate socket...\n");
+            close(sk);
+            close(ctrl_sk);
+            close(u_sk);
+            spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
+            return(-1);
+        }
+
+        /* Increase the buffer on the socket used for sending and receiving
+         * data. This code is similar to the code used to increase the size of
+         * the tcp socket. TODO APRIL 23, 2009 Verify that the buffer should be
+         * set this high. */
+        Set_large_socket_buffers(u_sk);
+    }
+
+    /* Connections are now complete, begin exchanging info with daemon */
     *flag_var = link_prot;
     *route_var = route_prot;
+    *sess_var = session_prot;
     *rnd_var = rnd_num;
-    if((type == SOCK_DGRAM)&&(connect_flag == UDP_CONNECT)) {
-        *addr_var = local_addr;
-	*port_var = udp_port;
+    if (type == SOCK_DGRAM && connect_flag == UDP_CONNECT) {
+        *addr_var = Local_Address;
+        *port_var = udp_port;
     }
     else {
-	*addr_var = -1;
-	*port_var = -1;
+        *addr_var = -1;
+        *port_var = -1;
     }
-    *total_len = (int32)(sizeof(udp_header) + 6*sizeof(int32));
+    *total_len = (int32)(sizeof(udp_header) + 7*sizeof(int32));
 
     u_hdr->source = 0;
     u_hdr->dest   = 0;
@@ -581,179 +645,162 @@ int  spines_socket(int domain, int type, int protocol,
 
     *msg_type = LINKS_TYPE_MSG;
 
-    /* Send the endianess */
+    /* (1) Send the endianess */
     endianess_type = Set_endian(0);
-
     tot_bytes = 0;
-    while(tot_bytes < sizeof(int32)) {
-	if ((ret = send(sk, ((char*)(&endianess_type))+tot_bytes, sizeof(int32)-tot_bytes, 0)) <= 0) {
-		break;
-	}
-	tot_bytes += ret;
+    while (tot_bytes < sizeof(int32)) {
+        if ((ret = send(sk, ((char*)(&endianess_type))+tot_bytes, sizeof(int32)-tot_bytes, 0)) <= 0)
+            break;
+	    tot_bytes += ret;
     }   
-    if(tot_bytes != sizeof(int32)) {
-	Alarm(PRINT, "spines_socket(1): Can not initiate connection to Spines...\n");
-	close(sk);
-	close(ctrl_sk);
-	if(type == SOCK_DGRAM) {
-	  close(u_sk);
-	}
-	spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
-	return(-1);
+    if (tot_bytes != sizeof(int32)) {
+        Alarm(PRINT, "spines_socket(1): Can not initiate connection to Spines...\n");
+        close(sk);
+        close(ctrl_sk);
+        if (type == SOCK_DGRAM && connect_flag == UDP_CONNECT)
+	        close(u_sk);
+        spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
+        return(-1);
     }
 
-    /* Send control channel received from spines daemon.  No endianess correction
+    /* (2) Send control channel received from spines daemon.  No endianess correction
        here as this is the data I received from Spines, and is of no use to me here */
     tot_bytes = 0;
-    while(tot_bytes < sizeof(int32)) {
-	if ((ret = send(sk, ((char*)(&s_ctrl_sk))+tot_bytes, sizeof(int32)-tot_bytes, 0)) <= 0) {
-		break;
-	}
-	tot_bytes += ret;
+    while (tot_bytes < sizeof(int32)) {
+        if ((ret = send(sk, ((char*)(&s_ctrl_sk))+tot_bytes, sizeof(int32)-tot_bytes, 0)) <= 0)
+            break;
+        tot_bytes += ret;
     }   
-
-    if(tot_bytes != sizeof(int32)) {
-	Alarm(PRINT, "spines_socket(1A): Can not initiate connection to Spines...\n");
-	close(sk);
-	close(ctrl_sk);
-	if(type == SOCK_DGRAM) {
-	    close(u_sk);
-	}
-	spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
-	return(-1);
+    if (tot_bytes != sizeof(int32)) {
+        Alarm(PRINT, "spines_socket(2): Can not initiate connection to Spines...\n");
+        close(sk);
+        close(ctrl_sk);
+        if (type == SOCK_DGRAM && connect_flag == UDP_CONNECT)
+            close(u_sk);
+	    spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
+	    return(-1);
     }
 
-    /* Send the first packet */
+    /* (3) Send the first packet */
     tot_bytes = 0;
-    while(tot_bytes < *total_len+sizeof(int32)) {
-	if ((ret = send(sk, buf+tot_bytes, *total_len+sizeof(int32)-tot_bytes, 0)) <= 0) {
-		break;
-	}
-	tot_bytes += ret;
+    while (tot_bytes < *total_len+sizeof(int32)) {
+        if ((ret = send(sk, buf+tot_bytes, *total_len+sizeof(int32)-tot_bytes, 0)) <= 0)
+	    break;
+	    tot_bytes += ret;
     }   
-
-    if(tot_bytes != sizeof(udp_header)+sizeof(int32)+6*sizeof(int32)) {
-	Alarm(PRINT, "spines_socket(2): Can not initiate connection to Spines...\n");
-	close(sk);
-	close(ctrl_sk);
-	if(type == SOCK_DGRAM) {
-	    close(u_sk);
-	}
-	spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
-	return(-1);
+    if (tot_bytes != sizeof(udp_header)+sizeof(int32)+7*sizeof(int32)) {
+        Alarm(PRINT, "spines_socket(3): Can not initiate connection to Spines...\n");
+        close(sk);
+        close(ctrl_sk);
+        if (type == SOCK_DGRAM && connect_flag == UDP_CONNECT)
+            close(u_sk);
+	    spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
+	    return(-1);
     }
 
-    /* Get the endianess */
+    /* (4) Receive the endianess */
     recv_bytes = 0;
-    while(recv_bytes < sizeof(int32)) {
+    while (recv_bytes < sizeof(int32)) {
 	ret = recv(sk, ((char*)&endianess_type)+recv_bytes, sizeof(int32)-recv_bytes, 0);
-	if(ret <= 0) {
-	    Alarm(PRINT, "spines_socket(3): Can not initiate connection to Spines...\n");
+	if (ret <= 0) {
+	    Alarm(PRINT, "spines_socket(4): Can not initiate connection to Spines...\n");
 	    close(sk);
 	    close(ctrl_sk);
-	    if(type == SOCK_DGRAM) {
-		close(u_sk);
-	    }
-	    spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
-	    return(-1);	    
+	    if(type == SOCK_DGRAM && connect_flag == UDP_CONNECT)
+	        close(u_sk);
+	        spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
+	        return(-1);	    
 	}
 	recv_bytes += ret;
     }
 
     /* Create the client */
     stdmutex_grab(&data_mutex); {
-      for(client=0; client<MAX_APP_CLIENTS; client++) {
-	if(all_clients[client].udp_sk == -1) {
-	  break;
-	}
-      }
+        for (client=0; client<MAX_APP_CLIENTS; client++) {
+	        if (all_clients[client].udp_sk == -1)
+	            break;
+        }
 
-      if(client == MAX_APP_CLIENTS) {
-	Alarm(PRINT, "spines_socket(): Too many open sockets\n");
-	stdmutex_drop(&data_mutex);
-	close(sk);
-	close(ctrl_sk);
-	if(type == SOCK_DGRAM) {
-	  close(u_sk);
-	}
-	spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
-	return(-1);
-      }
+        if(client == MAX_APP_CLIENTS) {
+	        Alarm(PRINT, "spines_socket(): Too many open sockets\n");
+	        stdmutex_drop(&data_mutex);
+	        close(sk);
+	        close(ctrl_sk);
+	        if (type == SOCK_DGRAM && connect_flag == UDP_CONNECT)
+	            close(u_sk);
+	        spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
+	        return(-1);
+        }
       
-      if(client == Max_Client) {
-	Max_Client++;
-      }
+        if(client == Max_Client)
+	        Max_Client++;
 
-      all_clients[client].type = 0;
-      all_clients[client].connect_flag = 0;
-      all_clients[client].endianess_type = endianess_type;
-      all_clients[client].tcp_sk = sk;
-      all_clients[client].udp_sk = sk;
-
+        all_clients[client].type = 0;
+        all_clients[client].connect_flag = 0;
+        all_clients[client].endianess_type = endianess_type;
+        all_clients[client].tcp_sk = sk;
+        all_clients[client].udp_sk = sk;
     } stdmutex_drop(&data_mutex);
 
-    /* Get the session ID */
+    /* Get the session ID, virtual local port, and virtual addr */
     ret = spines_recvfrom(sk, buf, sizeof(buf), 1, NULL, NULL);
-
     if(ret <= 0) {
-	close(sk);
-	close(ctrl_sk);
-	if(type == SOCK_DGRAM) {
-	    close(u_sk);
-	}
-	spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
-	return(-1);
+	    close(sk);
+	    close(ctrl_sk);
+	    if(type == SOCK_DGRAM && connect_flag == UDP_CONNECT)
+	        close(u_sk);
+	    spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
+	    return(-1);
     }
     sess_id = *((int*)buf);
     v_local_port = *(int*)(buf + sizeof(sess_id));
-
+    v_addr = *(int*)(buf + sizeof(sess_id) + sizeof(v_local_port));
 
     /* Update the client */
     stdmutex_grab(&data_mutex); {
-      if(type == SOCK_DGRAM) {
-	all_clients[client].udp_sk              = u_sk;
-	all_clients[client].my_addr             = local_addr;
-	all_clients[client].my_port             = udp_port;
-	all_clients[client].connect_flag        = connect_flag;
-      }    
-      else {
-	all_clients[client].udp_sk              = sk;
-	all_clients[client].connect_flag        = 0;	
-      }
-      all_clients[client].type                  = type;
-      all_clients[client].rnd_num               = rnd_num;
-      all_clients[client].sess_id               = sess_id;
-      all_clients[client].srv_addr              = address;
-      all_clients[client].srv_port              = port;
-      all_clients[client].protocol              = protocol;
-      all_clients[client].connect_addr          = -1;
-      all_clients[client].connect_port          = -1;   
-      all_clients[client].virtual_local_port    = v_local_port;
-      all_clients[client].ip_ttl                = SPINES_TTL_MAX;
-      all_clients[client].mcast_ttl             = SPINES_TTL_MAX;
-      all_clients[client].routing               = ((protocol & RESERVED_ROUTING_BITS) >> ROUTING_BITS_SHIFT);
+        if(type == SOCK_DGRAM && connect_flag == UDP_CONNECT) {
+            all_clients[client].udp_sk         = u_sk;
+            all_clients[client].my_addr        = Local_Address;
+            all_clients[client].my_port        = udp_port;
+            all_clients[client].connect_flag   = connect_flag;
+        } else {
+	        all_clients[client].udp_sk         = sk;
+	        all_clients[client].connect_flag   = 0;	
+        }
+        all_clients[client].type               = type;
+        all_clients[client].rnd_num            = rnd_num;
+        all_clients[client].sess_id            = sess_id;
 
+        memcpy(&all_clients[client].addr_storage, &sp_addr, sizeof(sp_addr));
+        all_clients[client].srv_addr = (struct sockaddr*)(&all_clients[client].addr_storage);
+
+        all_clients[client].protocol           = protocol;
+        all_clients[client].connect_addr       = -1;
+        all_clients[client].connect_port       = -1;   
+        all_clients[client].virtual_local_port = v_local_port;
+        all_clients[client].virtual_addr       = v_addr;
+        all_clients[client].ip_ttl             = SPINES_TTL_MAX;
+        all_clients[client].mcast_ttl          = SPINES_TTL_MAX;
+        all_clients[client].routing            = ((protocol & RESERVED_ROUTING_BITS) >> ROUTING_BITS_SHIFT);
+        all_clients[client].session_semantics  = session_prot;
     } stdmutex_drop(&data_mutex);
 
+    if (type == SOCK_DGRAM && connect_flag == UDP_CONNECT && sp_addr.family == AF_INET) {
+        if (Control_sk[u_sk%MAX_CTRL_SOCKETS] != 0)
+	        Alarm(EXIT, "spines_socket(): not enough control sockets");
+        Control_sk[u_sk%MAX_CTRL_SOCKETS] = ctrl_sk;
 
-     if((type == SOCK_DGRAM)&&(connect_flag == UDP_CONNECT)) {
-      if (Control_sk[u_sk%MAX_CTRL_SOCKETS] != 0) {
-	Alarm(EXIT, "spines_socket(): not enough control sockets");
-      }
-      Control_sk[u_sk%MAX_CTRL_SOCKETS] = ctrl_sk;
+        /* Send udp packet to initialize the return address */
+        Send_Initial_UDP_Packet_To_Server(u_sk, all_clients[client].srv_addr,
+                all_clients[client].my_addr, all_clients[client].my_port,
+                sess_id, rnd_num );
 
-      /* Send udp packet to initialize the return address */
-      Send_Initial_UDP_Packet_To_Server(u_sk, address, port,
-	  all_clients[client].my_addr, all_clients[client].my_port,
-	  sess_id, rnd_num );
-
-      return(u_sk);
+        return(u_sk);
     } else {
-      if (Control_sk[sk%MAX_CTRL_SOCKETS] != 0) {
-	Alarm(EXIT, "spines_socket(): not enough control sockets");
-      }
-      Control_sk[sk%MAX_CTRL_SOCKETS] = ctrl_sk;
-      return(sk);
+        if (Control_sk[sk%MAX_CTRL_SOCKETS] != 0)
+	        Alarm(EXIT, "spines_socket(): not enough control sockets");
+        Control_sk[sk%MAX_CTRL_SOCKETS] = ctrl_sk;
+        return(sk);
     }
 }
 
@@ -778,21 +825,20 @@ void spines_close(int s)
 {
     int client, type, tcp_sk, connect_flag;
 
-
     stdmutex_grab(&data_mutex); {
 
-      client = spines_get_client(s);
-      if(client == -1) {
-	stdmutex_drop(&data_mutex);
-	return;
-      }
-      type = all_clients[client].type;
-      tcp_sk = all_clients[client].tcp_sk;
-      connect_flag = all_clients[client].connect_flag;
-      all_clients[client].udp_sk = -1;
-      if(client == Max_Client-1) {
-	Max_Client--;
-      }
+        client = spines_get_client(s);
+        if(client == -1) {
+            stdmutex_drop(&data_mutex);
+	        return;
+        }
+        type = all_clients[client].type;
+        tcp_sk = all_clients[client].tcp_sk;
+        connect_flag = all_clients[client].connect_flag;
+        all_clients[client].udp_sk = -1;
+        if(client == Max_Client-1) {
+	        Max_Client--;
+        }
 
     } stdmutex_drop(&data_mutex);
 
@@ -834,14 +880,14 @@ void spines_shutdown(int s)
 
     stdmutex_grab(&data_mutex); {
 
-      client = spines_get_client(s);
-      if(client == -1) {
-	stdmutex_drop(&data_mutex);
-	return;
-      }
-      type = all_clients[client].type;
-      tcp_sk = all_clients[client].tcp_sk;
-      connect_flag = all_clients[client].connect_flag;
+        client = spines_get_client(s);
+        if(client == -1) {
+	        stdmutex_drop(&data_mutex);
+	        return;
+        }
+        type = all_clients[client].type;
+        tcp_sk = all_clients[client].tcp_sk;
+        connect_flag = all_clients[client].connect_flag;
 
     } stdmutex_drop(&data_mutex);
 
@@ -912,23 +958,24 @@ int spines_sendto_internal(int s, const void *msg, size_t len,
     udp_header *hdr;
     int client, type, tcp_sk, my_addr, my_port, srv_addr, srv_port, connect_flag;
     int tot_bytes;
+    struct sockaddr_in *inet_ptr;
 
     address = ntohl(((struct sockaddr_in*)to)->sin_addr.s_addr);
     port = ntohs(((struct sockaddr_in*)to)->sin_port);
     ret = 0;
 
     if(port == 0) {
-	Alarm(PRINT, "spines_sendto(): cannot send to port 0\n");
-	spines_set_errno(SP_ERROR_INPUT_ERR);
-	return(-1);
+	    Alarm(PRINT, "spines_sendto(): cannot send to port 0\n");
+	    spines_set_errno(SP_ERROR_INPUT_ERR);
+	    return(-1);
     }
 
     stdmutex_grab(&data_mutex); {
 
       client = spines_get_client(s);
       if(client == -1) {
-	stdmutex_drop(&data_mutex);
-	return(-1);
+        stdmutex_drop(&data_mutex);
+	    return(-1);
       }
 
       type         = all_clients[client].type;
@@ -937,28 +984,28 @@ int spines_sendto_internal(int s, const void *msg, size_t len,
       rnd_num      = all_clients[client].rnd_num;
       my_addr      = all_clients[client].my_addr;
       my_port      = all_clients[client].my_port;
-      srv_addr     = all_clients[client].srv_addr;
-      srv_port     = all_clients[client].srv_port;
       connect_flag = all_clients[client].connect_flag;
       l_ip_ttl     = all_clients[client].ip_ttl;
       l_mcast_ttl  = all_clients[client].mcast_ttl;
       routing      = all_clients[client].routing;
-
+         
+      inet_ptr     = (struct sockaddr_in *)all_clients[client].srv_addr;
     }stdmutex_drop(&data_mutex);
 
     if((type == SOCK_STREAM)&&(force_tcp != 1)) {
-      return(spines_send(tcp_sk, msg, len, flags));
+        return(spines_send(tcp_sk, msg, len, flags));
     }
 
     if((force_tcp == 1)||(connect_flag != UDP_CONNECT)) {
-	/*Force TCP*/
-	total_len = (int32*)(pkt);
-	hdr = (udp_header*)(pkt+sizeof(int32));
+
+	    /*Force TCP*/
+	    total_len = (int32*)(pkt);
+	    hdr = (udp_header*)(pkt+sizeof(int32));
 	
-	hdr->source    = 0;
-	hdr->dest      = (int32)address;
-	hdr->dest_port = port;
-	hdr->len       = len;
+	    hdr->source    = 0;
+	    hdr->dest      = (int32)address;
+	    hdr->dest_port = port;
+	    hdr->len       = len;
 
         /* set the TTL of the packet */
         if(!Is_mcast_addr(hdr->dest) && !Is_acast_addr(hdr->dest)) { 
@@ -969,38 +1016,47 @@ int spines_sendto_internal(int s, const void *msg, size_t len,
             hdr->ttl = l_mcast_ttl;
         }
 
-	hdr->routing = routing;
+	    hdr->routing = routing;
 
-	*total_len = len + sizeof(udp_header);
-	ret = send(tcp_sk, pkt, 
-		   sizeof(int32)+sizeof(udp_header), 0); 
-	if(ret != sizeof(int32)+sizeof(udp_header)) {
-	  Alarm(PRINT, "spines_sendto(): error sending header: %d\n", ret);
-	  spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
-	  return(-1);
-	}
-	    
-	tot_bytes = 0;
-	while(tot_bytes < len) {
-	    if ((ret = send(tcp_sk, (char*)msg + tot_bytes, len - tot_bytes, 0)) <= 0) {
-		break;
+	    *total_len = len + sizeof(udp_header);
+	    ret = send(tcp_sk, pkt, 
+		    sizeof(int32)+sizeof(udp_header), 0); 
+	    if(ret != sizeof(int32)+sizeof(udp_header)) {
+	        Alarm(PRINT, "spines_sendto(): error sending header: %d\n", ret);
+	        spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
+	        return(-1);
 	    }
-	    tot_bytes += ret;
-	}
-	if(tot_bytes != len) {
-	    Alarm(PRINT, "spines_sendto(): error sending: %d\n", ret);	
-	    spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
-	    return(-1);
-	}
-	return(len);
+	    
+	    tot_bytes = 0;
+	    while(tot_bytes < len) {
+	        if ((ret = send(tcp_sk, (char*)msg + tot_bytes, len - tot_bytes, 0)) <= 0) {
+		        break;
+	        }
+	        tot_bytes += ret;
+	    }
+	    if(tot_bytes != len) {
+	        Alarm(PRINT, "spines_sendto(): error sending: %d\n", ret);	
+	        spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
+	        return(-1);
+	    }
+
+        /* SESSION_SEMANTICS - possibly block on recv feedbackfor session_flag here */
+	    return(len);
     }
     else {
-	/* Use UDP communication */
-	u_hdr.source      = my_addr;
-	u_hdr.source_port = my_port;    
-	u_hdr.dest        = (int32)address;
-	u_hdr.dest_port   = port;
-	u_hdr.len         = len;
+	    /* Use UDP communication */
+	    u_hdr.source      = my_addr;
+	    u_hdr.source_port = my_port;    
+	    u_hdr.dest        = (int32)address;
+	    u_hdr.dest_port   = port;
+	    u_hdr.len         = len;
+
+        if (inet_ptr->sin_family != AF_INET) {
+            Alarm(PRINT, "spines_sendto(): cannot send UDP DGRAM using non AF_INET sockaddr\n");
+            return(-1);
+        }
+        srv_addr     = ntohl(inet_ptr->sin_addr.s_addr);
+        srv_port     = ntohs(inet_ptr->sin_port);
 
         /* set the TTL of the packet */
         if(!Is_mcast_addr(u_hdr.dest) && !Is_acast_addr(u_hdr.dest)) { 
@@ -1011,28 +1067,28 @@ int spines_sendto_internal(int s, const void *msg, size_t len,
             u_hdr.ttl = l_mcast_ttl;
         }
 
-	u_hdr.routing = routing;
+	    u_hdr.routing = routing;
 
-	scat.num_elements = 4;
-	scat.elements[0].len = sizeof(int);
-	scat.elements[0].buf = (char*)&sess_id;
-	scat.elements[1].len = sizeof(int);
-	scat.elements[1].buf = (char*)&rnd_num;
-	scat.elements[2].len = sizeof(udp_header);
-	scat.elements[2].buf = (char*)&u_hdr;
-	scat.elements[3].len = len;
-	scat.elements[3].buf = (char*)msg;
-	ret = DL_send(s, srv_addr, srv_port+SESS_UDP_PORT, &scat);
-	if(ret != 2*sizeof(int32)+sizeof(udp_header)+len) {
-	  Alarm(PRINT, "spines_sendto(): error sending: %d != %d\n", ret, 2*sizeof(int32)+sizeof(udp_header)+len);	
-	  spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
-	  return(-1);
-	}
-	return(len);
+	    scat.num_elements = 4;
+	    scat.elements[0].len = sizeof(int);
+	    scat.elements[0].buf = (char*)&sess_id;
+	    scat.elements[1].len = sizeof(int);
+	    scat.elements[1].buf = (char*)&rnd_num;
+	    scat.elements[2].len = sizeof(udp_header);
+	    scat.elements[2].buf = (char*)&u_hdr;
+	    scat.elements[3].len = len;
+	    scat.elements[3].buf = (char*)msg;
+	    ret = DL_send(s, srv_addr, srv_port+SESS_UDP_PORT, &scat);
+	    if(ret != 2*sizeof(int32)+sizeof(udp_header)+len) {
+	        Alarm(PRINT, "spines_sendto(): error sending: %d != %d\n", 
+                    ret, 2*sizeof(int32)+sizeof(udp_header)+len);	
+	        spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
+	        return(-1);
+	    }
+        /* SESSION_SEMANTICS - possibly block on recv feedbackfor session_flag here */
+	    return(len);
     }
 }
-
-
 
 
 
@@ -1101,16 +1157,18 @@ int  spines_recvfrom_internal(int s, void *buf, size_t len, int flags,
 
       client = spines_get_client(s);
       if(client != -1) {
-	type = all_clients[client].type;
-	connect_flag = all_clients[client].connect_flag;
-	endianess_type = all_clients[client].endianess_type;
+        type = all_clients[client].type;
+        connect_flag = all_clients[client].connect_flag;
+        endianess_type = all_clients[client].endianess_type;
       }
     
     } stdmutex_drop(&data_mutex);
 
     if((connect_flag == UDP_CONNECT)&&(force_tcp != 1)) {
-      /* USe UDP communication */
-      
+      /* Use UDP communication */
+     
+      Alarm(DEBUG, "Using UDP recvfrom\n");
+
       scat.num_elements = 3;
       scat.elements[0].len = sizeof(int32);
       scat.elements[0].buf = (char*)&msg_len;
@@ -1160,6 +1218,8 @@ int  spines_recvfrom_internal(int s, void *buf, size_t len, int flags,
 	    return(spines_recv(s, buf, len, flags));
 	}
 	
+        Alarm(DEBUG, "Using Force TCP recvfrom\n");
+
 	pkt_len = (int32*)(pkt);
 	hdr = (udp_header*)(pkt+sizeof(int32));
 
@@ -1278,10 +1338,10 @@ int spines_bind(int sockfd, struct sockaddr *my_addr,
 
       client = spines_get_client(sockfd);
       if(client == -1) {
-	stdmutex_drop(&data_mutex);
-	spines_set_errno(SP_ERROR_INPUT_ERR);
-	Alarm(PRINT, "spines_bind(): spines socket not valid \n");
-	return(-1);
+	    stdmutex_drop(&data_mutex);
+	    spines_set_errno(SP_ERROR_INPUT_ERR);
+	    Alarm(PRINT, "spines_bind(): spines socket not valid \n");
+	    return(-1);
       }
       my_type = all_clients[client].type;
       tcp_sk = all_clients[client].tcp_sk;
@@ -1290,9 +1350,9 @@ int spines_bind(int sockfd, struct sockaddr *my_addr,
     } stdmutex_drop(&data_mutex);
 
     if(addrlen < sizeof(struct sockaddr_in)) {
-	Alarm(PRINT, "spines_bind(): invalid address\n");
-	spines_set_errno(SP_ERROR_INPUT_ERR);
-	return(-1);	
+	    Alarm(PRINT, "spines_bind(): invalid address\n");
+	    spines_set_errno(SP_ERROR_INPUT_ERR);
+	    return(-1);	
     }
     port = ntohs(((struct sockaddr_in*)my_addr)->sin_port);
 
@@ -1302,10 +1362,10 @@ int spines_bind(int sockfd, struct sockaddr *my_addr,
     }
 
     if(my_type == SOCK_STREAM) {
-	sk = sockfd;
+	    sk = sockfd;
     }
     else {
-	sk = tcp_sk;
+	    sk = tcp_sk;
     }
 
     total_len = (int32*)(pkt);
@@ -1657,7 +1717,7 @@ int  spines_connect(int sockfd, const struct sockaddr *serv_addr,
     if(addrlen < sizeof(struct sockaddr_in)) {
         Alarm(PRINT, "spines_connect(): buffer too small\r\n");
         spines_set_errno(SP_ERROR_INPUT_ERR);
-	return(-1);
+	    return(-1);
     }
 
     address = ntohl(((struct sockaddr_in*)serv_addr)->sin_addr.s_addr);
@@ -1666,18 +1726,18 @@ int  spines_connect(int sockfd, const struct sockaddr *serv_addr,
     stdmutex_grab(&data_mutex); {
       client = spines_get_client(sockfd);
       if(client == -1) {
-	stdmutex_drop(&data_mutex);
-	Alarm(PRINT, "spines_connect(): unknown spines socket\r\n");
-	spines_set_errno(SP_ERROR_INPUT_ERR);
-	return(-1);
+	    stdmutex_drop(&data_mutex);
+	    Alarm(PRINT, "spines_connect(): unknown spines socket\r\n");
+	    spines_set_errno(SP_ERROR_INPUT_ERR);
+	    return(-1);
       }
 
       my_type = all_clients[client].type;
       if(my_type == SOCK_DGRAM) {
-	all_clients[client].connect_addr = address;
-	all_clients[client].connect_port = port;
-	stdmutex_drop(&data_mutex);
-	return(0);
+	    all_clients[client].connect_addr = address;
+	    all_clients[client].connect_port = port;
+	    stdmutex_drop(&data_mutex);
+	    return(0);
       }
     } stdmutex_drop(&data_mutex);
 
@@ -1705,23 +1765,22 @@ int  spines_connect(int sockfd, const struct sockaddr *serv_addr,
     if(ret != 2*sizeof(udp_header)+2*sizeof(int32)) {
         Alarm(PRINT, "spines_connect(): send did not send full data amount\n");
         spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
-	return(-1);
+	    return(-1);
     }
 
     /*    ret = spines_recvfrom_internal(sockfd, buf, sizeof(buf), 0, NULL, NULL, 1);*/
 
     recv_bytes = 0;
     while(recv_bytes < sizeof(ses_hello_packet)) {
-	ret = spines_recv(sockfd, buf, sizeof(ses_hello_packet) - recv_bytes, 0); 
-	if(ret <= 0) {
+	    ret = spines_recv(sockfd, buf, sizeof(ses_hello_packet) - recv_bytes, 0); 
+	    if(ret <= 0) {
             Alarm(PRINT, "spines_connect(): recv did not get full data amount\n");
             spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
             return(-1);
-	}
-	recv_bytes += ret;
+	    }
+	    recv_bytes += ret;
     }
 
-    
     return(0);
 }
 
@@ -1759,38 +1818,36 @@ int  spines_send(int s, const void *msg, size_t len, int flags)
     int client, type, connect_addr, connect_port;
     unsigned char l_ip_ttl, l_mcast_ttl, routing;
 
-
     stdmutex_grab(&data_mutex); {
 
-      client = spines_get_client(s);
-      if(client == -1) {
-	stdmutex_drop(&data_mutex);
-	Alarm(PRINT, "spines_send(): unknown spines socket\r\n");
-	spines_set_errno(SP_ERROR_INPUT_ERR);
-	return(-1);
-      }
-      type         = all_clients[client].type;
-      connect_addr = all_clients[client].connect_addr;
-      connect_port = all_clients[client].connect_port;    
-      l_ip_ttl     = all_clients[client].ip_ttl;
-      l_mcast_ttl  = all_clients[client].mcast_ttl;
-      routing      = all_clients[client].routing;
+        client = spines_get_client(s);
+        if(client == -1) {
+	        stdmutex_drop(&data_mutex);
+	        Alarm(PRINT, "spines_send(): unknown spines socket\r\n");
+	        spines_set_errno(SP_ERROR_INPUT_ERR);
+	        return(-1);
+        }
+        type         = all_clients[client].type;
+        connect_addr = all_clients[client].connect_addr;
+        connect_port = all_clients[client].connect_port;    
+        l_ip_ttl     = all_clients[client].ip_ttl;
+        l_mcast_ttl  = all_clients[client].mcast_ttl;
+        routing      = all_clients[client].routing;
 
     } stdmutex_drop(&data_mutex);
 
     if(type == SOCK_DGRAM) {
-	if(connect_port == -1) {
-	  Alarm(PRINT, "DGRAM socket not connected\n");
-	  spines_set_errno(SP_ERROR_INPUT_ERR);
-	  return(-1);
-	}
-	host.sin_family = AF_INET;
-	host.sin_addr.s_addr = htonl(connect_addr);
-	host.sin_port   = htons(connect_port);
-	return(spines_sendto(s, msg, len, flags, 
+	    if(connect_port == -1) {
+	        Alarm(PRINT, "DGRAM socket not connected\n");
+	        spines_set_errno(SP_ERROR_INPUT_ERR);
+	        return(-1);
+	    }
+	    host.sin_family = AF_INET;
+	    host.sin_addr.s_addr = htonl(connect_addr);
+	    host.sin_port   = htons(connect_port);
+	    return(spines_sendto(s, msg, len, flags, 
 			     (struct sockaddr*)&host, sizeof(struct sockaddr)));
     }
-
 
     /* Check for maximum length */
     /*   */    
@@ -1799,7 +1856,6 @@ int  spines_send(int s, const void *msg, size_t len, int flags)
     total_len = (int32*)(pkt);
     u_hdr = (udp_header*)(pkt+sizeof(int32));
     r_add = (rel_udp_pkt_add*)(pkt+sizeof(int32)+sizeof(udp_header));
-
 
     *total_len = len + sizeof(udp_header) + sizeof(rel_udp_pkt_add);
      
@@ -1810,9 +1866,9 @@ int  spines_send(int s, const void *msg, size_t len, int flags)
 
     /* set the TTL of the packet */
     if(!Is_mcast_addr(u_hdr->dest) && !Is_acast_addr(u_hdr->dest)) { /* This is unicast */
-      u_hdr->ttl = l_ip_ttl;
+        u_hdr->ttl = l_ip_ttl;
     } else { /* This is a multicast */
-      u_hdr->ttl = l_mcast_ttl;
+        u_hdr->ttl = l_mcast_ttl;
     }
 
     u_hdr->routing = routing;
@@ -1825,17 +1881,17 @@ int  spines_send(int s, const void *msg, size_t len, int flags)
     if(ret != sizeof(udp_header)+sizeof(rel_udp_pkt_add)+sizeof(int32)) {
         Alarm(PRINT, "spines_send(): send did not send full data amount\n");
         spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
-	return(-1);
+	    return(-1);
     }
     
     ret = send(s, msg, len, 0);
     if(ret != len) {
         Alarm(PRINT, "spines_send(): send did not send full data amount\n");
         spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
-	return(-1);
+	    return(-1);
     }
-
     
+    /* SESSION_SEMANTICS - possibly block on recv feedbackfor session_flag here */
     return(ret);
 }
 
@@ -1866,6 +1922,8 @@ int  spines_recv(int s, void *buf, size_t len, int flags)
 {
     int received_bytes;
     int client, type;
+
+    Alarm(DEBUG, "Using spines_recv\n");
 
     stdmutex_grab(&data_mutex); {
 
@@ -2001,33 +2059,32 @@ int  spines_accept(int s, struct sockaddr *addr, socklen_t *addrlen)
     int32 addrtmp, porttmp;
     int ret, data_size, recv_bytes;
     int new_sk;
-    struct sockaddr_in old_addr, otherside_addr;
+    struct sockaddr* old_addr;
+    struct sockaddr_in otherside_addr;
     int client, my_type, protocol;
     socklen_t lenaddr;
 
 
     stdmutex_grab(&data_mutex); {
 
-      client = spines_get_client(s);
-      if(client == -1) {
-	stdmutex_drop(&data_mutex);
-	Alarm(PRINT, "spines_accept(): unknown spines socket\n");
-	spines_set_errno(SP_ERROR_INPUT_ERR);
-	return(-1);
-      }
-      my_type = all_clients[client].type;
-      protocol = all_clients[client].protocol;
-      old_addr.sin_addr.s_addr = htonl(all_clients[client].srv_addr);
-      old_addr.sin_port = htons(all_clients[client].srv_port);
+        client = spines_get_client(s);
+        if(client == -1) {
+	        stdmutex_drop(&data_mutex);
+	        Alarm(PRINT, "spines_accept(): unknown spines socket\n");
+	        spines_set_errno(SP_ERROR_INPUT_ERR);
+	        return(-1);
+        }
+        my_type = all_clients[client].type;
+        protocol = all_clients[client].protocol;
+        old_addr = all_clients[client].srv_addr;
 
     } stdmutex_drop(&data_mutex);
 
     if(my_type == SOCK_DGRAM) {
-      Alarm(PRINT, "DATAGRAM socket. spines_accept() not supported\n");
-      spines_set_errno(SP_ERROR_INPUT_ERR);
-      return(-1);
+        Alarm(PRINT, "DATAGRAM socket. spines_accept() not supported\n");
+        spines_set_errno(SP_ERROR_INPUT_ERR);
+        return(-1);
     }
-
 
     total_len = (int32*)(pkt);
     u_hdr = (udp_header*)(pkt+sizeof(int32));
@@ -2041,18 +2098,16 @@ int  spines_accept(int s, struct sockaddr *addr, socklen_t *addrlen)
 				   (struct sockaddr*)(&otherside_addr), 
 				   &lenaddr, 1, NULL );
 
-
-
     if(ret <= 0) {
         /* errno and print out should have occured in the internal fcn() */
-	return(-1);
+	    return(-1);
     }    
     data_size = ret;
     
     addrtmp = ntohl(otherside_addr.sin_addr.s_addr);
     porttmp = ntohs(otherside_addr.sin_port);
 
-    new_sk = spines_socket(PF_SPINES, my_type, protocol, (struct sockaddr*)(&old_addr));
+    new_sk = spines_socket(PF_SPINES, my_type, protocol, old_addr);
 
     if(new_sk < 0) { 
         /* errno and print out should have occured in the internal fcn() */
@@ -2075,42 +2130,41 @@ int  spines_accept(int s, struct sockaddr *addr, socklen_t *addrlen)
     ret = send(new_sk, pkt, *total_len+sizeof(int32), 0);
     
     if(ret != 2*sizeof(udp_header)+2*sizeof(int32)+data_size) {
-	spines_close(new_sk);
-	spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
-	return(-1);
+	    spines_close(new_sk);
+	    spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
+	    return(-1);
     }
         
-    
     recv_bytes = 0;
     while(recv_bytes < sizeof(ses_hello_packet)) {
-	ret = spines_recv(new_sk, buf, sizeof(ses_hello_packet) - recv_bytes, 0); 
-	if(ret <= 0) {
+	    ret = spines_recv(new_sk, buf, sizeof(ses_hello_packet) - recv_bytes, 0); 
+	    if(ret <= 0) {
             Alarm(PRINT, "spines_accept(): communication error with spines daemon\n");
             spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
-	    return(-1);
+	        return(-1);
         }
-	recv_bytes += ret;
+	    recv_bytes += ret;
     }
 
     if(ret <= 0) {
-	spines_close(new_sk);
-	Alarm(PRINT, "spines_accept(): communication error with spines daemon\n");
-	spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
-	return(-1);
+	    spines_close(new_sk);
+	    Alarm(PRINT, "spines_accept(): communication error with spines daemon\n");
+	    spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
+	    return(-1);
     }
 
     /* fill in the other side addr to return */
     if (addr != NULL) {
-      if(*addrlen < sizeof(struct sockaddr_in)) {
-        Alarm(PRINT, "spines_recvfrom(): fromlen too small\n");
-	spines_set_errno(SP_ERROR_INPUT_ERR);
-        return(-1);
-      }
-      ((struct sockaddr_in*)addr)->sin_family      = otherside_addr.sin_family;
-      ((struct sockaddr_in*)addr)->sin_port        = (short)otherside_addr.sin_port;
-      ((struct sockaddr_in*)addr)->sin_addr.s_addr = otherside_addr.sin_addr.s_addr;
+        if(*addrlen < sizeof(struct sockaddr_in)) {
+            Alarm(PRINT, "spines_recvfrom(): fromlen too small\n");
+	        spines_set_errno(SP_ERROR_INPUT_ERR);
+            return(-1);
+        }
+        ((struct sockaddr_in*)addr)->sin_family      = otherside_addr.sin_family;
+        ((struct sockaddr_in*)addr)->sin_port        = (short)otherside_addr.sin_port;
+        ((struct sockaddr_in*)addr)->sin_addr.s_addr = otherside_addr.sin_addr.s_addr;
       
-      *addrlen = sizeof(struct sockaddr_in);
+        *addrlen = sizeof(struct sockaddr_in);
     }
 
     return(new_sk);
@@ -2279,7 +2333,7 @@ int spines_flood_send(int sockfd, int address, int port, int rate, int size, int
     int32 *dest, *dest_port, *send_rate, *pkt_size, *num;
 
 #ifdef ARCH_PC_WIN95
-    printf("spines_flood_send ERROR: NOT SUPPORTED ON WINDOWS CURRENTLY\r\n");
+    Alarm(PRINT, "spines_flood_send ERROR: NOT SUPPORTED ON WINDOWS CURRENTLY\r\n");
     return -1;
 #endif
 
@@ -2348,7 +2402,7 @@ int spines_flood_recv(int sockfd, char *filename, int namelen)
     char *name;
 
 #ifdef ARCH_PC_WIN95
-    printf("ERROR: NOT SUPPORTED ON WINDOWS CURRENTLY\r\n");
+    Alarm(PRINT, "ERROR: NOT SUPPORTED ON WINDOWS CURRENTLY\r\n");
     return -1;
 #endif
 
@@ -2435,7 +2489,7 @@ int spines_getsockname(int sk, struct sockaddr *name, socklen_t *nlen)
       client = spines_get_client(sk);
       if(client != -1) {
         ((struct sockaddr_in*)name)->sin_port = htons((short)all_clients[client].virtual_local_port);
-        ((struct sockaddr_in*)name)->sin_addr.s_addr = htonl(all_clients[client].srv_addr);
+        ((struct sockaddr_in*)name)->sin_addr.s_addr = htonl(all_clients[client].virtual_addr);
         *nlen = sizeof(struct sockaddr_in);
       }
       
@@ -2505,6 +2559,7 @@ int  spines_sendmsg( int s, const spines_msg *msg, int flags )
                 ret = spines_sendto( s, buf, buf_len, flags, msg->msg_name, msg->msg_namelen );
         }
 
+        /* SESSION_SEMANTICS - possibly block on recv feedbackfor session_flag here */
         return ret;
 }
 

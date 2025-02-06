@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2015 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2016 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -792,7 +792,6 @@ int Forward_Data(Node *next_hop, sys_scatter *scat, int mode)
 
   case RESERVED0_LINK:
   case RESERVED1_LINK:
-  case RESERVED2_LINK:
   case MAX_LINKS_4_EDGE:
   default:
     Alarm(EXIT, "Forward_Data: Unrecognized link type 0x%x!\r\n", mode);
@@ -836,7 +835,6 @@ int Request_Resources(int dissemination, Node* next_hop, int mode,
         case CONTROL_LINK:
         case RESERVED0_LINK:
         case RESERVED1_LINK:
-        case RESERVED2_LINK:
         case MAX_LINKS_4_EDGE:
         default:
             Alarm(EXIT, "Request_Resources: Unrecognized link type 0x%x!\r\n", mode);
@@ -916,13 +914,13 @@ int Deliver_and_Forward_Data(sys_scatter *scat, int mode, Link *src_lnk)
     }
     break;
 
-  case BEST_EFFORT_FLOOD_ROUTING:
+  case IT_PRIORITY_ROUTING:
     ret = Priority_Flood_Disseminate(src_lnk, scat, mode);
     if (ret == NO_ROUTE) 
         goto END;
     break;
 
-  case RELIABLE_FLOOD_ROUTING:
+  case IT_RELIABLE_ROUTING:
     ret = Reliable_Flood_Disseminate(src_lnk, scat, mode);
     if (ret == NO_ROUTE) 
         goto END;
@@ -964,10 +962,10 @@ int Deliver_and_Forward_Data(sys_scatter *scat, int mode, Link *src_lnk)
 int Fill_Packet_Header( char* hdr, int routing, int16u num_paths ) {
    
     switch(routing) {
-        case BEST_EFFORT_FLOOD_ROUTING:
+        case IT_PRIORITY_ROUTING:
             return Fill_Packet_Header_Best_Effort_Flood(hdr);
             break;
-        case RELIABLE_FLOOD_ROUTING:
+        case IT_RELIABLE_ROUTING:
             return Fill_Packet_Header_Reliable_Flood(hdr,num_paths);
             break;
         default:

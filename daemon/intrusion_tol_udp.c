@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2015 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2016 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -2654,7 +2654,7 @@ void Handle_IT_Retransm(int link_id, void *dummy)
     Int_Tol_Data *itdata;
     int64u i;
     int32u index;
-    int pkts_sent = 0;
+    /* int pkts_sent = 0; */
     sp_time now, requeue;
 
     UNUSED(dummy);
@@ -2673,31 +2673,33 @@ void Handle_IT_Retransm(int link_id, void *dummy)
     }
     now = E_get_time();
 
-    if ( E_compare_time( Burst_Timeout, now ) <= 0) {
+    /* Can we handle retransmissions now */
+    if (E_compare_time( Burst_Timeout, now ) <= 0) {
         Burst_Count = 0;
         Burst_Timeout = E_add_time(now, flow_control_timeout );
     }
-    else if ( Burst_Count >= SEND_BATCH_SIZE) {
+    else if (Burst_Count >= Conf_IT_Link.Send_Batch_Size) {
         requeue = E_add_time(E_sub_time( Burst_Timeout, now ), zero_timeout);
         E_queue(Handle_IT_Retransm, (int)link_id, NULL, requeue );
     }
 
     /* printf("\tSENT from NACK_RETRANSM:  "); */
     for (i = itdata->out_tail_seq; i < itdata->tcp_head_seq && 
-            Burst_Count < SEND_BATCH_SIZE; i++)
+            Burst_Count < Conf_IT_Link.Send_Batch_Size; i++)
     {
         index = i % MAX_SEND_ON_LINK;
         
-        /* Check the resend timeout the packet */
+        /* Check the resend timeout on the packet */
         if (itdata->outgoing[index].nacked == 1 &&
-                E_compare_time(itdata->outgoing[index].timestamp, now) <= 0) {
+                E_compare_time(itdata->outgoing[index].timestamp, now) <= 0) 
+        {
             itdata->outgoing[index].resent = 1;
             itdata->outgoing[index].nacked = 0;
             itdata->outgoing[index].timestamp =
                                 E_add_time(now, itdata->it_nack_timeout);
             /* itdata->bucket -= Send_IT_Data_Msg(link_id, i); */
             Send_IT_Data_Msg(link_id, i);
-            pkts_sent++;
+            /* pkts_sent++; */
             itdata->loss_history_retransmissions[0]++;
             Burst_Count++;
             /* printf("%" PRIu64 ",  ", i ); */

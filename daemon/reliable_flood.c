@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2015 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2016 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -87,8 +87,7 @@ rel_stats Rel_Stats[MAX_NODES+1];
 sp_time rel_elapsed_for_stats;
 
 /* Local Session Functions */
-void Reliable_Flood_Block_Sessions (int32u dst_id);
-void Reliable_Flood_Resume_Sessions(int32u dst_id);
+void Reliable_Flood_Resume_Sessions(int dst_id, void *dummy);
 /* Local Process Functions */
 void Reliable_Flood_Process_E2E(int32u last_hop_index, sys_scatter *scat, int mode);
 int Reliable_Flood_Process_Data(int32u last_hop_index, int32u src_id,
@@ -250,7 +249,7 @@ void Init_Reliable_Flooding()
         Status_Change[i].epoch = 0; /* We have received no status changes yet */
         Status_Change[i].creator = i; 
         Status_Change_Sig[i] = (unsigned char*) Mem_alloc(Rel_Signature_Len);
-        Sess_List[i].blocked = 0;
+        Sess_List[i].size = 0;
         Sess_List[i].head.sess_id = -1;
         Sess_List[i].head.next = NULL;
         Sess_List[i].tail = &Sess_List[i].head;
@@ -434,53 +433,113 @@ int Fill_Packet_Header_Reliable_Flood( char* hdr, int16u num_paths )
 }
 
 /***********************************************************/
-/* int Reliable_Flood_Manage_Session (int32 s_id,          */
-/*                                          in32u dst)     */
+/* int Reliable_Flood_Can_Flow_Send (Session *ses,         */
+/*                                        in32u dst)       */
 /*                                                         */
-/* Adds the session indicated by s_id to the list of       */
-/*   managed sessions ending at dst                        */
+/* Check if the flow between me and dst can send (has room */
+/*   and a completed handshake between src-dst). If not,   */
+/*   return 0                                              */
 /*                                                         */
 /*                                                         */
 /* Arguments                                               */
 /*                                                         */
-/* s_id:        session_id to add                          */
+/* ses:         session trying to send                     */
 /* dst:         logical ID of this destination             */
 /*                                                         */
 /*                                                         */
 /* Return Value                                            */
 /*                                                         */
-/* 0 - There was a problem                                 */
-/* 1 - Successful                                          */
+/* 0 - Flow was full, session now blocked OR Error         */
+/* 1 - Success (Flow has space and complete handshake)     */
 /*                                                         */
 /***********************************************************/
-int Reliable_Flood_Manage_Session( int32 s_id, int32u dst ) 
+int Reliable_Flood_Can_Flow_Send (Session *ses, int32u dst) 
+{
+    Flow_Buffer *fb;
+
+    if (dst < 1 || dst > MAX_NODES) {
+        Alarm(PRINT, "Reliable_Flood_Can_Flow_Send: invalid dst = %u\n", dst);
+        return 0;
+    }
+
+    if (ses->blocked == 1) {
+        Alarm(PRINT, "Reliable_Flood_Can_Flow_Send: session already blocked??\n");
+        return 0;
+    }
+   
+    fb = &FB->flow[My_ID][dst];
+    if (fb->head_seq < fb->sow + MAX_MESS_PER_FLOW && Flow_Source_Epoch[dst] == fb->src_epoch)
+        return 1;
+
+    return 0;
+}
+
+/***********************************************************/
+/* int Reliable_Flood_Block_Session (Session *ses,         */
+/*                                        in32u dst)       */
+/*                                                         */
+/* Verify flow between me and dst is full or no handshake  */
+/*   complete. Add this session to the corresponding       */
+/*   blocked list so that the session can be resume when   */
+/*   the flow can send (adds ses->scat to buffer when      */
+/*   there is room and completed handshake).               */
+/*                                                         */
+/*                                                         */
+/* Arguments                                               */
+/*                                                         */
+/* ses:         session trying to send                     */
+/* dst:         logical ID of this destination             */
+/*                                                         */
+/*                                                         */
+/* Return Value                                            */
+/*                                                         */
+/* 0 - Error (Flow not full, invalid dst, etc.)            */
+/* 1 - Success (Flow blocked correctly)                    */
+/*                                                         */
+/***********************************************************/
+int Reliable_Flood_Block_Session (Session *ses, int32u dst) 
 {
     Session_Obj *so;
-    Session     *ses;
-    stdit       it;
+    Flow_Buffer *fb;
 
-    if (dst < 1 || dst > MAX_NODES)
+    if (dst < 1 || dst > MAX_NODES) {
+        Alarm(PRINT, "Reliable_Flood_Block_Session: invalid dst = %u\n", dst);
         return 0;
+    }
+
+    if (ses->blocked == 1) {
+        Alarm(PRINT, "Reliable_Flood_Block_Session: session already blocked??\n");
+        return 0;
+    }
    
+    fb = &FB->flow[My_ID][dst];
+    if (fb->head_seq < fb->sow + MAX_MESS_PER_FLOW && Flow_Source_Epoch[dst] == fb->src_epoch) {
+        Alarm(PRINT, "Reliable_Flood_Block_Session: not blocking session, flow [%d,%d] has "
+                        " space and completed handshake\r\n", My_ID, dst);
+        return 0;
+    }
+
+    /* if (fb->head_seq >= fb->sow + MAX_MESS_PER_FLOW)
+        printf("BLOCKING Session %d to %d b/c full flow\n", ses->sess_id, dst);
+    else if (Flow_Source_Epoch[dst] != fb->src_epoch)
+        printf("BLOCKING Session %d to %d b/c epoch mismatch [Flow = %d, fb = %d]\n", 
+                    ses->sess_id, dst, Flow_Source_Epoch[dst], fb->src_epoch); */
+    
+    /* Add session_obj to the queue for this dst */
     so = (Session_Obj *) new (RF_SESSION_OBJ);
     if (so == NULL)
-        Alarm(EXIT, "Reliable_Flood_Manage_Session(): mem failure\r\n");
-    so->sess_id = s_id;
+        Alarm(EXIT, "Reliable_Flood_Block_Session: memory failure\r\n");
+    so->sess_id = ses->sess_id;
     so->next = NULL;
     Sess_List[dst].tail->next = so;
     Sess_List[dst].tail = so;
+    Sess_List[dst].size++;
 
-    /* If the other sessions for this flow are blocked,
-     *      then block this one as well */
-    if (Sess_List[dst].blocked == 1) {
-        stdhash_find(&Sessions_ID, &it, &so->sess_id);
-        if(!stdhash_is_end(&Sessions_ID, &it)) {
-            ses = *((Session **)stdhash_it_val(&it));
-            Block_Session(ses);
-        }
-    }
+    /* Block session */
+    ses->blocked = 1;
+    Block_Session(ses);
 
-/*    so = Sess_List[dst].head.next;
+    /* so = Sess_List[dst].head.next;
     printf("\tSessions[%d] = ", dst);
     while (so != NULL) {
         printf("%d ", so->sess_id);
@@ -493,62 +552,13 @@ int Reliable_Flood_Manage_Session( int32 s_id, int32u dst )
 
 
 /***********************************************************/
-/* int Reliable_Flood_End_Manage_Session (int32 s_id,      */
-/*                                          in32u dst)     */
+/* void Reliable_Flood_Resume_Sessions (int dst_id,        */
+/*                                         void *dummy)    */
 /*                                                         */
-/* Removes the session indicated by s_id to the list of    */
-/*   managed sessions ending at dst                        */
-/*                                                         */
-/*                                                         */
-/* Arguments                                               */
-/*                                                         */
-/* s_id:        session_id to add                          */
-/* dst:         logical ID of this destination             */
-/*                                                         */
-/*                                                         */
-/* Return Value                                            */
-/*                                                         */
-/* 0 - There was a problem                                 */
-/* 1 - Successful                                          */
-/*                                                         */
-/***********************************************************/
-int Reliable_Flood_End_Manage_Session( int32 s_id, int32u dst )
-{
-    Session_Obj *so, *delete;
-
-    if (dst < 1 || dst > MAX_NODES)
-        return 0;
-
-    so = &Sess_List[dst].head;
-    while (so->next != NULL) {
-        if (so->next->sess_id == s_id) {
-            delete = so->next;
-            if (Sess_List[dst].tail == delete)
-                Sess_List[dst].tail = so;
-            so->next = delete->next;
-            dispose(delete);
-
-/*            so = Sess_List[dst].head.next;
-            printf("\tSessions[%d] = ", dst);
-            while (so != NULL) {
-                printf("%d ", so->sess_id);
-                so = so->next;
-            }
-            printf("\n"); */
-
-            return 1;
-        }
-        so = so->next;
-    }
-    return 0;
-}
-
-
-/***********************************************************/
-/* void Reliable_Flood_Block_Sessions (int32u dst_id)      */
-/*                                                         */
-/* Blocks all of the sessions in the Sess_List that are    */
-/*   destined to the flow indicated by logical ID dst_id   */
+/* Unblocks sessions in the Sess_List that have a stored   */
+/*   message to logical dst_id. Stops when either:         */
+/*   (1) no more sessions are blocked or                   */
+/*   (2) flow is full and/or cannot send                   */
 /*                                                         */
 /*                                                         */
 /* Arguments                                               */
@@ -561,79 +571,40 @@ int Reliable_Flood_End_Manage_Session( int32 s_id, int32u dst )
 /* NONE                                                    */
 /*                                                         */
 /***********************************************************/
-void Reliable_Flood_Block_Sessions  (int32u dst_id) 
+void Reliable_Flood_Resume_Sessions (int dst_id, void *dummy) 
 {
     Session     *ses;
-    Session_Obj *so;
+    Session_Obj *so, *del;
     stdit       it;
+    Flow_Buffer *fb;
 
-    /* if the dst ID is invalid, return */
-    if (dst_id < 1 || dst_id > MAX_NODES) 
-        return;
-    
-    /* if these sessions are already blocked, return */
-    if (Sess_List[dst_id].blocked == 1) 
-        return;
-
-    so = Sess_List[dst_id].head.next;
-    while (so != NULL) {
-        stdhash_find(&Sessions_ID, &it, &so->sess_id);
-        if(!stdhash_is_end(&Sessions_ID, &it)) {
-            ses = *((Session **)stdhash_it_val(&it));
-            Block_Session(ses);
-        }
-        so = so->next;
-    }
-
-    Sess_List[dst_id].blocked = 1;
-    /* printf("\tBLOCKED SESSIONS TO %d\n", dst_id); */
-}
-
-
-/***********************************************************/
-/* void Reliable_Flood_Resume_Sessions (int32u dst_id)     */
-/*                                                         */
-/* Unblocks all of the sessions in the Sess_List that are  */
-/*   destined to the flow indicated by logical ID dst_id   */
-/*                                                         */
-/*                                                         */
-/* Arguments                                               */
-/*                                                         */
-/* dst_id:         logical ID of this destination          */
-/*                                                         */
-/*                                                         */
-/* Return Value                                            */
-/*                                                         */
-/* NONE                                                    */
-/*                                                         */
-/***********************************************************/
-void Reliable_Flood_Resume_Sessions (int32u dst_id) 
-{
-    Session     *ses;
-    Session_Obj *so;
-    stdit       it;
-
-    Alarm(DEBUG, "Reliable_Flood_Resume_Sessions: Entered Function");
-
-    /* if the dst ID is invalid, return */
+    /* If the dst ID is invalid, return */
     if (dst_id < 1 || dst_id > MAX_NODES)
         return;
     
-    /* if these sessions are already flowing, return */
-    if (Sess_List[dst_id].blocked == 0)
-        return;
+    fb = &FB->flow[My_ID][dst_id];
+    so = &Sess_List[dst_id].head;
 
-    so = Sess_List[dst_id].head.next;
-    while (so != NULL) {
-        stdhash_find(&Sessions_ID, &it, &so->sess_id);
+    /* Start resuming sessions as long as there is room in flow */
+    while (so->next != NULL && (fb->head_seq < fb->sow + MAX_MESS_PER_FLOW) &&
+            Handshake_Complete[dst_id] == 1) 
+    {
+        stdhash_find(&Sessions_ID, &it, &so->next->sess_id);
         if(!stdhash_is_end(&Sessions_ID, &it)) {
             ses = *((Session **)stdhash_it_val(&it));
+            ses->blocked = 0;
+            Alarm(DEBUG, "RESUMING Session %d\n", ses->sess_id);
+            Session_Send_Message(ses);
             Resume_Session(ses);
         }
-        so = so->next;
+        del = so->next;
+        if (Sess_List[dst_id].tail == del)
+            Sess_List[dst_id].tail = so;
+        so->next = del->next;
+        dispose(del);
+        Sess_List[dst_id].size--;
     }
 
-    Sess_List[dst_id].blocked = 0;
     /* printf("\tRESUMED SESSIONS TO %d\n", dst_id); */
 }
 
@@ -873,7 +844,7 @@ int Reliable_Flood_Disseminate(Link *src_link, sys_scatter *scat, int mode)
             nd = *((Node **)stdhash_it_val(&it));
             while ((rfldata->norm_head.next != NULL ||
                     rfldata->urgent_head.next != NULL) &&
-                    Request_Resources(RELIABLE_FLOOD_ROUTING >>
+                    Request_Resources(IT_RELIABLE_ROUTING >>
                         ROUTING_BITS_SHIFT, nd, mode, 
                         &Reliable_Flood_Send_One));
             if (rfldata->unsent_state_count == old_count && 
@@ -1006,7 +977,6 @@ void Reliable_Flood_Process_E2E (int32u last_hop_index, sys_scatter *scat, int m
             E_queue(Reliable_Flood_Gen_E2E, mode, NULL, zero_timeout);
     }
 
-
     /* Handshake complete */
     if (Handshake_Complete[d] == 0 &&
             e2e_new->cell[My_ID].src_epoch == Flow_Source_Epoch[d])
@@ -1089,7 +1059,11 @@ void Reliable_Flood_Process_E2E (int32u last_hop_index, sys_scatter *scat, int m
         else if (e2e_new->cell[i].aru > e2e_old->cell[i].aru) {
             
             /* Update head, tail, and next_to_send for each neighbor */
-            /* printf("\tProcessed E2E: old_sow = %lu --> ", fb->sow); */
+            /* if (i == My_ID) {
+                printf("[%lu,%u] moved from %lu --> %lu, remaining = %lu\n", 
+                        i, d, fb->sow, e2e_new->cell[i].aru+1, 
+                        fb->head_seq - (e2e_new->cell[i].aru+1));
+            } */
             while (fb->sow <= e2e_new->cell[i].aru) {
                 index = fb->sow % MAX_MESS_PER_FLOW;
                 if (fb->msg[index] != NULL) {
@@ -1158,12 +1132,6 @@ void Reliable_Flood_Process_E2E (int32u last_hop_index, sys_scatter *scat, int m
         }
     }
 
-    fb = &FB->flow[My_ID][d];
-    /* printf("flow[%d][%d] --- head = %"PRIu64" and sow = %"PRIu64"\n", 50, d, fb->head_seq, fb->sow); */
-    if (Sess_List[d].blocked == 1 && fb->head_seq < fb->sow + MAX_MESS_PER_FLOW && 
-            Handshake_Complete[d] == 1)
-        Reliable_Flood_Resume_Sessions(d);
-
     now = E_get_time();
     for (i = 1; i <= Degree[My_ID]; i++) {
         
@@ -1193,6 +1161,13 @@ void Reliable_Flood_Process_E2E (int32u last_hop_index, sys_scatter *scat, int m
     /* Store E2E and Signature (if necessary) */
     memcpy(&E2E[d], e2e_new, sizeof(rel_flood_e2e_ack));
     memcpy(E2E_Sig[d], sign_start, Rel_Signature_Len);
+
+    /* Potentially Resume Blocked Sessions */
+    fb = &FB->flow[My_ID][d];
+
+    if (Sess_List[d].size > 0 && fb->head_seq < fb->sow + MAX_MESS_PER_FLOW && 
+            Handshake_Complete[d] == 1) 
+        E_queue(Reliable_Flood_Resume_Sessions, d, NULL, zero_timeout);
 
     return;
 }
@@ -1232,7 +1207,7 @@ int Reliable_Flood_Process_Data(int32u last_hop_index, int32u src_id,
     int64u              i, j;
     int64u              min;
     Flow_Buffer         *fb;
-    unsigned char       *routing_mask, *stored_mask, *temp_mask;
+    unsigned char       *routing_mask, *stored_mask; /*, *temp_mask;*/
     unsigned char       restamped_message = 0;
     int64u              pre_loop;
 
@@ -1249,11 +1224,10 @@ int Reliable_Flood_Process_Data(int32u last_hop_index, int32u src_id,
     /* If this message has a higher source_epoch than any previous message
      * we've seen, or it is older, or it is 0, throw it away. */
     if (r_hdr->src_epoch > fb->src_epoch) {
-        if (last_hop_index == 0) { /* Came from client */
-            Reliable_Flood_Block_Sessions(dst_id);             
+        if (last_hop_index == 0) /* Came from client */
             Alarm(PRINT, "Reliable_Flood_Process_Data(): Client sent a message"
-                " before handshake was established... blocking\r\n");
-        }
+                " before handshake was established. This is an error, as this"
+                " case should be handled by the new blocking scheme\r\n");
         else 
             Alarm(DEBUG, "Reliable_Flood_Process_Data(): source epoch (%u) is "
                 "ahead of what is stored (%u). ATTACK?\r\n", r_hdr->src_epoch,
@@ -1306,9 +1280,9 @@ int Reliable_Flood_Process_Data(int32u last_hop_index, int32u src_id,
         if ( !MultiPath_Is_Superset(stored_mask, routing_mask) ) {
             if (MultiPath_Is_Equal(stored_mask, routing_mask)) {
 
-                if (fb->status[index][last_hop_index] == NEW_UNSENT)
+                if (fb->status[index][last_hop_index] == NEW_UNSENT && Conf_Rel.HBH_Opt == 1)
                     fb->status[index][last_hop_index] = NEW_SENT;
-                else if (fb->status[index][last_hop_index] == RESTAMPED_UNSENT) {
+                else if (fb->status[index][last_hop_index] == RESTAMPED_UNSENT && Conf_Rel.HBH_Opt == 1) {
                     /* printf("seq %lu received from %d, set to RESTAMPED_SENT - Case 1\n", 
                             r_hdr->seq_num, Neighbor_IDs[My_ID][last_hop_index]); */
                     fb->status[index][last_hop_index] = RESTAMPED_SENT;
@@ -1324,14 +1298,15 @@ int Reliable_Flood_Process_Data(int32u last_hop_index, int32u src_id,
                 if (fb->next_seq[last_hop_index] >= fb->head_seq)
                     return NO_ROUTE;
 
+#if 0
                 /* Add to sending queue (urgent) if not already in either queue. */
                 rfldata = &RF_Edge_Data[last_hop_index];
                 index = fb->next_seq[last_hop_index] % MAX_MESS_PER_FLOW;
                 temp_mask = (unsigned char*)(fb->msg[index]->elements[fb->msg[index]->num_elements-2].buf + 
                                       sizeof(rel_flood_header));
                 if (rfldata->in_flow_queue[src_id][dst_id] == 0 && 
-                            fb->next_seq[last_hop_index] < fb->head_seq &&
-                            dst_id != My_ID && 
+                            fb->next_seq[last_hop_index] == r_hdr->seq_num &&
+                            /* dst_id != My_ID && */
                             MultiPath_Neighbor_On_Path(temp_mask,last_hop_index))
                 {
                     /* if (My_ID == 11 && last_hop_index == 1)
@@ -1348,6 +1323,7 @@ int Reliable_Flood_Process_Data(int32u last_hop_index, int32u src_id,
                     rfldata->urgent_tail->next = temp_fq;
                     rfldata->urgent_tail = temp_fq;
                 }
+#endif
                 return NO_ROUTE;
             }
             else {
@@ -1393,7 +1369,7 @@ int Reliable_Flood_Process_Data(int32u last_hop_index, int32u src_id,
             /* RELIABLE PRINT STATS */
             Rel_Stats[src_id].bytes += hdr->len; 
             Rel_Stats[src_id].num_received++;
-        }
+        } 
     }
     else {
         /* For restamped messages, free old message memory */
@@ -1411,12 +1387,12 @@ int Reliable_Flood_Process_Data(int32u last_hop_index, int32u src_id,
             if (My_ID == 11 && ngbr == 1)
                 pre_loop = fb->next_seq[ngbr];
 
-            if      (restamped_message == 0 &&
+            if      (restamped_message == 0 && Conf_Rel.HBH_Opt == 1 &&
                        (ngbr == last_hop_index || Neighbor_IDs[My_ID][ngbr] == src_id))
                 fb->status[index][ngbr] = NEW_SENT;
             else if (restamped_message == 0)
                 fb->status[index][ngbr] = NEW_UNSENT;
-            else if (restamped_message == 1 && 
+            else if (restamped_message == 1 && Conf_Rel.HBH_Opt == 1 && 
                         (ngbr == last_hop_index || Neighbor_IDs[My_ID][ngbr] == src_id))
             {
                 /* printf("seq %lu received from %d, set to RESTAMPED_SENT toward %d, next_seq = %lu - Case 2\n", 
@@ -1488,7 +1464,8 @@ int Reliable_Flood_Process_Data(int32u last_hop_index, int32u src_id,
 
         /* Update our view of their ARU for this flow if this is the hop
          *      we got the msg from or this ngbr is the source of the flow */
-        if (i == last_hop_index || Neighbor_IDs[My_ID][i] == src_id) {
+        if (!(Conf_Rel.HBH_Advance == 1 && Conf_Rel.HBH_Opt == 0) && 
+            (i == last_hop_index || Neighbor_IDs[My_ID][i] == src_id)) {
             if (rfldata->ns_matrix.flow_aru[src_id][dst_id] < r_hdr->seq_num)
                 rfldata->ns_matrix.flow_aru[src_id][dst_id] = r_hdr->seq_num;
             
@@ -1500,9 +1477,8 @@ int Reliable_Flood_Process_Data(int32u last_hop_index, int32u src_id,
 
         /* Add to sending queue (urgent) if not already in either queue. */
         else if (rfldata->in_flow_queue[src_id][dst_id] == 0 && 
-                    /* fb->next_seq[i] == r_hdr->seq_num && */
-                    fb->next_seq[i] < fb->head_seq &&
-                    dst_id != My_ID && 
+                    fb->next_seq[i] == r_hdr->seq_num &&
+                    /* dst_id != My_ID && */
                     MultiPath_Neighbor_On_Path(routing_mask,i))
         {
             rfldata->in_flow_queue[src_id][dst_id] = 1;
@@ -1534,13 +1510,11 @@ int Reliable_Flood_Process_Data(int32u last_hop_index, int32u src_id,
         }
     }
 
-    if (src_id == My_ID && 
+    /* if (src_id == My_ID && 
             (fb->head_seq >= fb->sow + MAX_MESS_PER_FLOW)) 
     {
-        /* Alarm(PRINT, "[%d][%d]: head = %d, sow = %d\n", src_id, dst_id,
-                    fb->head_seq, fb->sow); */
         Reliable_Flood_Block_Sessions(dst_id);
-    }
+    } */
 
     return BUFF_OK;
 }
@@ -1640,6 +1614,7 @@ int Reliable_Flood_Process_Acks(int32u last_hop_index, sys_scatter *scat)
                     if (fb->status[idx][last_hop_index] == NEW_UNSENT)
                         fb->status[idx][last_hop_index] = NEW_SENT;
                     fb->next_seq[last_hop_index]++;
+                    idx = fb->next_seq[last_hop_index] % MAX_MESS_PER_FLOW;
                 }
             }
 
@@ -1678,13 +1653,10 @@ int Reliable_Flood_Process_Acks(int32u last_hop_index, sys_scatter *scat)
                 }
 
                 /* Check if we made progress and things have become unblocked */
-                if (progress == 1 && Sess_List[dst_id].blocked == 1 &&
-                        src_id == My_ID)
-                {
-                    Reliable_Flood_Resume_Sessions(dst_id);
-                }
+                if (progress == 1 && Sess_List[dst_id].size > 0 && src_id == My_ID)
+                    E_queue(Reliable_Flood_Resume_Sessions, dst_id, NULL, zero_timeout);
 
-                for( j = 1; j <= Degree[My_ID]; j++) {
+                for (j = 1; j <= Degree[My_ID]; j++) {
                     /* If our sow moved up past an out of date next_seq index,
                     * move next_seq up */
                     /* TODO: Does this need to change because of recovering
@@ -2050,7 +2022,7 @@ void Reliable_Flood_E2E_Event  (int mode, void *ngbr_data)
 
     rfldata->e2e_ready = 1;
     Alarm(DEBUG, "E2E requesting resources to "IPF"\n", IP(nd->nid));
-    ret = Request_Resources(RELIABLE_FLOOD_ROUTING >> ROUTING_BITS_SHIFT,
+    ret = Request_Resources(IT_RELIABLE_ROUTING >> ROUTING_BITS_SHIFT,
                         nd, mode, &Reliable_Flood_Send_One);
     if (ret == 0)
         E_queue(Reliable_Flood_E2E_Event, mode, ngbr_data, one_sec_timeout);
@@ -2106,7 +2078,7 @@ void Reliable_Flood_SAA_Event  (int mode, void *ngbr_data)
         return;
     nd = *((Node **)stdhash_it_val(&it));
 
-    Request_Resources(RELIABLE_FLOOD_ROUTING >> ROUTING_BITS_SHIFT,
+    Request_Resources(IT_RELIABLE_ROUTING >> ROUTING_BITS_SHIFT,
                         nd, mode, &Reliable_Flood_Send_One);
 }
 
@@ -2267,7 +2239,7 @@ int Reliable_Flood_Send_E2E (Node *next_hop, int ngbr_index, int mode)
     hdr->frag_num = 0;
     hdr->frag_idx = 0;
     hdr->ttl = 255;
-    hdr->routing = RELIABLE_FLOOD_ROUTING >> ROUTING_BITS_SHIFT;
+    hdr->routing = IT_RELIABLE_ROUTING >> ROUTING_BITS_SHIFT;
 
     e2e = (rel_flood_e2e_ack*)(scat->elements[1].buf + sizeof(udp_header));
 
@@ -2716,13 +2688,11 @@ int Reliable_Flood_Send_Data( Node *next_hop, int ngbr_index, int mode )
             }
 
             /* Check if we made progress and things have become unblocked */
-            if (progress == 1 && Sess_List[temp_fq->dest_id].blocked == 1 &&
+            if (progress == 1 && Sess_List[temp_fq->dest_id].size > 0 &&
                     temp_fq->src_id == My_ID)
-            {
-                Reliable_Flood_Resume_Sessions(temp_fq->dest_id);
-            }
+                E_queue(Reliable_Flood_Resume_Sessions, temp_fq->dest_id, NULL, zero_timeout);
 
-            for( j = 1; j <= Degree[My_ID]; j++) {
+            for (j = 1; j <= Degree[My_ID]; j++) {
                 /* If our sow moved up past an out of date next_seq index,
                 * move next_seq up */
                 if (fb->next_seq[j] < fb->sow)
@@ -2747,7 +2717,7 @@ int Reliable_Flood_Send_Data( Node *next_hop, int ngbr_index, int mode )
                     ngbr_data->unsent_state[temp_fq->src_id][temp_fq->dest_id] = 1;
                     progress_fq = (Flow_Queue *) new (FLOW_QUEUE_NODE);
                     if (progress_fq == NULL)
-                        Alarm(EXIT, "Reliable_Flood_Process_Data(): Cannot"
+                        Alarm(EXIT, "Reliable_Flood_Send_Data(): Cannot"
                             "allocate Flow Queue Node for unsent_state.\r\n");
                     progress_fq->src_id = temp_fq->src_id;
                     progress_fq->dest_id = temp_fq->dest_id;
@@ -2841,7 +2811,7 @@ int Reliable_Flood_Send_SAA (Node *next_hop, int ngbr_index, int mode)
     hdr->frag_num = 0;
     hdr->frag_idx = 0;
     hdr->ttl = 255;
-    hdr->routing = RELIABLE_FLOOD_ROUTING >> ROUTING_BITS_SHIFT;
+    hdr->routing = IT_RELIABLE_ROUTING >> ROUTING_BITS_SHIFT;
 
     r_hdr = (rel_flood_header*) scat->elements[scat->num_elements-2].buf;
     r_hdr->src = 0;
@@ -3117,72 +3087,74 @@ void Reliable_Flood_Restamp( void )
                 /* Write the superset (stored @ temp_bitmask) onto the message */ 
                 memcpy(old_bitmask, temp_bitmask, MultiPath_Bitmask_Size);
 
-                phdr = (packet_header*)(fb->msg[index]->elements[0].buf);
-                hdr = (udp_header*)(fb->msg[index]->elements[1].buf);
-                path = (unsigned char*)((unsigned char*)hdr + sizeof(udp_header) + 16);
-                sign_ptr = (unsigned char*)
-                                (fb->msg[index]->elements[fb->msg[index]->num_elements-2].buf + 
-                                sizeof(rel_flood_header) + MultiPath_Bitmask_Size);
+                if (Conf_Rel.Crypto == 1) {
+                    phdr = (packet_header*)(fb->msg[index]->elements[0].buf);
+                    hdr = (udp_header*)(fb->msg[index]->elements[1].buf);
+                    path = (unsigned char*)((unsigned char*)hdr + sizeof(udp_header) + 16);
+                    sign_ptr = (unsigned char*)
+                                    (fb->msg[index]->elements[fb->msg[index]->num_elements-2].buf + 
+                                    sizeof(rel_flood_header) + MultiPath_Bitmask_Size);
 
-                /* Store non-signed contents on the side */
-                temp_ttl = hdr->ttl;
-                hdr->ttl = 0;
-                if (Path_Stamp_Debug == 1) {
-                    for (k = 0; k < 8; k++) {
-                        temp_path[k] = path[k];
-                        path[k] = (unsigned char) 0;
+                    /* Store non-signed contents on the side */
+                    temp_ttl = hdr->ttl;
+                    hdr->ttl = 0;
+                    if (Path_Stamp_Debug == 1) {
+                        for (k = 0; k < 8; k++) {
+                            temp_path[k] = path[k];
+                            path[k] = (unsigned char) 0;
+                        }
                     }
-                }
-                
-                /* Sign with Priv_Key */
-                ret = EVP_SignInit(&md_ctx, EVP_sha256()); 
-                if (ret != 1) {
-                    Alarm(PRINT, "Reliable_Flood_Restamp: SignInit failed\r\n");
-                    error = 1;
-                    continue;
-                }
-
-                /* Add each part of the message to be signed into the md_ctx */
-                /* First, sign over the type in the packet_header */
-                ret = EVP_SignUpdate(&md_ctx, (unsigned char*)&phdr->type, sizeof(phdr->type));
-
-                /* Strip off old signature */
-                fb->msg[index]->elements[fb->msg[index]->num_elements-2].len -= Rel_Signature_Len;
-
-                /* Sign over the remaining elements in the message (not including the rt) */
-                for (k = 1; k < fb->msg[index]->num_elements - 1; k++) {
-                    ret = EVP_SignUpdate(&md_ctx, (unsigned char*)fb->msg[index]->elements[k].buf, 
-                                            fb->msg[index]->elements[k].len);
+                    
+                    /* Sign with Priv_Key */
+                    ret = EVP_SignInit(&md_ctx, EVP_sha256()); 
                     if (ret != 1) {
-                        Alarm(PRINT, "Reliable_Flood_Restamp: SignUpdate failed\r\n");
+                        Alarm(PRINT, "Reliable_Flood_Restamp: SignInit failed\r\n");
                         error = 1;
-                        break;
+                        continue;
                     }
-                }
-                if (error == 1)
-                    continue;
 
-                ret = EVP_SignFinal(&md_ctx, sign_ptr, &sign_len, Priv_Key);
-                if (ret != 1) {
-                    Alarm(PRINT, "Reliable_Flood_Restamp: SignFinal failed\r\n");
-                    error = 1;
-                    continue;
-                }
-                if (sign_len != Rel_Signature_Len) {
-                    Alarm(PRINT, "Reliable_Flood_Restamp: sign_len (%d) != Key_Len (%d)\r\n",
-                                    sign_len, Rel_Signature_Len);
-                    error = 1;
-                    continue;
-                }
+                    /* Add each part of the message to be signed into the md_ctx */
+                    /* First, sign over the type in the packet_header */
+                    ret = EVP_SignUpdate(&md_ctx, (unsigned char*)&phdr->type, sizeof(phdr->type));
 
-                /* Update the length for the new signature */
-                fb->msg[index]->elements[fb->msg[index]->num_elements-2].len += Rel_Signature_Len;
+                    /* Strip off old signature */
+                    fb->msg[index]->elements[fb->msg[index]->num_elements-2].len -= Rel_Signature_Len;
 
-                /* Return non-signed content back to the message */
-                hdr->ttl = temp_ttl;
-                if (Path_Stamp_Debug == 1) {
-                    for (k = 0; k < 8; k++) {
-                        path[k] = temp_path[k];
+                    /* Sign over the remaining elements in the message (not including the rt) */
+                    for (k = 1; k < fb->msg[index]->num_elements - 1; k++) {
+                        ret = EVP_SignUpdate(&md_ctx, (unsigned char*)fb->msg[index]->elements[k].buf, 
+                                                fb->msg[index]->elements[k].len);
+                        if (ret != 1) {
+                            Alarm(PRINT, "Reliable_Flood_Restamp: SignUpdate failed\r\n");
+                            error = 1;
+                            break;
+                        }
+                    }
+                    if (error == 1)
+                        continue;
+
+                    ret = EVP_SignFinal(&md_ctx, sign_ptr, &sign_len, Priv_Key);
+                    if (ret != 1) {
+                        Alarm(PRINT, "Reliable_Flood_Restamp: SignFinal failed\r\n");
+                        error = 1;
+                        continue;
+                    }
+                    if (sign_len != Rel_Signature_Len) {
+                        Alarm(PRINT, "Reliable_Flood_Restamp: sign_len (%d) != Key_Len (%d)\r\n",
+                                        sign_len, Rel_Signature_Len);
+                        error = 1;
+                        continue;
+                    }
+
+                    /* Update the length for the new signature */
+                    fb->msg[index]->elements[fb->msg[index]->num_elements-2].len += Rel_Signature_Len;
+
+                    /* Return non-signed content back to the message */
+                    hdr->ttl = temp_ttl;
+                    if (Path_Stamp_Debug == 1) {
+                        for (k = 0; k < 8; k++) {
+                            path[k] = temp_path[k];
+                        }
                     }
                 }
 
@@ -3247,7 +3219,7 @@ void Reliable_Flood_Restamp( void )
                         if (rfldata->norm_head.next != NULL ||
                              rfldata->urgent_head.next != NULL) 
                         {
-                            Request_Resources(RELIABLE_FLOOD_ROUTING >>
+                            Request_Resources(IT_RELIABLE_ROUTING >>
                                 ROUTING_BITS_SHIFT, nd, INTRUSION_TOL_LINK, 
                                 &Reliable_Flood_Send_One);
                         }
@@ -3280,7 +3252,7 @@ void Reliable_Flood_Restamp( void )
 /* NONE                                                    */ 
 /*                                                         */
 /***********************************************************/
-void Generate_Link_Status_Change( int32 ngbr_addr, unsigned char status)
+void Generate_Link_Status_Change(int32 ngbr_addr, unsigned char status)
 {
     Edge_Key    key;
     stdit       it;
@@ -3311,7 +3283,7 @@ void Generate_Link_Status_Change( int32 ngbr_addr, unsigned char status)
    
     stdskl_find(&Sorted_Edges, &it, &key);
     if (stdskl_is_end(&Sorted_Edges, &it))
-        Alarm(PRINT, "Genereate_Link_Status_Change: Could not find specified edge"
+        Alarm(PRINT, "Generate_Link_Status_Change: Could not find specified edge"
                         " for [%d,%d] w/ status = %d\n", 
                         key.src_id, key.dst_id, status);
     ref_cost = ((Edge_Value*)stdskl_it_val(&it))->cost;
@@ -3442,8 +3414,10 @@ void Apply_Link_Status_Change( int16u ID1, int16u ID2, int16 cost)
 
     /* Apply the new cost */
     /* OPTIMIZATION - only update the cost AND clear the cache if cost has changed */
-    e->cost = cost;
+    if (e->cost == cost)
+        return;
 
+    e->cost = cost;
     Alarm(PRINT, "Apply_Link_Status_Change: [%u,%u] --> cost = %d\r\n", id1, id2, cost);
    
     /* Clear the multipath cache */
@@ -3722,7 +3696,7 @@ void Status_Change_Event (int mode, void *ngbr_data)
 
     rfldata->status_change_ready = 1;
     Alarm(DEBUG, "Status_Change requesting resources to "IPF"\n", IP(nd->nid));
-    ret = Request_Resources(RELIABLE_FLOOD_ROUTING >> ROUTING_BITS_SHIFT,
+    ret = Request_Resources(IT_RELIABLE_ROUTING >> ROUTING_BITS_SHIFT,
                         nd, mode, &Reliable_Flood_Send_One);
     if (ret == 0)
         E_queue(Status_Change_Event, mode, ngbr_data, one_sec_timeout);
@@ -3822,7 +3796,7 @@ int Send_Status_Change (Node *next_hop, int ngbr_index, int mode)
     hdr->frag_num = 0;
     hdr->frag_idx = 0;
     hdr->ttl = 255;
-    hdr->routing = RELIABLE_FLOOD_ROUTING >> ROUTING_BITS_SHIFT;
+    hdr->routing = IT_RELIABLE_ROUTING >> ROUTING_BITS_SHIFT;
 
     sc = (status_change*)(scat->elements[1].buf + sizeof(udp_header));
 

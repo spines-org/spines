@@ -988,3 +988,8 @@ void 	E_exit_events(void)
 	Alarm( EVENTS, "E_exit_events:\n");
 	Exit_events = 1;
 }
+
+void    E_exit_events_async_safe(void)
+{
+    Exit_events = 1;
+}

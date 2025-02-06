@@ -19,7 +19,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2015 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2016 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -81,6 +81,7 @@ Signature_Len_Bits          { return SIGLENBITS; }
 MultiPath_Bitmask_Size      { return MPBITMASKSIZE; }
 Directed_Edges              { return DIRECTEDEDGES; }
 Path_Stamp_Debug            { return PATHSTAMPDEBUG;  }
+Unix_Domain_Path            { return UNIXDOMAINPATH; }
 IT_LinkCrypto               { return ITCRYPTO; }
 IT_OrderedDelivery          { return ORDEREDDELIVERY; }
 IT_ReintroduceMessages      { return REINTRODUCEMSGS; }

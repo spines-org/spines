@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2015 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2016 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -46,6 +46,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <sys/un.h>
 #include <netdb.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
@@ -66,6 +67,7 @@ static int Protocol;
 static int Group_Address;
 static char MCAST_IP[80];
 static char SP_IP[80];
+static char Unix_domain_path[80];
 static int verbose_mode;
 static int wait_buffer;
 static int Address[MAX_NEIGHBORS];
@@ -107,8 +109,12 @@ int main(int argc, char *argv[])
     struct ip_mreq mreq;
     struct sockaddr_in serv_addr, name;
     struct sockaddr_in connections[MAX_NEIGHBORS];
-    struct hostent   h_ent;
+#ifndef ARCH_PC_WIN95
+    struct sockaddr_un unix_addr;
+#endif /* ARCH_PC_WIN95 */
     struct hostent  *host_ptr;
+    int gethostname_error = 0;
+    struct sockaddr *daemon_ptr = NULL;
     fd_set  mask, dummy_mask, temp_mask;
     char   machine_name[256];
  
@@ -126,7 +132,74 @@ int main(int argc, char *argv[])
     wait_time.tv_sec = 0;
     wait_time.tv_usec = (wait_buffer % 1000) * 1000;
 
-    /* SETTING UP INBOUND TRAFFIC */
+    /***********************************************************/
+    /*        SETTING UP INBOUND TRAFFIC (FROM SPINES)         */
+    /***********************************************************/
+    /* gethostname: used for WIN daemon connection & sending to non-specified target */
+    gethostname(machine_name,sizeof(machine_name)); 
+    host_ptr = gethostbyname(machine_name);
+    
+    if(host_ptr == NULL) {
+        printf("WARNING: could not get my ip addr (my name is %s)\n", machine_name );
+        gethostname_error = 1;
+    }
+    if(host_ptr->h_addrtype != AF_INET) {
+        printf("WARNING: Sorry, cannot handle addr types other than IPv4\n");
+        gethostname_error = 1;
+    }
+    if(host_ptr->h_length != 4) {
+        printf("WARNING: Bad IPv4 address length\n");
+        gethostname_error = 1;
+    }
+
+    /* Setup sockaddr structs for daemon connection */
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(spinesPort);
+#ifndef ARCH_PC_WIN95
+    unix_addr.sun_family = AF_UNIX;
+#endif /* ARCH_PC_WIN95 */
+
+    /* INET connections take precedence if specified */
+    if(strcmp(SP_IP, "") != 0) {
+	    host_ptr = gethostbyname(SP_IP);
+        memcpy( &serv_addr.sin_addr, host_ptr->h_addr, sizeof(struct in_addr) );
+        daemon_ptr = (struct sockaddr *)&serv_addr;
+        printf("Using TCP/IP Connection: %s@%d\n", SP_IP, spinesPort);
+    }
+    else {
+#ifndef ARCH_PC_WIN95
+        if (strcmp(Unix_domain_path, "") == 0) {
+            if (spinesPort == DEFAULT_SPINES_PORT) {
+                daemon_ptr = NULL;
+                printf("Using Default IPC Connection\n");
+            }
+            else  {
+                daemon_ptr = (struct sockaddr *)&unix_addr;
+                sprintf(unix_addr.sun_path, "%s%hu", SPINES_UNIX_SOCKET_PATH, spinesPort);
+                printf("Using IPC on Port %s\n", unix_addr.sun_path);
+            }
+        } else {
+            daemon_ptr = (struct sockaddr *)&unix_addr;
+            strncpy(unix_addr.sun_path, Unix_domain_path, sizeof(unix_addr.sun_path));
+            printf("Using IPC - custom path = %s\n", unix_addr.sun_path);
+        }
+#else /* ARCH_PC_WIN95 */
+        if (gethostname_error == 1) {
+            printf("Exiting... gethostbyname required, but error!\n");
+            exit(1);
+        }
+        daemon_ptr = (struct sockaddr *)&serv_addr;
+        memcpy(&serv_addr.sin_addr, host_ptr->h_addr, sizeof(struct in_addr));
+        printf("Using TCP/IP Connection - WIN Localhost\n");
+#endif /* ARCH_PC_WIN95 */
+    }
+
+    if(spines_init(daemon_ptr) < 0) {
+        printf("flooder_client: socket error\n");
+        exit(1);
+    }
+    
+    /* 
     if(strcmp(SP_IP, "") != 0) {
         host_ptr = gethostbyname(SP_IP);
         memcpy(&h_ent, host_ptr, sizeof(h_ent));
@@ -156,9 +229,10 @@ int main(int argc, char *argv[])
     if(spines_init((struct sockaddr*)(&serv_addr)) < 0) {
         printf("port2spines: socket error\n");
         exit(1);
-    }
+    } */
     
-    spines_sk = spines_socket(PF_INET, SOCK_DGRAM, Protocol, NULL);
+    spines_sk = spines_socket(PF_INET, SOCK_DGRAM, Protocol, daemon_ptr);
+    /* spines_sk = spines_socket(PF_INET, SOCK_DGRAM, Protocol, NULL); */
     if (spines_sk <= 0) {
         printf("spines_sk error..\n");
         exit(0);
@@ -183,7 +257,9 @@ int main(int argc, char *argv[])
         }
     }
 
-    /* SETTING UP OUTBOUND TRAFFIC */
+    /***********************************************************/
+    /*        SETTING UP OUTBOUND TRAFFIC (TO OUTSIDE)         */
+    /***********************************************************/
     send_sk = socket(AF_INET, SOCK_DGRAM, 0);
     if (send_sk < 0) {
         printf("spines2port: couldn't open send socket");
@@ -417,17 +493,21 @@ static void Usage(int argc, char *argv[])
   numNeighbors          = 0;
   strcpy(SP_IP, "");
   strcpy(MCAST_IP, "");
+  strcpy(Unix_domain_path, "");
   Group_Address         = -1;
   verbose_mode          = 0;
   wait_buffer           = 30;
   tmp                   = 0;
-  KPaths                = USHRT_MAX;
+  KPaths                = 0;   /* This is Flooding */
 
   while( --argc > 0 ) {
     argv++;
 
     if( !strncmp( *argv, "-p", 2 ) ){
       sscanf(argv[1], "%d", (int*)&spinesPort );
+      argc--; argv++;
+    } else if( !strncmp( *argv, "-ud", 4 ) ){
+      sscanf(argv[1], "%s", Unix_domain_path);
       argc--; argv++;
     } else if( !strncmp( *argv, "-r", 2 ) ){
       sscanf(argv[1], "%d", (int*)&recvPort );
@@ -494,6 +574,7 @@ static void Usage(int argc, char *argv[])
         printf( "Usage: spines2port\n"
           "\t[-o <address>    ] : address where spines runs, default localhost\n"
           "\t[-p <port number>] : port where spines runs, default is 8100\n"
+          "\t[-ud <path>      ] : unix domain socket path to connect to, default is /tmp/spines<port>\n"
           "\t[-r <port number>] : to receive packets on, default is 8400\n"
           "\t[-a <addr>:<port>] : address:port to send packets to, default is local machine and port 5555\n"
           "\t[-j <mcast addr> ] : multicast address to join\n"

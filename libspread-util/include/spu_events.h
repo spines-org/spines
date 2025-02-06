@@ -96,5 +96,6 @@ int	E_num_active( int priority );
 
 void 	E_handle_events(void);
 void 	E_exit_events(void);
+void    E_exit_events_async_safe(void);
 
 #endif	/* INC_SP_EVENTS */

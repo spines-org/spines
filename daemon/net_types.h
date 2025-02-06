@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2015 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2016 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -115,7 +115,7 @@
 #define     Is_intru_tol_ping(t) (((t) & DATA_MASK) == INTRU_TOL_PING_TYPE)
 #define     Is_diffie_hellman(t) (((t) & DATA_MASK) == DIFFIE_HELLMAN_TYPE)
 
-#define         SPINES_TTL_MAX  255
+#define     SPINES_TTL_MAX  255
 
 #define     PING 1
 #define     PONG 2
@@ -138,6 +138,19 @@ typedef int16u         Link_State_LTS;  /* NOTE: must be an unsigned type: see L
 #  define  Is_acast_addr(x) (((x) & 0xF0000000) == 0xF0000000)
 #  define  Is_node_addr(x)  (!Is_mcast_addr(x) && !Is_acast_addr(x))
 #endif
+
+/* Generic union to hold different families of sockaddr structures */
+typedef union {
+    unsigned short          family;
+    struct sockaddr_in      inet_addr;
+#ifdef IPV6_SUPPORT
+    struct sockaddr_in6     inet6_addr;
+#endif
+    struct sockaddr_storage stor_addr;
+#ifndef ARCH_PC_WIN95
+    struct sockaddr_un      unix_addr;
+#endif
+} spines_sockaddr;
 
 /* This goes in front of each packet (any kind), as it is sent on the network */
 typedef	struct	dummy_packet_header {

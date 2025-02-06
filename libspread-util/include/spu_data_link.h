@@ -65,6 +65,7 @@
 channel	DL_init_channel( int32 channel_type, int16 port, int32 mcast_address, int32 interface_address );
 void    DL_close_channel(channel chan);
 int	DL_send( channel chan, int32 address, int16 port, sys_scatter *scat );
+int DL_send_connected( channel chan, sys_scatter *scat);
 int	DL_recv( channel chan, sys_scatter *scat );
 int	DL_recvfrom( channel chan, sys_scatter *scat, int *src_address, unsigned short *src_port );
 

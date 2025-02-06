@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2015 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2016 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -43,6 +43,8 @@
 
 /* Configuration File Variables */
 extern char        Config_File_Found;
+extern char        Unix_Domain_Prefix[];
+extern char        Unix_Domain_Use_Default;
 extern stdhash     Node_Lookup_Addr_to_ID;
 extern stdhash     Node_Lookup_ID_to_Addr;
 extern int16u      My_ID;
@@ -52,10 +54,6 @@ extern int16u      *Neighbor_IDs[];
 extern Node_ID           My_Address;
 extern int16u            Num_Local_Interfaces;
 extern Network_Address   My_Interface_Addresses[];
-
-static  char    Conf_FileName[80];
-/* static  char    Conf_MyName_buf[80];
-static  char    *Conf_MyName; */
 
 unsigned char Conf_Hash[SHA256_DIGEST_LENGTH];
 
@@ -175,14 +173,13 @@ void    Post_Conf_Setup()
     RR_Post_Conf_Setup();
     Prio_Post_Conf_Setup();
     Rel_Post_Conf_Setup();
-    MultiPath_Post_Conf_Setup();
 
     Conf_compute_hash();
 }
 
 void	Conf_init( char *file_name /*, char *my_name*/ )
 {
-        strncpy(Conf_FileName, file_name, 80);
+        /* strncpy(Conf_FileName, file_name, 80); */
         /*if (my_name != NULL) {
                 strncpy(Conf_MyName_buf, my_name, 80);
                 Conf_MyName = &Conf_MyName_buf[0];
@@ -347,6 +344,23 @@ void Conf_set_directed_edges(bool new_state)
 void Conf_set_path_stamp_debug(bool new_state)
 {
     Path_Stamp_Debug = new_state; 
+}
+
+void Conf_set_unix_domain_path(char *new_prefix)
+{
+#ifndef ARCH_PC_WIN95
+    int ret;
+    size_t s_len;
+
+    /* Check room for length of "data" suffix and NULL byte */
+    s_len = SUN_PATH_LEN - strlen(SPINES_UNIX_DATA_SUFFIX) - 1;
+    ret = snprintf(Unix_Domain_Prefix, s_len, "%s", new_prefix);
+    if (ret > s_len) {
+        Alarm(EXIT, "Conf_set_unix_domain_path: path name too long (%d), "
+                        "max allowed = %u\n", ret, s_len);
+    }
+    Unix_Domain_Use_Default = 0;
+#endif
 }
 
 void Conf_set_IT_crypto(bool new_state)

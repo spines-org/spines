@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2016 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -28,7 +28,6 @@
  *    Nilo Rivera
  *
  */
-
 
 #ifndef SPINES_LIB_H
 #define SPINES_LIB_H
@@ -81,18 +80,22 @@ extern "C" {
 #define     RELIABLE_LINKS          0x00000001
 #define     SOFT_REALTIME_LINKS     0x00000002
 #define     RESERVED_LINKS1         0x00000003 /* MN */
-#define     RESERVED_LINKS2         0x00000004 /* SC2 */
-#define     TCP_IP_LINKS            0x00000005 
 #define     INTRUSION_TOL_LINKS     0x00000008 /* DT */
 #define     RESERVED_LINKS_BITS     0x0000000f
 
 #define     UDP_CONNECT             0x00000010
 
-#define MIN_WEIGHT_ROUTING          0x00000000
-#define BEST_EFFORT_FLOOD_ROUTING   0x00000100
-#define RELIABLE_FLOOD_ROUTING      0x00000200
-#define RESERVED_ROUTING_BITS       0x00000f00
-#define ROUTING_BITS_SHIFT          8
+#define     MIN_WEIGHT_ROUTING      0x00000000
+#define     IT_PRIORITY_ROUTING     0x00000100
+#define     IT_RELIABLE_ROUTING     0x00000200
+#define     RESERVED_ROUTING_BITS   0x00000f00
+#define     ROUTING_BITS_SHIFT      8
+
+#define     RELIABLE_STREAM_SESSION                   0x00000000
+#define     RELIABLE_DGRAM_SESSION_NO_BACKPRESSURE    0x00001000
+#define     RELIABLE_DGRAM_SESSION_WITH_BACKPRESSURE  0x00002000
+#define     RESERVED_SESSION_BITS                     0x0000f000
+#define     SESSION_BITS_SHIFT                        12
 
 #define     SEND_GROUP              0x1000
 #define     RECV_GROUP              0x2000
@@ -117,6 +120,8 @@ extern "C" {
 #define     SPINES_DISJOINT_PATHS   73
 
 #define     DEFAULT_SPINES_PORT     8100
+#define     SPINES_UNIX_SOCKET_PATH "/tmp/spines"
+#define     SPINES_UNIX_DATA_SUFFIX "data"
 
 #define     SP_ERROR_VERSION_MISMATCH   7845
 #define     SP_ERROR_LIB_ALREADY_INITED 7846
@@ -132,27 +137,6 @@ extern "C" {
 #  define Is_acast_addr(x) (((x) & 0xF0000000) == 0xF0000000)
 #  define Is_node_addr(x)  (!Is_mcast_addr(x) && !Is_acast_addr(x))
 #endif
-
-typedef struct Lib_Client_d {
-    int tcp_sk;
-    int udp_sk;
-    int type;
-    int endianess_type;
-    int sess_id;
-    int rnd_num;
-    int srv_addr;       /* stored in host byte order */
-    int srv_port;
-    int protocol;
-    int my_addr;
-    int my_port;
-    int connect_addr;
-    int connect_port;
-    int connect_flag;
-    int virtual_local_port;  /* stored in host byte order */
-    int ip_ttl;              /* ttl to stamp all unicast "DATA" UDP packets */ 
-    int mcast_ttl;           /* ttl to stamp all multicast "DATA" UDP packets */
-    int routing;
-} Lib_Client;
 
 typedef struct spines_trace_d {
     int count;

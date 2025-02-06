@@ -44,8 +44,8 @@ to provide redundancy.
 
 In order to provide message authentication and integrity, messages on the
 Intrusion Tolerant Link are HMAC'd and messages sent via the Priority Messaging
-and Reliable Messaging schemes are signed. The parameters for this are in the
-configuration file.
+and Reliable Messaging schemes are signed. We use OpenSSL for the cryptographic
+functions, and the parameters for these functions are in the configuration file.
 
 Files for cryptographic functions (e.g. public and private keys) are expected
 to be in the keys/ folder if cryptographic methods are enabled. These files can

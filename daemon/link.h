@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2015 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2016 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -56,7 +56,6 @@ typedef enum
 
   RESERVED0_LINK,      /* MN */
   RESERVED1_LINK,      /* TCP */
-  RESERVED2_LINK,      /* SC2 */
   INTRUSION_TOL_LINK,  /* Low-Level Intrusion-Tolerant Reliable UDP Link */
 
   MAX_LINKS_4_EDGE,
@@ -119,7 +118,7 @@ typedef enum {
 
 #define MAX_BUFF_LINK    50
 #define MAX_REORDER      10
-#define MAX_SEND_ON_LINK 250 /* default used to be 100 */
+#define MAX_SEND_ON_LINK 500 /* default used to be 100 */
 #define LINK_START_SEQ   1   /* test wrap-around case: (2147483648-90) */
 #define MAX_PING_HIST    5
 #define HISTORY_SIZE     10

@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2015 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2016 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -93,7 +93,6 @@ ext Flow_Node *Flow_Nodes_Outbound[MAX_NODES+1];
 ext Flow_Edge Flow_Edge_Head;
 
 void   MultiPath_Pre_Conf_Setup(void);
-void   MultiPath_Post_Conf_Setup(void);
 void   Init_MultiPath(void);
 void   MultiPath_Clear_Cache(void);
 int    MultiPath_Compute(int16u dest_id, int16u k); 

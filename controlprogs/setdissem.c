@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2015 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2016 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -53,7 +53,7 @@ int main(int argc, char *argv[])
     struct sockaddr_in daemon, *daemon_ptr = NULL;
     int overwrite_ip = 0;
 
-    port = 8100;
+    port = DEFAULT_SPINES_PORT;   /* 8100 */
    
     if (argc < 3 || argc > 5) {
 	    print_usage();
@@ -72,8 +72,10 @@ int main(int argc, char *argv[])
       daemon_ptr = &daemon;
 
       sscanf(argv[3], "%d.%d.%d.%d", &i1, &i2, &i3, &i4);
+      daemon.sin_family = AF_INET;
       daemon.sin_addr.s_addr = ((i1 << 24 ) | (i2 << 16) | (i3 << 8) | i4);
       daemon.sin_addr.s_addr = htonl(daemon.sin_addr.s_addr);
+      daemon.sin_port = htons(DEFAULT_SPINES_PORT);
     }
 
     if (argc > 4) {

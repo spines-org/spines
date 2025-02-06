@@ -40,7 +40,7 @@ static int yygrowstack(void);
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2015 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2016 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -332,126 +332,127 @@ static  int 	get_parsed_proc_info( char *name, proc *p )
 #define MPBITMASKSIZE 265
 #define DIRECTEDEDGES 266
 #define PATHSTAMPDEBUG 267
-#define RRCRYPTO 268
-#define ITCRYPTO 269
-#define ORDEREDDELIVERY 270
-#define REINTRODUCEMSGS 271
-#define TCPFAIRNESS 272
-#define SESSIONBLOCKING 273
-#define MSGPERSAA 274
-#define SENDBATCHSIZE 275
-#define ITMODE 276
-#define RELIABLETIMEOUTFACTOR 277
-#define NACKTIMEOUTFACTOR 278
-#define INITNACKTOFACTOR 279
-#define ACKTO 280
-#define PINGTO 281
-#define DHTO 282
-#define INCARNATIONTO 283
-#define MINRTTMS 284
-#define ITDEFAULTRTT 285
-#define PRIOCRYPTO 286
-#define DEFAULTPRIO 287
-#define MAXMESSSTORED 288
-#define MINBELLYSIZE 289
-#define DEFAULTEXPIRESEC 290
-#define DEFAULTEXPIREUSEC 291
-#define GARBAGECOLLECTIONSEC 292
-#define RELCRYPTO 293
-#define RELSAATHRESHOLD 294
-#define HBHADVANCE 295
-#define HBHACKTIMEOUT 296
-#define HBHOPT 297
-#define E2EACKTIMEOUT 298
-#define E2EOPT 299
-#define LOSSTHRESHOLD 300
-#define LOSSCALCDECAY 301
-#define LOSSCALCTIMETRIGGER 302
-#define LOSSCALCPKTTRIGGER 303
-#define LOSSPENALTY 304
-#define PINGTHRESHOLD 305
-#define STATUSCHANGETIMEOUT 306
-#define HOSTS 307
-#define EDGES 308
-#define SP_BOOL 309
-#define SP_TRIVAL 310
-#define DDEBUG 311
-#define DEXIT 312
-#define DPRINT 313
-#define DDATA_LINK 314
-#define DNETWORK 315
-#define DPROTOCOL 316
-#define DSESSION 317
-#define DCONF 318
-#define DALL 319
-#define DNONE 320
-#define IPADDR 321
-#define NUMBER 322
-#define DECIMAL 323
-#define STRING 324
+#define UNIXDOMAINPATH 268
+#define RRCRYPTO 269
+#define ITCRYPTO 270
+#define ORDEREDDELIVERY 271
+#define REINTRODUCEMSGS 272
+#define TCPFAIRNESS 273
+#define SESSIONBLOCKING 274
+#define MSGPERSAA 275
+#define SENDBATCHSIZE 276
+#define ITMODE 277
+#define RELIABLETIMEOUTFACTOR 278
+#define NACKTIMEOUTFACTOR 279
+#define INITNACKTOFACTOR 280
+#define ACKTO 281
+#define PINGTO 282
+#define DHTO 283
+#define INCARNATIONTO 284
+#define MINRTTMS 285
+#define ITDEFAULTRTT 286
+#define PRIOCRYPTO 287
+#define DEFAULTPRIO 288
+#define MAXMESSSTORED 289
+#define MINBELLYSIZE 290
+#define DEFAULTEXPIRESEC 291
+#define DEFAULTEXPIREUSEC 292
+#define GARBAGECOLLECTIONSEC 293
+#define RELCRYPTO 294
+#define RELSAATHRESHOLD 295
+#define HBHADVANCE 296
+#define HBHACKTIMEOUT 297
+#define HBHOPT 298
+#define E2EACKTIMEOUT 299
+#define E2EOPT 300
+#define LOSSTHRESHOLD 301
+#define LOSSCALCDECAY 302
+#define LOSSCALCTIMETRIGGER 303
+#define LOSSCALCPKTTRIGGER 304
+#define LOSSPENALTY 305
+#define PINGTHRESHOLD 306
+#define STATUSCHANGETIMEOUT 307
+#define HOSTS 308
+#define EDGES 309
+#define SP_BOOL 310
+#define SP_TRIVAL 311
+#define DDEBUG 312
+#define DEXIT 313
+#define DPRINT 314
+#define DDATA_LINK 315
+#define DNETWORK 316
+#define DPROTOCOL 317
+#define DSESSION 318
+#define DCONF 319
+#define DALL 320
+#define DNONE 321
+#define IPADDR 322
+#define NUMBER 323
+#define DECIMAL 324
+#define STRING 325
 #define YYERRCODE 256
 short yylhs[] = {                                        -1,
     0,    1,    1,    1,    1,    2,    2,    2,    2,    2,
     2,    2,    2,    2,    2,    2,    2,    2,    2,    2,
     2,    2,    2,    2,    2,    2,    2,    2,    2,    2,
     2,    2,    2,    2,    2,    2,    2,    2,    2,    2,
-    2,    2,    2,    2,    2,    2,    2,    2,    2,    3,
-    5,    5,    6,    4,    7,    7,    8,
+    2,    2,    2,    2,    2,    2,    2,    2,    2,    2,
+    3,    5,    5,    6,    4,    7,    7,    8,
 };
 short yylen[] = {                                         2,
     1,    2,    2,    2,    0,    3,    3,    3,    3,    3,
     3,    3,    3,    3,    3,    3,    3,    3,    3,    3,
     3,    3,    3,    3,    3,    3,    3,    3,    3,    3,
     3,    3,    3,    3,    3,    3,    3,    3,    3,    3,
-    3,    3,    3,    3,    3,    3,    3,    3,    3,    4,
-    2,    1,    2,    4,    2,    1,    3,
+    3,    3,    3,    3,    3,    3,    3,    3,    3,    3,
+    4,    2,    1,    2,    4,    2,    1,    3,
 };
 short yydefred[] = {                                      0,
     0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
     0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
     0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
     0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
-    0,    0,    0,    0,    0,    0,    0,    1,    0,    0,
+    0,    0,    0,    0,    0,    0,    0,    0,    1,    0,
     0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
     0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
     0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
     0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
-    0,    0,    0,    0,    0,    0,    0,    2,    3,    4,
-    6,    7,    8,    9,   10,   28,   11,   12,   13,   14,
-   15,   16,   17,   18,   19,   20,   21,   22,   23,   24,
-   25,   26,   27,   29,   30,   31,   32,   33,   34,   35,
-   36,   37,   38,   39,   40,   41,   42,   43,   44,   45,
-   46,   47,   48,   49,    0,    0,    0,    0,    0,    0,
-   53,   50,   51,    0,   54,   55,   57,
+    0,    0,    0,    0,    0,    0,    0,    0,    0,    2,
+    3,    4,    6,    7,    8,    9,   10,   11,   29,   12,
+   13,   14,   15,   16,   17,   18,   19,   20,   21,   22,
+   23,   24,   25,   26,   27,   28,   30,   31,   32,   33,
+   34,   35,   36,   37,   38,   39,   40,   41,   42,   43,
+   44,   45,   46,   47,   48,   49,   50,    0,    0,    0,
+    0,    0,    0,   54,   51,   52,    0,   55,   56,   58,
 };
-short yydgoto[] = {                                      47,
-   48,   49,   50,   51,  146,  147,  149,  150,
+short yydgoto[] = {                                      48,
+   49,   50,   51,   52,  149,  150,  152,  153,
 };
 short yysindex[] = {                                   -263,
- -210, -209, -208, -207, -206, -205, -204, -203, -202, -201,
- -200, -199, -198, -197, -196, -195, -194, -193, -192, -191,
- -190, -189, -188, -187, -186, -185, -184, -183, -182, -181,
- -180, -179, -178, -177, -176, -175, -174, -173, -172, -171,
- -170, -169, -168, -167, -164, -163,    0,    0, -263, -263,
- -263, -214, -226, -225, -211, -166, -165, -162, -161, -160,
- -159, -158, -223, -222, -157, -221, -220, -219, -217, -216,
- -215, -213, -212, -156, -155, -154, -153, -152, -151, -150,
- -149, -148, -147, -146, -145, -144, -143, -142, -141, -140,
- -138, -137, -136, -135, -134, -133, -132,    0,    0,    0,
+ -209, -208, -207, -206, -205, -204, -203, -202, -201, -200,
+ -199, -198, -197, -196, -195, -194, -193, -192, -191, -190,
+ -189, -188, -187, -186, -185, -184, -183, -182, -181, -180,
+ -179, -178, -177, -176, -175, -174, -173, -172, -171, -170,
+ -169, -168, -167, -166, -165, -162, -161,    0,    0, -263,
+ -263, -263, -213, -225, -224, -210, -164, -223, -163, -160,
+ -159, -158, -157, -156, -222, -220, -155, -219, -218, -217,
+ -215, -214, -212, -211, -154, -153, -152, -151, -150, -149,
+ -148, -147, -146, -145, -144, -143, -142, -139, -141, -132,
+ -140, -138, -136, -135, -134, -133, -131, -130, -129,    0,
     0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
     0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
     0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
     0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
-    0,    0,    0,    0, -218, -139, -133, -131, -130, -132,
-    0,    0,    0, -129,    0,    0,    0,
+    0,    0,    0,    0,    0,    0,    0, -216, -137, -130,
+ -128, -127, -129,    0,    0,    0, -126,    0,    0,    0,
 };
-short yyrindex[] = {                                    108,
+short yyrindex[] = {                                    110,
     0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
     0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
     0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
     0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
-    0,    0,    0,    0,    0,    0,    0,    0,  108,  108,
-  108,    0,    0,    0,    0,    0,    0,    0,    0,    0,
+    0,    0,    0,    0,    0,    0,    0,    0,    0,  110,
+  110,  110,    0,    0,    0,    0,    0,    0,    0,    0,
     0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
     0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
     0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
@@ -460,62 +461,62 @@ short yyrindex[] = {                                    108,
     0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
     0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
     0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
-    0,    0,    0,    0,    0,    0, -128,    0,    0, -127,
-    0,    0,    0,    0,    0,    0,    0,
+    0,    0,    0,    0,    0,    0,    0,    0,    0, -125,
+    0,    0, -124,    0,    0,    0,    0,    0,    0,    0,
 };
 short yygindex[] = {                                      0,
-   -3,    0,    0,    0,  -36,    0,  -38,    0,
+   -3,    0,    0,    0,  -37,    0,  -39,    0,
 };
-#define YYTABLESIZE 193
+#define YYTABLESIZE 197
 short yytable[] = {                                       1,
     2,    3,    4,    5,    6,    7,    8,    9,   10,   11,
    12,   13,   14,   15,   16,   17,   18,   19,   20,   21,
    22,   23,   24,   25,   26,   27,   28,   29,   30,   31,
    32,   33,   34,   35,   36,   37,   38,   39,   40,   41,
-   42,   43,   44,   45,   46,   98,   99,  100,   52,   53,
+   42,   43,   44,   45,   46,   47,  100,  101,  102,   53,
    54,   55,   56,   57,   58,   59,   60,   61,   62,   63,
    64,   65,   66,   67,   68,   69,   70,   71,   72,   73,
    74,   75,   76,   77,   78,   79,   80,   81,   82,   83,
    84,   85,   86,   87,   88,   89,   90,   91,   92,   93,
-   94,   95,   96,   97,  101,  102,  103,  104,  112,  113,
-  115,  116,  151,  117,  118,  119,  120,    5,  121,  122,
-  153,  156,    0,    0,    0,    0,    0,    0,  152,    0,
-    0,    0,    0,    0,    0,    0,    0,  155,    0,   52,
-   56,    0,    0,    0,    0,    0,    0,    0,    0,    0,
-    0,    0,  105,  106,    0,    0,  107,  108,  109,  110,
-  111,  114,    0,  124,    0,    0,    0,    0,    0,    0,
-  131,    0,  133,    0,  135,  123,  137,  125,  126,  127,
-  128,  129,  130,    0,  132,    0,  134,    0,  136,    0,
-    0,  138,  139,  140,  141,  142,  143,  144,  145,  148,
-  154,    0,  157,
+   94,   95,   96,   97,   98,   99,  103,  104,  105,  106,
+  115,  108,  116,  118,  119,  154,  120,  121,  122,    5,
+  123,  124,  156,  159,    0,    0,    0,    0,    0,    0,
+  155,    0,    0,    0,    0,    0,    0,    0,    0,    0,
+  158,    0,   53,   57,    0,    0,    0,    0,    0,    0,
+    0,    0,    0,    0,    0,  107,  109,    0,    0,  110,
+  111,  112,  113,  114,  117,    0,    0,  127,    0,    0,
+    0,    0,    0,    0,  134,    0,  136,    0,  125,  126,
+  138,  128,  129,  130,  131,  132,  133,  140,  135,    0,
+  137,  139,    0,  141,    0,  142,  143,  144,  145,  146,
+    0,  147,  148,  151,  157,    0,  160,
 };
 short yycheck[] = {                                     263,
   264,  265,  266,  267,  268,  269,  270,  271,  272,  273,
   274,  275,  276,  277,  278,  279,  280,  281,  282,  283,
   284,  285,  286,  287,  288,  289,  290,  291,  292,  293,
   294,  295,  296,  297,  298,  299,  300,  301,  302,  303,
-  304,  305,  306,  307,  308,   49,   50,   51,  259,  259,
+  304,  305,  306,  307,  308,  309,   50,   51,   52,  259,
   259,  259,  259,  259,  259,  259,  259,  259,  259,  259,
   259,  259,  259,  259,  259,  259,  259,  259,  259,  259,
   259,  259,  259,  259,  259,  259,  259,  259,  259,  259,
   259,  259,  259,  259,  259,  259,  259,  259,  259,  259,
-  259,  259,  257,  257,  309,  322,  322,  309,  322,  322,
-  322,  322,  321,  323,  322,  322,  322,    0,  322,  322,
-  147,  150,   -1,   -1,   -1,   -1,   -1,   -1,  258,   -1,
-   -1,   -1,   -1,   -1,   -1,   -1,   -1,  258,   -1,  258,
+  259,  259,  259,  259,  257,  257,  310,  323,  323,  310,
+  323,  325,  323,  323,  323,  322,  324,  323,  323,    0,
+  323,  323,  150,  153,   -1,   -1,   -1,   -1,   -1,   -1,
   258,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,
-   -1,   -1,  309,  309,   -1,   -1,  309,  309,  309,  309,
-  309,  309,   -1,  309,   -1,   -1,   -1,   -1,   -1,   -1,
-  309,   -1,  309,   -1,  309,  322,  309,  322,  322,  322,
-  322,  322,  322,   -1,  322,   -1,  322,   -1,  322,   -1,
-   -1,  323,  323,  322,  322,  322,  322,  322,  322,  322,
-  322,   -1,  322,
+  258,   -1,  258,  258,   -1,   -1,   -1,   -1,   -1,   -1,
+   -1,   -1,   -1,   -1,   -1,  310,  310,   -1,   -1,  310,
+  310,  310,  310,  310,  310,   -1,   -1,  310,   -1,   -1,
+   -1,   -1,   -1,   -1,  310,   -1,  310,   -1,  323,  323,
+  310,  323,  323,  323,  323,  323,  323,  310,  323,   -1,
+  323,  323,   -1,  324,   -1,  324,  323,  323,  323,  323,
+   -1,  323,  323,  323,  323,   -1,  323,
 };
-#define YYFINAL 47
+#define YYFINAL 48
 #ifndef YYDEBUG
 #define YYDEBUG 0
 #endif
-#define YYMAXTOKEN 324
+#define YYMAXTOKEN 325
 #if YYDEBUG
 char *yyname[] = {
 "end-of-file",0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
@@ -526,17 +527,18 @@ char *yyname[] = {
 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,"OPENBRACE","CLOSEBRACE","EQUALS",
 "COLON","BANG","DEBUGFLAGS","CRYPTO","SIGLENBITS","MPBITMASKSIZE",
-"DIRECTEDEDGES","PATHSTAMPDEBUG","RRCRYPTO","ITCRYPTO","ORDEREDDELIVERY",
-"REINTRODUCEMSGS","TCPFAIRNESS","SESSIONBLOCKING","MSGPERSAA","SENDBATCHSIZE",
-"ITMODE","RELIABLETIMEOUTFACTOR","NACKTIMEOUTFACTOR","INITNACKTOFACTOR","ACKTO",
-"PINGTO","DHTO","INCARNATIONTO","MINRTTMS","ITDEFAULTRTT","PRIOCRYPTO",
-"DEFAULTPRIO","MAXMESSSTORED","MINBELLYSIZE","DEFAULTEXPIRESEC",
-"DEFAULTEXPIREUSEC","GARBAGECOLLECTIONSEC","RELCRYPTO","RELSAATHRESHOLD",
-"HBHADVANCE","HBHACKTIMEOUT","HBHOPT","E2EACKTIMEOUT","E2EOPT","LOSSTHRESHOLD",
-"LOSSCALCDECAY","LOSSCALCTIMETRIGGER","LOSSCALCPKTTRIGGER","LOSSPENALTY",
-"PINGTHRESHOLD","STATUSCHANGETIMEOUT","HOSTS","EDGES","SP_BOOL","SP_TRIVAL",
-"DDEBUG","DEXIT","DPRINT","DDATA_LINK","DNETWORK","DPROTOCOL","DSESSION",
-"DCONF","DALL","DNONE","IPADDR","NUMBER","DECIMAL","STRING",
+"DIRECTEDEDGES","PATHSTAMPDEBUG","UNIXDOMAINPATH","RRCRYPTO","ITCRYPTO",
+"ORDEREDDELIVERY","REINTRODUCEMSGS","TCPFAIRNESS","SESSIONBLOCKING","MSGPERSAA",
+"SENDBATCHSIZE","ITMODE","RELIABLETIMEOUTFACTOR","NACKTIMEOUTFACTOR",
+"INITNACKTOFACTOR","ACKTO","PINGTO","DHTO","INCARNATIONTO","MINRTTMS",
+"ITDEFAULTRTT","PRIOCRYPTO","DEFAULTPRIO","MAXMESSSTORED","MINBELLYSIZE",
+"DEFAULTEXPIRESEC","DEFAULTEXPIREUSEC","GARBAGECOLLECTIONSEC","RELCRYPTO",
+"RELSAATHRESHOLD","HBHADVANCE","HBHACKTIMEOUT","HBHOPT","E2EACKTIMEOUT",
+"E2EOPT","LOSSTHRESHOLD","LOSSCALCDECAY","LOSSCALCTIMETRIGGER",
+"LOSSCALCPKTTRIGGER","LOSSPENALTY","PINGTHRESHOLD","STATUSCHANGETIMEOUT",
+"HOSTS","EDGES","SP_BOOL","SP_TRIVAL","DDEBUG","DEXIT","DPRINT","DDATA_LINK",
+"DNETWORK","DPROTOCOL","DSESSION","DCONF","DALL","DNONE","IPADDR","NUMBER",
+"DECIMAL","STRING",
 };
 char *yyrule[] = {
 "$accept : Config",
@@ -550,6 +552,7 @@ char *yyrule[] = {
 "ParamStruct : MPBITMASKSIZE EQUALS NUMBER",
 "ParamStruct : DIRECTEDEDGES EQUALS SP_BOOL",
 "ParamStruct : PATHSTAMPDEBUG EQUALS SP_BOOL",
+"ParamStruct : UNIXDOMAINPATH EQUALS STRING",
 "ParamStruct : ITCRYPTO EQUALS SP_BOOL",
 "ParamStruct : ORDEREDDELIVERY EQUALS SP_BOOL",
 "ParamStruct : REINTRODUCEMSGS EQUALS SP_BOOL",
@@ -635,7 +638,7 @@ static short   *yyss;
 static short   *yysslim;
 static YYSTYPE *yyvs;
 static int      yystacksize;
-#line 402 "config_parse.y"
+#line 403 "config_parse.y"
 void yywarn(char *str) {
         fprintf(stderr, "-------Parse Warning-----------\n");
         fprintf(stderr, "Parser warning on or before line %d\n", line_num);
@@ -649,7 +652,7 @@ int yyerror(char *str) {
   fprintf(stderr, "Offending token: %s\n", yytext);
   exit(1);
 }
-#line 653 "y.tab.c"
+#line 656 "y.tab.c"
 /* allocate initial stack or double stack size, up to YYMAXDEPTH */
 static int yygrowstack(void)
 {
@@ -836,189 +839,193 @@ case 6:
 break;
 case 7:
 #line 331 "config_parse.y"
-{Conf_set_signature_len_bits(yyvsp[0].number); }
+{ Conf_set_signature_len_bits(yyvsp[0].number); }
 break;
 case 8:
 #line 332 "config_parse.y"
-{Conf_set_multipath_bitmask_size(yyvsp[0].number); }
+{ Conf_set_multipath_bitmask_size(yyvsp[0].number); }
 break;
 case 9:
 #line 333 "config_parse.y"
-{Conf_set_directed_edges(yyvsp[0].boolean); }
+{ Conf_set_directed_edges(yyvsp[0].boolean); }
 break;
 case 10:
 #line 334 "config_parse.y"
-{Conf_set_path_stamp_debug(yyvsp[0].boolean); }
+{ Conf_set_path_stamp_debug(yyvsp[0].boolean); }
 break;
 case 11:
-#line 336 "config_parse.y"
-{ Conf_set_IT_crypto(yyvsp[0].boolean); }
+#line 335 "config_parse.y"
+{ Conf_set_unix_domain_path(yyvsp[0].string); }
 break;
 case 12:
 #line 337 "config_parse.y"
-{ Conf_set_IT_ordered_delivery(yyvsp[0].boolean); }
+{ Conf_set_IT_crypto(yyvsp[0].boolean); }
 break;
 case 13:
 #line 338 "config_parse.y"
-{ Conf_set_IT_reintroduce_messages(yyvsp[0].boolean); }
+{ Conf_set_IT_ordered_delivery(yyvsp[0].boolean); }
 break;
 case 14:
 #line 339 "config_parse.y"
-{ Conf_set_IT_tcp_fairness(yyvsp[0].boolean); }
+{ Conf_set_IT_reintroduce_messages(yyvsp[0].boolean); }
 break;
 case 15:
 #line 340 "config_parse.y"
-{ Conf_set_IT_session_blocking(yyvsp[0].boolean); }
+{ Conf_set_IT_tcp_fairness(yyvsp[0].boolean); }
 break;
 case 16:
 #line 341 "config_parse.y"
-{ Conf_set_IT_msg_per_saa(yyvsp[0].number); }
+{ Conf_set_IT_session_blocking(yyvsp[0].boolean); }
 break;
 case 17:
 #line 342 "config_parse.y"
-{ Conf_set_IT_send_batch_size(yyvsp[0].number); }
+{ Conf_set_IT_msg_per_saa(yyvsp[0].number); }
 break;
 case 18:
 #line 343 "config_parse.y"
-{ Conf_set_IT_intrusion_tolerance_mode(yyvsp[0].boolean); }
+{ Conf_set_IT_send_batch_size(yyvsp[0].number); }
 break;
 case 19:
 #line 344 "config_parse.y"
-{ Conf_set_IT_reliable_timeout_factor(yyvsp[0].number); }
+{ Conf_set_IT_intrusion_tolerance_mode(yyvsp[0].boolean); }
 break;
 case 20:
 #line 345 "config_parse.y"
-{ Conf_set_IT_nack_timeout_factor(yyvsp[0].number); }
+{ Conf_set_IT_reliable_timeout_factor(yyvsp[0].number); }
 break;
 case 21:
 #line 346 "config_parse.y"
-{ Conf_set_IT_init_nack_timeout_factor(yyvsp[0].decimal); }
+{ Conf_set_IT_nack_timeout_factor(yyvsp[0].number); }
 break;
 case 22:
 #line 347 "config_parse.y"
-{ Conf_set_IT_ack_timeout(yyvsp[0].number); }
+{ Conf_set_IT_init_nack_timeout_factor(yyvsp[0].decimal); }
 break;
 case 23:
 #line 348 "config_parse.y"
-{ Conf_set_IT_ping_timeout(yyvsp[0].number); }
+{ Conf_set_IT_ack_timeout(yyvsp[0].number); }
 break;
 case 24:
 #line 349 "config_parse.y"
-{ Conf_set_IT_dh_timeout(yyvsp[0].number); }
+{ Conf_set_IT_ping_timeout(yyvsp[0].number); }
 break;
 case 25:
 #line 350 "config_parse.y"
-{ Conf_set_IT_incarnation_timeout(yyvsp[0].number); }
+{ Conf_set_IT_dh_timeout(yyvsp[0].number); }
 break;
 case 26:
 #line 351 "config_parse.y"
-{ Conf_set_IT_min_RTT_ms(yyvsp[0].number); }
+{ Conf_set_IT_incarnation_timeout(yyvsp[0].number); }
 break;
 case 27:
 #line 352 "config_parse.y"
-{ Conf_set_IT_default_RTT(yyvsp[0].number); }
+{ Conf_set_IT_min_RTT_ms(yyvsp[0].number); }
 break;
 case 28:
-#line 354 "config_parse.y"
-{ Conf_set_RR_crypto(yyvsp[0].boolean); }
+#line 353 "config_parse.y"
+{ Conf_set_IT_default_RTT(yyvsp[0].number); }
 break;
 case 29:
-#line 356 "config_parse.y"
-{ Conf_set_Prio_crypto(yyvsp[0].boolean); }
+#line 355 "config_parse.y"
+{ Conf_set_RR_crypto(yyvsp[0].boolean); }
 break;
 case 30:
 #line 357 "config_parse.y"
-{ Conf_set_Prio_default_prio(yyvsp[0].number); }
+{ Conf_set_Prio_crypto(yyvsp[0].boolean); }
 break;
 case 31:
 #line 358 "config_parse.y"
-{ Conf_set_Prio_max_mess_stored(yyvsp[0].number); }
+{ Conf_set_Prio_default_prio(yyvsp[0].number); }
 break;
 case 32:
 #line 359 "config_parse.y"
-{ Conf_set_Prio_min_belly_size(yyvsp[0].number); }
+{ Conf_set_Prio_max_mess_stored(yyvsp[0].number); }
 break;
 case 33:
 #line 360 "config_parse.y"
-{ Conf_set_Prio_default_expire_sec(yyvsp[0].number); }
+{ Conf_set_Prio_min_belly_size(yyvsp[0].number); }
 break;
 case 34:
 #line 361 "config_parse.y"
-{ Conf_set_Prio_default_expire_usec(yyvsp[0].number); }
+{ Conf_set_Prio_default_expire_sec(yyvsp[0].number); }
 break;
 case 35:
 #line 362 "config_parse.y"
-{ Conf_set_Prio_garbage_collection_sec(yyvsp[0].number); }
+{ Conf_set_Prio_default_expire_usec(yyvsp[0].number); }
 break;
 case 36:
-#line 364 "config_parse.y"
-{ Conf_set_Rel_crypto(yyvsp[0].boolean); }
+#line 363 "config_parse.y"
+{ Conf_set_Prio_garbage_collection_sec(yyvsp[0].number); }
 break;
 case 37:
 #line 365 "config_parse.y"
-{ Conf_set_Rel_saa_threshold(yyvsp[0].number); }
+{ Conf_set_Rel_crypto(yyvsp[0].boolean); }
 break;
 case 38:
 #line 366 "config_parse.y"
-{ Conf_set_Rel_hbh_advance(yyvsp[0].boolean); }
+{ Conf_set_Rel_saa_threshold(yyvsp[0].number); }
 break;
 case 39:
 #line 367 "config_parse.y"
-{ Conf_set_Rel_hbh_ack_timeout(yyvsp[0].number); }
+{ Conf_set_Rel_hbh_advance(yyvsp[0].boolean); }
 break;
 case 40:
 #line 368 "config_parse.y"
-{ Conf_set_Rel_hbh_ack_optimization(yyvsp[0].boolean); }
+{ Conf_set_Rel_hbh_ack_timeout(yyvsp[0].number); }
 break;
 case 41:
 #line 369 "config_parse.y"
-{ Conf_set_Rel_e2e_ack_timeout(yyvsp[0].number); }
+{ Conf_set_Rel_hbh_ack_optimization(yyvsp[0].boolean); }
 break;
 case 42:
 #line 370 "config_parse.y"
-{ Conf_set_Rel_e2e_ack_optimization(yyvsp[0].boolean); }
+{ Conf_set_Rel_e2e_ack_timeout(yyvsp[0].number); }
 break;
 case 43:
-#line 372 "config_parse.y"
-{ Conf_set_Reroute_loss_threshold(yyvsp[0].decimal); }
+#line 371 "config_parse.y"
+{ Conf_set_Rel_e2e_ack_optimization(yyvsp[0].boolean); }
 break;
 case 44:
 #line 373 "config_parse.y"
-{ Conf_set_Reroute_loss_calc_decay(yyvsp[0].decimal); }
+{ Conf_set_Reroute_loss_threshold(yyvsp[0].decimal); }
 break;
 case 45:
 #line 374 "config_parse.y"
-{ Conf_set_Reroute_loss_calc_time_trigger(yyvsp[0].number); }
+{ Conf_set_Reroute_loss_calc_decay(yyvsp[0].decimal); }
 break;
 case 46:
 #line 375 "config_parse.y"
-{ Conf_set_Reroute_loss_calc_pkt_trigger(yyvsp[0].number); }
+{ Conf_set_Reroute_loss_calc_time_trigger(yyvsp[0].number); }
 break;
 case 47:
 #line 376 "config_parse.y"
-{ Conf_set_Reroute_loss_penalty(yyvsp[0].number); }
+{ Conf_set_Reroute_loss_calc_pkt_trigger(yyvsp[0].number); }
 break;
 case 48:
 #line 377 "config_parse.y"
-{ Conf_set_Reroute_ping_threshold(yyvsp[0].number); }
+{ Conf_set_Reroute_loss_penalty(yyvsp[0].number); }
 break;
 case 49:
 #line 378 "config_parse.y"
-{ Conf_set_Reroute_status_change_timeout(yyvsp[0].number); }
+{ Conf_set_Reroute_ping_threshold(yyvsp[0].number); }
 break;
 case 50:
-#line 381 "config_parse.y"
+#line 379 "config_parse.y"
+{ Conf_set_Reroute_status_change_timeout(yyvsp[0].number); }
+break;
+case 51:
+#line 382 "config_parse.y"
 { Conf_validate_hosts(); }
 break;
-case 53:
-#line 388 "config_parse.y"
+case 54:
+#line 389 "config_parse.y"
 { Conf_add_host(yyvsp[-1].number, yyvsp[0].ip.addr.s_addr); }
 break;
-case 57:
-#line 398 "config_parse.y"
+case 58:
+#line 399 "config_parse.y"
 { Conf_add_edge(yyvsp[-2].number, yyvsp[-1].number, yyvsp[0].number); }
 break;
-#line 1022 "y.tab.c"
+#line 1029 "y.tab.c"
     }
     yyssp -= yym;
     yystate = *yyssp;

@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2015 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2016 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -46,7 +46,7 @@
 #define LOSSRATE_ROUTE  2
 #define AVERAGE_ROUTE   3
 #define RESERVED1_ROUTE 4
-#define BEST_EFFORT_FLOOD_ROUTE 5
+#define IT_PRIORITY_ROUTE 5
 #define RELIABLE_FLOOD_ROUTE 6
 
 typedef struct Route_d 

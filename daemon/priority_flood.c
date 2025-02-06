@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2015 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2016 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -670,7 +670,7 @@ int Priority_Flood_Disseminate(Link *src_link, sys_scatter *scat, int mode)
                     * we can successfully send a message to the lower level */
                     while( (pldata->norm_head.next != NULL ||
                         pldata->urgent_head.next != NULL) &&
-                        Request_Resources(BEST_EFFORT_FLOOD_ROUTING >> 
+                        Request_Resources(IT_PRIORITY_ROUTING >> 
                             ROUTING_BITS_SHIFT, nd, mode, 
                             &Priority_Flood_Send_One));
                 }

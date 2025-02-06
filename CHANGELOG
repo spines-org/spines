@@ -1,3 +1,27 @@
+Version 5.1 - May 17, 2016
+    * Added support for Inter-Process Communication (UNIX Domain Sockets)
+        - Daemon binds to default filepath, non-default path can be specified on cmd line or in config file
+        - Changes to libspines to support AF_UNIX connections (on UNIX architectures)
+        - Testprogs and Controlprogs updated - IPC is new default, can connect via non-default path or AF_INET
+                - Testprogs: sp_bflooder, sp_uflooder, sp_tflooder, port2spines, spines2port, sp_ping, sp_xcast
+                - Controlprogs: setlink
+    * New design (and improvements) for session blocking in Reliable Messaging
+    * Added DL_send_connected() to send scatter gather using send_msg function for connection-based AF_INET 
+            and AF_UNIX sockets
+    * Added new session semantics (chosen by application) needed for IT reliable communication:
+        - RELIABLE_STREAM: Block session when flow buffers become full toward any destination
+        - RELIABLE_DGRAM_NO_BACKPRESSURE: Silently drop messages that do not fit, no blocking
+                *Experimental* (May be subject to change)
+        - RELIABLE_DGRAM_WITH_BACKPRESSURE: Explicit feedback indicating which messages are accepted, no blocking
+                *Experimental* (Not in open source yet)
+    * Renamed both of the intrusion-tolerant messaging semantics to more accurately match behavior:
+        - Changed BEST_EFFORT_FLOOD_ROUTING to IT_PRIORITY_ROUTING
+        - Changed RELIABLE_FLOOD_ROUTING TO IT_RELIABLE_ROUTING
+    * Several minor bug fixes, including:
+        - Reliable Messaging - fairness in the presence of a certain attack
+        - Large bitmask support - for bitmasks larger than 64 bits
+        - Reliable Session - now correctly uses the routing notion
+
 Version 5.0 - January 26, 2015
     * Added support for a configuration file (spines.conf) to specify:
         - Network topology (nodes and edges)

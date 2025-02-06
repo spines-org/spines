@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2015 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2016 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -92,8 +92,6 @@ WSADATA		WSAData;
 #define HOST_NAME_LEN 50
 #define SERVER_TYPE_LEN 20
 #define LOG_FILE_NAME_LEN 2000
-#define KEY_FILE_NAME_LEN 50
-
 
 /* Global Variables */
 
@@ -146,8 +144,10 @@ char     Log_Filename[LOG_FILE_NAME_LEN];
 int      Use_Log_File;
 
 /* Configuration File Variables */
-char        Config_file[80];
+char        Config_file[MAXPATHLEN];
 char        Config_File_Found;
+char        Unix_Domain_Prefix[SUN_PATH_LEN]; 
+char        Unix_Domain_Use_Default;
 stdhash     Node_Lookup_Addr_to_ID;
 stdhash     Node_Lookup_ID_to_Addr;
 int16u      My_ID;
@@ -254,9 +254,6 @@ int16u Signature_Len_Bits;
 EVP_PKEY *Pub_Keys[MAX_NODES + 1];
 EVP_PKEY *Priv_Key;
 
-/* unsigned char Path_Stamp_Debug; */
-/* char DH_Param_file[KEY_FILE_NAME_LEN]; */
-
 /* Static Variables */
 
 static void 	Usage(int argc, char *argv[]);
@@ -265,6 +262,7 @@ static void     Init_Memory_Objects(int x);
 void            Set_resource_limit(int max_mem);
 int32           Get_Interface_ip(char *iface);
 
+#if 0
 /* 01/2015 - SIGNAL HANDLER FUNCTION FOR DEBUGGING CRASHES */
 void signal_handler(int sig) {
     
@@ -292,6 +290,17 @@ void signal_handler(int sig) {
     printf("... Goodbye\n");
     exit(0);
 }
+#endif
+
+void E_exit_events_wrapper(int signum)
+{
+    E_exit_events_async_safe();
+}
+
+void Immediate_Cleanup(int signum)
+{
+    Session_Finish();
+}
 
 /***********************************************************/
 /* int main(int argc, char* argv[])                        */
@@ -313,13 +322,12 @@ void signal_handler(int sig) {
 int main(int argc, char* argv[]) 
 {
     sp_time now;
-#ifdef ARCH_PC_WIN95
     int ret;
-#endif
+    size_t s_len;
 
     Alarm( PRINT, "/===========================================================================\\\n");
     Alarm( PRINT, "| Spines                                                                    |\n");
-    Alarm( PRINT, "| Copyright (c) 2003 - 2015 Johns Hopkins University                        |\n"); 
+    Alarm( PRINT, "| Copyright (c) 2003 - 2016 Johns Hopkins University                        |\n"); 
     Alarm( PRINT, "| All rights reserved.                                                      |\n");
     Alarm( PRINT, "|                                                                           |\n");
     Alarm( PRINT, "| Spines is licensed under the Spines Open-Source License.                  |\n");
@@ -342,7 +350,7 @@ int main(int argc, char* argv[])
     Alarm( PRINT, "| WWW:     www.spines.org      www.dsn.jhu.edu                              |\n");
     Alarm( PRINT, "| Contact: spines@spines.org                                                |\n");
     Alarm( PRINT, "|                                                                           |\n");
-    Alarm( PRINT, "| Version 5.0, Built January 26, 2015                                       |\n"); 
+    Alarm( PRINT, "| Version 5.1, Built May 17, 2016                                           |\n"); 
     Alarm( PRINT, "|                                                                           |\n");
     Alarm( PRINT, "| This product uses software developed by Spread Concepts LLC for use       |\n");
     Alarm( PRINT, "| in the Spread toolkit. For more information about Spread,                 |\n");
@@ -360,8 +368,19 @@ int main(int argc, char* argv[])
     signal(SIGPIPE, SIG_IGN);
 #endif
 
-    signal(SIGSEGV, signal_handler);
+    /* Catch SIGINT, SIGTERM, SIGHUP (and other recoverable signals) in order to cleanup things 
+     * after closing event loop */
+    signal(SIGINT,  E_exit_events_wrapper);
+    signal(SIGTERM, E_exit_events_wrapper);
+    signal(SIGHUP,  E_exit_events_wrapper);
     
+    /* Catch SIGABRT, SIGSEGV, (and other unrecoverable signals) to cleanup things now.
+     * NOTE: handler calls unlink, which is async safe, so this approach is safe */
+    signal(SIGABRT, Immediate_Cleanup);
+    signal(SIGSEGV, Immediate_Cleanup);
+    signal(SIGFPE,  Immediate_Cleanup);
+    signal(SIGILL,  Immediate_Cleanup);
+
 #ifdef	ARCH_PC_WIN95    
     ret = WSAStartup( MAKEWORD(1,1), &WSAData );
     if( ret != 0 )
@@ -376,6 +395,17 @@ int main(int argc, char* argv[])
     /* Load Spines Configuration File */
     Config_File_Found = 0;
     Conf_init(Config_file);
+
+    /* Non-Default Unix Domain Path specified on cmd line or config file? */
+    if (Unix_Domain_Use_Default == 1) {
+        /* Check room for length of "data" suffix and NULL byte */
+        s_len = SUN_PATH_LEN - strlen(SPINES_UNIX_DATA_SUFFIX) - 1;
+        ret = snprintf(Unix_Domain_Prefix, s_len, "%s%hu", SPINES_UNIX_SOCKET_PATH, Port);
+        if (ret > s_len) {
+            Alarm(EXIT, "Default Unix Domain Pathname too large (%d)! Max allowed is %u\n",
+                    ret, s_len);
+        }
+    }
 
     E_init();
 
@@ -414,6 +444,8 @@ int main(int argc, char* argv[])
     IT_total_pkts   = 0;
 
     E_handle_events();
+
+    Session_Finish();
 
     return(1);
 }
@@ -612,6 +644,7 @@ static  void    Usage(int argc, char *argv[])
     char ip_str[16];
     int i1, i2, i3, i4;
     int tmp, ret;
+    size_t s_len;
     struct hostent *hostp;
     struct sockaddr_in sock_addr;
 
@@ -636,6 +669,7 @@ static  void    Usage(int argc, char *argv[])
     Memory_Limit = 0;
     memset((void*)Wireless_if, '\0', sizeof(Wireless_if));
     Use_Log_File = 0;
+    Unix_Domain_Use_Default = 1;
 
     strcpy( Config_file, "spines.conf" );
     Num_Discovery_Addresses = 0;
@@ -845,7 +879,27 @@ static  void    Usage(int argc, char *argv[])
 	    if (argc == 0) {
 	        Alarm(EXIT, "-c requires a parameter!\r\n");
 	    }
-        strncpy( Config_file, *argv, 80 );
+        /* Check room for length of "data" suffix and NULL byte */
+        s_len = MAXPATHLEN - 1;
+        ret = snprintf( Config_file, s_len, "%s", *argv );
+        if (ret > s_len) {
+            Alarm(EXIT, "-c: config file name too long (%d), max allowed is %u\n", ret, s_len);
+        }
+    }else if(!(strncmp(*argv, "-ud", 4))) {
+        ++argv;
+        --argc;
+        if (argc == 0) {
+            Alarm(EXIT, "-ud requres a parameter!\r\n");
+        }
+#ifndef ARCH_PC_WIN95
+        /* Check room for length of "data" suffix and NULL byte */
+        s_len = SUN_PATH_LEN - strlen(SPINES_UNIX_DATA_SUFFIX) - 1;
+        ret = snprintf( Unix_Domain_Prefix, s_len, "%s", *argv );
+        if (ret > s_len) {
+            Alarm(EXIT, "-ud: path name too long (%d), max allowed is %u\n", ret, s_len);
+        }
+        Unix_Domain_Use_Default = 0;
+#endif
 	}else{
 
 		Alarm(PRINT, "ERR: %d | %s\r\n", argc, *argv);
@@ -865,7 +919,9 @@ static  void    Usage(int argc, char *argv[])
 		      "\t[-W]                           : Wireless Mode\r\n"
 		      "\t[-k <level>]                   : kernel routing on data packets\r\n"
 		      "\t[-lf <file>]                   : log file name\r\n"
-              "\t[-c <file>]                    : configuration file name, default is spines.conf\r\n");
+              "\t[-ud <path>]                   : unix domain socket path prefix, default is %s<port>\r\n"
+              "\t[-c <file>]                    : configuration file name, default is spines.conf\r\n",
+                                                SPINES_UNIX_SOCKET_PATH);
 		Alarm(EXIT, "Bye...\r\n");
 	}
     }

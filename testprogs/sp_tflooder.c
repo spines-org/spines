@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2015 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2016 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -42,6 +42,7 @@
 #  include <sys/types.h>
 #  include <sys/socket.h>
 #  include <netinet/in.h> 
+#  include <sys/un.h>
 #  include <netdb.h>
 #  include <sys/ipc.h>
 #  include <sys/shm.h>
@@ -57,6 +58,7 @@ static int  Rate;
 static int  Num_pkts;
 static char IP[80];
 static char SP_IP[80];
+static char Unix_domain_path[80];
 static char filename[80];
 static int  fileflag;
 static int  spinesPort;
@@ -122,11 +124,16 @@ int main( int argc, char *argv[] )
   long elapsed_time;
   FILE *f1 = NULL;
   
+#ifndef ARCH_PC_WIN95
+  struct sockaddr_un unix_addr;
+#endif /* ARCH_PC_WIN95 */
   struct sockaddr_in host, serv_addr, name, remote;
   socklen_t remote_addr_sz;
   struct hostent     h_ent;
   struct hostent  *host_ptr;
   char   machine_name[256];
+  int gethostname_error = 0;
+  struct sockaddr *daemon_ptr = NULL;
   
   unsigned char * p_ip;
   
@@ -143,7 +150,85 @@ int main( int argc, char *argv[] )
   if(fileflag == 1) {
     f1 = fopen(filename, "wt");
   }
+ 
+  /* gethostname: used for WIN daemon connection & sending to non-specified target */
+  gethostname(machine_name,sizeof(machine_name)); 
+  host_ptr = gethostbyname(machine_name);
+    
+  if(host_ptr == NULL) {
+    printf("WARNING: could not get my ip addr (my name is %s)\n", machine_name );
+    gethostname_error = 1;
+  }
+  if(host_ptr->h_addrtype != AF_INET) {
+    printf("WARNING: Sorry, cannot handle addr types other than IPv4\n");
+    gethostname_error = 1;
+  }
+  if(host_ptr->h_length != 4) {
+    printf("WARNING: Bad IPv4 address length\n");
+    gethostname_error = 1;
+  }
+
+  /* Setup sockaddr structs for daemon connection */
+  serv_addr.sin_family = AF_INET;
+  serv_addr.sin_port = htons(spinesPort);
+#ifndef ARCH_PC_WIN95
+  unix_addr.sun_family = AF_UNIX;
+#endif /* ARCH_PC_WIN95 */
+
+  /* INET connections take precedence if specified */
+  if(strcmp(SP_IP, "") != 0) {
+	host_ptr = gethostbyname(SP_IP);
+    memcpy( &serv_addr.sin_addr, host_ptr->h_addr, sizeof(struct in_addr) );
+    daemon_ptr = (struct sockaddr *)&serv_addr;
+    printf("Using TCP/IP Connection: %s@%d\n", SP_IP, spinesPort);
+  }
+  else {
+#ifndef ARCH_PC_WIN95
+    if (strcmp(Unix_domain_path, "") == 0) {
+        if (spinesPort == DEFAULT_SPINES_PORT) {
+            daemon_ptr = NULL;
+            printf("Using Default IPC Connection\n");
+        }
+        else  {
+            daemon_ptr = (struct sockaddr *)&unix_addr;
+            sprintf(unix_addr.sun_path, "%s%hu", SPINES_UNIX_SOCKET_PATH, spinesPort);
+            printf("Using IPC on Port %s\n", unix_addr.sun_path);
+        }
+    } else {
+       daemon_ptr = (struct sockaddr *)&unix_addr;
+       strncpy(unix_addr.sun_path, Unix_domain_path, sizeof(unix_addr.sun_path));
+       printf("Using IPC - custom path = %s\n", unix_addr.sun_path);
+    }
+#else /* ARCH_PC_WIN95 */
+    if (gethostname_error == 1) {
+        printf("Exiting... gethostbyname required, but error!\n");
+        exit(1);
+    }
+    daemon_ptr = (struct sockaddr *)&serv_addr;
+    memcpy(&serv_addr.sin_addr, host_ptr->h_addr, sizeof(struct in_addr));
+    printf("Using TCP/IP Connection - WIN Localhost\n");
+#endif /* ARCH_PC_WIN95 */
+  }
   
+  /* Setup the target (destination spines daemon IPv4 address) to send to */
+  if(strcmp(IP, "") != 0) {
+    memcpy(&h_ent, gethostbyname(IP), sizeof(h_ent));
+    memcpy( &host.sin_addr, h_ent.h_addr, sizeof(host.sin_addr) );
+  }
+  else {
+    if (gethostname_error == 1) {
+        printf("Exiting... gethostbyname required, but error!\n");
+        exit(1);
+    }
+    memcpy(&host.sin_addr, host_ptr->h_addr, sizeof(struct in_addr));
+  }
+
+  if(spines_init(daemon_ptr) < 0) {
+    printf("flooder_client: socket error\n");
+    exit(1);
+  }
+
+#if 0
   if(strcmp(SP_IP, "") != 0) {
     memcpy(&h_ent, gethostbyname(SP_IP), sizeof(h_ent));
     memcpy( &serv_addr.sin_addr, h_ent.h_addr, sizeof(struct in_addr) );
@@ -170,10 +255,11 @@ int main( int argc, char *argv[] )
   }
   serv_addr.sin_port = htons(spinesPort);
   
-  if(spines_init((struct sockaddr*)(&serv_addr)) < 0) {
+  /* IPC FIX */
+  /* if(spines_init((struct sockaddr*)(&serv_addr)) < 0) {
     printf("flooder_client: socket error\n");
     exit(1);
-  }
+  } */
   
   if(strcmp(IP, "") != 0) {
     memcpy(&h_ent, gethostbyname(IP), sizeof(h_ent));
@@ -182,6 +268,7 @@ int main( int argc, char *argv[] )
   else {
     memcpy(&host.sin_addr, &serv_addr.sin_addr, sizeof(struct in_addr));
   }
+#endif
 
   pkt_size     = (int*)buf;
   pkts_sending = (int*)(buf + sizeof(int));
@@ -196,8 +283,7 @@ int main( int argc, char *argv[] )
     host.sin_family = AF_INET;
     host.sin_port   = htons(sendPort);
     
-    sk = spines_socket(PF_SPINES, SOCK_STREAM, Protocol, NULL);
- 
+    sk = spines_socket(PF_SPINES, SOCK_STREAM, Protocol, daemon_ptr);
     if (sk < 0) {
       printf("sp_tflooder_client: socket error\n");
       exit(1);
@@ -331,7 +417,7 @@ int main( int argc, char *argv[] )
   else {
     printf("\r\nReceiving flooder msgs on port %d\n", recvPort);
 
-    sk_listen = spines_socket(PF_SPINES, SOCK_STREAM, Protocol, NULL);
+    sk_listen = spines_socket(PF_SPINES, SOCK_STREAM, Protocol, daemon_ptr);
     if(sk_listen <= 0) {
       printf("error socket...\n");
       exit(0);
@@ -422,6 +508,9 @@ int main( int argc, char *argv[] )
 	first_pkt_flag = 0;
 	Num_pkts = ntohl(*pkts_sending);
 	assert(Num_pkts > 0);
+
+        /* if (ntohl(*pkt_no) != last_seq + 1)
+             printf("Out of Order: Expected %d, Recv %d\n", last_seq + 1, ntohl(*pkt_no)); */
 
 	if(report_latency_stats == 1) {
 	  history = (pkt_stats*) calloc(Num_pkts + 1, sizeof(pkt_stats));
@@ -617,6 +706,7 @@ static  void    Usage(int argc, char *argv[])
   Protocol              = 0;
   strcpy(IP, "");
   strcpy(SP_IP, "");
+  strcpy(Unix_domain_path, "");
   report_latency_stats  = 0;
   verbose_mode          = 0;
   reliable_connect      = 1;
@@ -628,7 +718,7 @@ static  void    Usage(int argc, char *argv[])
     if( !strncmp( *argv, "-p", 2 ) ){
       sscanf(argv[1], "%d", (int*)&spinesPort );
       argc--; argv++;
-    } else if( !strncmp( *argv, "-uc", 3) ){
+    } else if( !strncmp( *argv, "-uc", 4) ){
       Protocol |= UDP_CONNECT;
       reliable_connect = 0;
     } else if( !strncmp( *argv, "-d", 2 ) ){
@@ -642,6 +732,9 @@ static  void    Usage(int argc, char *argv[])
       argc--; argv++;
     } else if( !strncmp( *argv, "-o", 2 ) ){
       sscanf(argv[1], "%s", SP_IP );
+      argc--; argv++;
+    } else if( !strncmp( *argv, "-ud", 4 ) ){
+      sscanf(argv[1], "%s", Unix_domain_path);
       argc--; argv++;
     } else if( !strncmp( *argv, "-b", 2 ) ){
       sscanf(argv[1], "%d", (int*)&Num_bytes );
@@ -680,6 +773,7 @@ static  void    Usage(int argc, char *argv[])
       printf( "Usage: sp_tflooder\r\n"
 	      "\t[-o <address>    ] : address where spines runs, default localhost\n"
 	      "\t[-p <port number>] : port where spines runs, default is 8100\n"
+          "\t[-ud <path>      ] : unix domain socket path to connect to, default is /tmp/spines<port>\n"
 	      "\t[-uc             ] : udp unreliably connect flooder client to spines\n"
 	      "\t[-d <port number>] : to send packets on, default is 8400\n"
 	      "\t[-r <port number>] : to receive packets on, default is 8400\n"

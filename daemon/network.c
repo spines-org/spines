@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2015 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2016 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -186,7 +186,7 @@ void Init_Network(void)
   Init_Reliable_Flooding();
 
     /* ADDED FOR TESTING PURPOSES - REMOVE LATER ~DANO */
-    /* for (i=1; i<=11; i++)
+    /* for (i=1; i<=12; i++)
     {
         if (i != My_ID)
         {
@@ -314,7 +314,6 @@ Interface *Create_Interface(Node_ID         nid,
 
       case RESERVED0_LINK:
       case RESERVED1_LINK:
-      case RESERVED2_LINK:
 	break;
 
       case MAX_LINKS_4_EDGE:

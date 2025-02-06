@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2015 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2016 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -327,7 +327,6 @@ void Prot_process_scat(sys_scatter *scat, int total_bytes, Interface *local_inte
 
     case RESERVED0_LINK:
     case RESERVED1_LINK:
-    case RESERVED2_LINK:
     case MAX_LINKS_4_EDGE:
     default:
       Alarm(EXIT, "Prot_process_scat: Unrecognized mode %d! BUG!!\r\n", mode);
@@ -380,7 +379,6 @@ int32u Get_Link_Data_Type(int mode) {
 
         case RESERVED0_LINK:
         case RESERVED1_LINK:
-        case RESERVED2_LINK:
         case MAX_LINKS_4_EDGE:
         default:
             Alarm(EXIT, "Get_Link_Data_Type: Unrecognized link type 0x%x!\r\n", mode);
@@ -399,14 +397,14 @@ int16u Dissemination_Header_Size(int dissemination)
         case MIN_WEIGHT_ROUTING:
             break;
 
-        case BEST_EFFORT_FLOOD_ROUTING:
+        case IT_PRIORITY_ROUTING:
             size += sizeof(prio_flood_header);
             size += MultiPath_Bitmask_Size;
             size += Prio_Signature_Len;
             size += sizeof(fragment_header);
             break;
 
-        case RELIABLE_FLOOD_ROUTING:
+        case IT_RELIABLE_ROUTING:
             size += sizeof(rel_flood_header);
             size += MultiPath_Bitmask_Size;
             size += Rel_Signature_Len;
@@ -455,7 +453,6 @@ int16u Link_Header_Size(int mode)
         
         case RESERVED0_LINK:
         case RESERVED1_LINK:
-        case RESERVED2_LINK:
         case MAX_LINKS_4_EDGE:
         default:
             Alarm(EXIT, "Link_Header_Size: Unrecognized link type 0x%x!\r\n", mode);

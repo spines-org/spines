@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2015 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2016 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -33,6 +33,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <sys/un.h>
 #include <netdb.h>
 #include <sys/select.h>
 #include <sys/time.h>
@@ -48,6 +49,7 @@
 static char DEST_IP[80];
 static char MCAST_IP[80];
 static char SP_IP[80];
+static char Unix_domain_path[80];
 static char Loopback;
 static int  spinesPort;
 static int  sendPort;
@@ -72,9 +74,14 @@ static void Usage(int argc, char *argv[]);
 int main(int argc, char* argv[])
 {
     struct sockaddr_in host, group_addr;
-    struct hostent     h_ent, *host_ptr;
+    struct hostent     *host_ptr;
+#ifndef ARCH_PC_WIN95
+    struct sockaddr_un unix_addr;
+#endif /* ARCH_PC_WIN95 */
 
     char           machine_name[256];
+    int            gethostname_error = 0;
+    struct         sockaddr *daemon_ptr = NULL;
     int            ss, sr, bytes, num, ret, i;
     fd_set         mask;
     fd_set         dummy_mask,temp_mask;
@@ -89,6 +96,7 @@ int main(int argc, char* argv[])
     /*************************************************************/
     /* INITIALIZE SPINES                                         */
     /*************************************************************/
+    #if 0
     if(strcmp(SP_IP, "") != 0) {
         memcpy(&h_ent, gethostbyname(SP_IP), sizeof(h_ent));
         memcpy( &host.sin_addr, h_ent.h_addr, sizeof(struct in_addr) );
@@ -119,11 +127,89 @@ int main(int argc, char* argv[])
         printf("socket error\n");
         exit(1);
     }
+    #endif
+
+    /* gethostname: used for WIN daemon connection & sending to non-specified target */
+    gethostname(machine_name,sizeof(machine_name)); 
+    host_ptr = gethostbyname(machine_name);
+    
+    if(host_ptr == NULL) {
+        printf("WARNING: could not get my ip addr (my name is %s)\n", machine_name );
+        gethostname_error = 1;
+    }
+    if(host_ptr->h_addrtype != AF_INET) {
+        printf("WARNING: Sorry, cannot handle addr types other than IPv4\n");
+        gethostname_error = 1;
+    }
+    if(host_ptr->h_length != 4) {
+        printf("WARNING: Bad IPv4 address length\n");
+        gethostname_error = 1;
+    }
+
+    /* Setup sockaddr structs for daemon connection */
+    host.sin_family = AF_INET;
+    host.sin_port = htons(spinesPort);
+#ifndef ARCH_PC_WIN95
+    unix_addr.sun_family = AF_UNIX;
+#endif /* ARCH_PC_WIN95 */
+
+    /* INET connections take precedence if specified */
+    if(strcmp(SP_IP, "") != 0) {
+	    host_ptr = gethostbyname(SP_IP);
+        memcpy( &host.sin_addr, host_ptr->h_addr, sizeof(struct in_addr) );
+        daemon_ptr = (struct sockaddr *)&host;
+        printf("Using TCP/IP Connection: %s@%d\n", SP_IP, spinesPort);
+    }
+    else {
+#ifndef ARCH_PC_WIN95
+        if (strcmp(Unix_domain_path, "") == 0) {
+            if (spinesPort == DEFAULT_SPINES_PORT) {
+                daemon_ptr = NULL;
+                printf("Using Default IPC Connection\n");
+            }
+            else  {
+                daemon_ptr = (struct sockaddr *)&unix_addr;
+                sprintf(unix_addr.sun_path, "%s%hu", SPINES_UNIX_SOCKET_PATH, spinesPort);
+                printf("Using IPC on Port %s\n", unix_addr.sun_path);
+            }
+        } else {
+            daemon_ptr = (struct sockaddr *)&unix_addr;
+            strncpy(unix_addr.sun_path, Unix_domain_path, sizeof(unix_addr.sun_path));
+            printf("Using IPC - custom path = %s\n", unix_addr.sun_path);
+        }
+#else /* ARCH_PC_WIN95 */
+        if (gethostname_error == 1) {
+            printf("Exiting... gethostbyname required, but error!\n");
+            exit(1);
+        }
+        daemon_ptr = (struct sockaddr *)&host;
+        memcpy(&host.sin_addr, host_ptr->h_addr, sizeof(struct in_addr));
+        printf("Using TCP/IP Connection - WIN Localhost\n");
+#endif /* ARCH_PC_WIN95 */
+    }
+  
+    /* Setup the target (destination spines daemon IPv4 address) to send to */
+    /* if(strcmp(IP, "") != 0) {
+        memcpy(&h_ent, gethostbyname(IP), sizeof(h_ent));
+        memcpy( &host.sin_addr, h_ent.h_addr, sizeof(host.sin_addr) );
+    }
+    else {
+        if (gethostname_error == 1) {
+            printf("Exiting... gethostbyname required, but error!\n");
+            exit(1);
+        }
+        memcpy(&host.sin_addr, host_ptr->h_addr, sizeof(struct in_addr));
+    } */
+
+    if(spines_init(daemon_ptr) < 0) {
+        printf("flooder_client: socket error\n");
+        exit(1);
+    }
 
     /*************************************************************/
     /* RECEIVE SOCKET                                            */
     /*************************************************************/
-    sr = spines_socket(PF_SPINES, SOCK_DGRAM, Protocol, NULL);
+    sr = spines_socket(PF_SPINES, SOCK_DGRAM, Protocol, daemon_ptr);
     if (sr<0) {
         perror("Receive socket");
         exit(1);
@@ -155,7 +241,7 @@ int main(int argc, char* argv[])
     /*************************************************************/
     /* SEND SOCKET                                               */
     /*************************************************************/
-    ss = spines_socket(PF_SPINES, SOCK_DGRAM, Protocol, NULL);
+    ss = spines_socket(PF_SPINES, SOCK_DGRAM, Protocol, daemon_ptr);
     if (ss<0) {
         perror("Send socket");
         exit(1);
@@ -231,6 +317,7 @@ static void Usage(int argc, char *argv[])
     strcpy(DEST_IP, "");
     strcpy(SP_IP, "");
     strcpy(MCAST_IP, "");
+    strcpy(Unix_domain_path, "");
     Group_Address = (240 << 24) + 1; /* 240.0.0.1 */
     Dest_Address = (240 << 24) + 1; /* 240.0.0.1 */
 
@@ -238,6 +325,9 @@ static void Usage(int argc, char *argv[])
         argv++;
         if( !strncmp( *argv, "-p", 2 ) ){
             sscanf(argv[1], "%d", (int*)&spinesPort );
+            argc--; argv++;
+        } else if( !strncmp( *argv, "-ud", 4 ) ){
+            sscanf(argv[1], "%s", Unix_domain_path);
             argc--; argv++;
         }else if( !strncmp( *argv, "-d", 2 ) ){
             sscanf(argv[1], "%d", (int*)&sendPort );
@@ -267,9 +357,10 @@ static void Usage(int argc, char *argv[])
             sscanf(argv[1], "%d", (int*)&Protocol );
             argc--; argv++;
         }else{
-            printf( "Usage: sp_xcast\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n",
+            printf( "Usage: sp_xcast\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n",
                     "\t[-o <address>    ] : address where spines runs, default localhost",
                     "\t[-p <port number>] : port where spines runs, default is 8100",
+                    "\t[-ud <path>      ] : unix domain socket path to connect to, default is /tmp/spines<port>",
                     "\t[-d <port number>] : to send packets on, default is 8400",
                     "\t[-r <port number>] : to receive packets on, default is 8400",
                     "\t[-a <address>    ] : address to send text messages to, from stdin",

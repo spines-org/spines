@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2015 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2016 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -70,13 +70,20 @@ void MultiPath_Pre_Conf_Setup()
     fe->next = NULL;
 }
 
-void MultiPath_Post_Conf_Setup()
+void Init_MultiPath()
 {
     int i;
-    stdit it;
     int16u index = 0;
+    stdit it;
+    Flow_Node *a, *b;
+    Flow_Edge *real, *resid;
     Edge_Key key;
+    Edge_Value val;
+    int16u s, d;
 
+    /* ~~~~~~~~ INIT FLOODING AND NEIGHBOR BITMASKS ~~~~~~~~ */
+
+    /* Initialize the Flooding and Neighbor Masks */
     MultiPath_Clear_Cache();
    
     /* Setup Flooding Bitmask (which should be all 1's) */
@@ -126,17 +133,6 @@ void MultiPath_Post_Conf_Setup()
         index = ((Edge_Value*)stdskl_it_val(&it))->index;
         *(MP_Neighbor_Mask[i] + (index / 8)) = 0x80 >> (index % 8);
     }
-}
-
-void Init_MultiPath()
-{
-    int i;
-    stdit it;
-    Flow_Node *a, *b;
-    Flow_Edge *real, *resid;
-    Edge_Key key;
-    Edge_Value val;
-    int16u s, d;
 
     /* ~~~~~~~~ MIN COST MAX FLOW INITIALIZATION ~~~~~~~~ */
     
@@ -461,7 +457,7 @@ int MultiPath_Compute(int16u dest_id, int16u k)
     if (path_index - 1 == k)
         MP_Cache[dest_id][k] = mask;
     else if (path_index - 1 < k) {
-        for ( j = path_index-1; j < MULTIPATH_MAX_K; j++) {
+        for (j = path_index-1; j <= MULTIPATH_MAX_K; j++) {
             if (MP_Cache[dest_id][j] != NULL)
                 dispose(MP_Cache[dest_id][j]);
             MP_Cache[dest_id][j] = new(MP_BITMASK);
@@ -479,7 +475,7 @@ int MultiPath_Compute(int16u dest_id, int16u k)
    
     stop = E_get_time();
 
-    Alarm(PRINT, "Computation took %f seconds.\r\n",
+    Alarm(DEBUG, "Computation took %f seconds.\r\n",
         (stop.sec - start.sec) + (stop.usec - start.usec) / 1.0e6);
 
     return path_index - 1;
@@ -508,7 +504,7 @@ int MultiPath_Stamp_Bitmask(int16u dest_id, int16u k, unsigned char *mask)
     }
    
     if (MP_Cache[dest_id][k] == NULL) {
-        Alarm(PRINT, "COMPUTING [%u,%u] for k = %u\r\n", My_ID, dest_id, k);
+        Alarm(DEBUG, "COMPUTING [%u,%u] for k = %u\r\n", My_ID, dest_id, k);
         ret = MultiPath_Compute(dest_id, k);
         if (ret == 0) {
             Alarm(PRINT, "MultiPath_Stamp_Bitmask: Compute returned 0, "

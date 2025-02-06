@@ -60,6 +60,8 @@
 #include "spu_alarm.h"
 #include "spu_events.h" /* for sp_time */
 
+/* Local Functions */
+int	DL_send_internal( channel chan, int32 address, int16 port, sys_scatter *scat, int32 connected );
 
 channel	DL_init_channel( int32 channel_type, int16 port, int32 mcast_address, int32 interface_address )
 {
@@ -198,7 +200,21 @@ void    DL_close_channel(channel chan)
         }
 
 }
+
+/* Used for sending DGRAM messages */
 int	DL_send( channel chan, int32 address, int16 port, sys_scatter *scat )
+{
+    return DL_send_internal(chan, address, port, scat, 0);
+}
+
+/* Used for sending STREAM messages */
+int DL_send_connected( channel chan, sys_scatter *scat ) 
+{
+    return DL_send_internal(chan, 0, 0, scat, 1);
+}
+
+/* Internal function - chooses DGRAM or STREAM based on connected flag */
+int	DL_send_internal( channel chan, int32 address, int16 port, sys_scatter *scat, int32 connected )
 {
 
 #ifndef ARCH_SCATTER_NONE
@@ -207,42 +223,47 @@ int	DL_send( channel chan, int32 address, int16 port, sys_scatter *scat )
         char	pseudo_scat[MAX_PACKET_SIZE];
 #endif	/* ARCH_SCATTER_NONE */
 	
-	struct  sockaddr_in	soc_addr;
-	int			ret;
-	int			total_len;
-	int			i;
-	int			num_try;
+        struct  sockaddr_in	soc_addr;
+        int			ret;
+        int			total_len;
+        int			i;
+        int			num_try;
         char                    *send_errormsg = NULL; /* fool compiler */
 
         /* Check that the scatter passed is small enough to be a valid system scatter */
         assert(scat->num_elements <= ARCH_SCATTER_SIZE);
 
         memset(&soc_addr, 0, sizeof(soc_addr));
-	soc_addr.sin_family 	= AF_INET;
-	soc_addr.sin_addr.s_addr= htonl(address);
-	soc_addr.sin_port	= htons(port);
+        soc_addr.sin_family 	= AF_INET;
+        soc_addr.sin_addr.s_addr= htonl(address);
+        soc_addr.sin_port	= htons(port);
 
 #ifdef HAVE_SIN_LEN_IN_STRUCT_SOCKADDR_IN
         soc_addr.sin_len       = sizeof(soc_addr);
 #endif
 
 #ifdef ARCH_PC_HOME
-	soc_addr.sin_addr.s_addr= htonl(-1073741814);
+        soc_addr.sin_addr.s_addr= htonl(-1073741814);
 #endif /* ARCH_PC_HOME */
 
 #ifndef ARCH_SCATTER_NONE
         memset(&msg, 0, sizeof(msg));
-	msg.msg_name 	= (caddr_t) &soc_addr;
-	msg.msg_namelen = sizeof(soc_addr);
-	msg.msg_iov	= (struct iovec *)scat->elements;
-	msg.msg_iovlen	= scat->num_elements;
+        if (!connected) {
+            msg.msg_name 	= (caddr_t) &soc_addr;
+            msg.msg_namelen = sizeof(soc_addr);
+        } else {
+            msg.msg_name = NULL;
+            msg.msg_namelen = 0;
+        }
+        msg.msg_iov	= (struct iovec *)scat->elements;
+        msg.msg_iovlen	= scat->num_elements;
 #endif /* ARCH_SCATTER_NONE */
 
 #ifdef	ARCH_SCATTER_CONTROL
-	msg.msg_controllen = 0;
+        msg.msg_controllen = 0;
 #endif	/* ARCH_SCATTER_CONTROL */
 #ifdef	ARCH_SCATTER_ACCRIGHTS
-	msg.msg_accrightslen = 0;
+        msg.msg_accrightslen = 0;
 #endif	/* ARCH_SCATTER_ACCRIGHTS */
 
 	for( i=0, total_len=0; i < scat->num_elements; i++)

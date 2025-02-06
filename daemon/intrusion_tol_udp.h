@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2015 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2016 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -71,10 +71,11 @@
 #include "configuration.h"
 
 /* MAX defines */
-#define FLOW_CTRL_KBPS      25000
-#define RATE_LIMIT_KBPS     /* 100000 */ 10000
-#define BUCKET_CAP          (20000 + MAX_PACKET_SIZE) /* default 2000 */
-#define BUCKET_FILL_USEC    500
+#define RATE_LIMIT_KBPS     100000      /* Bandwidth allocated on each link for leaky bucket for 
+                                            sending original (first-time) messages */
+#define BUCKET_CAP          (200000 + MAX_PACKET_SIZE) /* default 2000 */
+#define BUCKET_FILL_USEC    300
+#define FLOW_CTRL_KBPS      25000       /* Bandwidth allocated to retransmissions (across all links) */ 
 
 /* Parameters of Intrusion Tolerant Link */ 
 #define IT_CRYPTO                    0
