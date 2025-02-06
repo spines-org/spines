@@ -1,0 +1,54 @@
+AC_INIT(stdutil/stddefines.h.in)
+AC_PROG_CC
+AC_PROG_RANLIB
+AC_CHECK_PROGS(AR, ar)
+AC_CHECK_LIB(pthread, pthread_mutex_init)
+
+AC_CONFIG_HEADER(stdutil/stddefines.h)
+AC_C_INLINE
+
+AC_TRY_RUN([
+/* test for little endianness */
+union {
+  long l;
+  char c[sizeof(long)];
+} u;
+
+int main() {
+  int i;
+
+  u.l = 1;
+  for (i = 0; i < sizeof(long); ++i, u.l <<= 8)
+    if (u.c[i] != 1)
+      return 1;
+
+  return 0;
+}
+], AC_DEFINE(STDENDIAN, STDLITTLE_ENDIAN),, AC_DEFINE(STDENDIAN, STDUNKNOWN_ENDIAN))
+
+AC_TRY_RUN([
+/* test for big endianness */
+union {
+  long l;
+  char c[sizeof(long)];
+} u;
+
+int main() {
+  int i;
+
+  u.l = 1;
+  for (i = sizeof(long) - 1; i >= 0; --i, u.l <<= 8)
+    if (u.c[i] != 1)
+      return 1;
+
+  return 0;
+}
+], AC_DEFINE(STDENDIAN, STDBIG_ENDIAN),, AC_DEFINE(STDENDIAN, STDUNKNOWN_ENDIAN))
+
+AC_CHECK_SIZEOF(char, 1)
+AC_CHECK_SIZEOF(short, 2)
+AC_CHECK_SIZEOF(int, 4)
+AC_CHECK_SIZEOF(long, 4)
+AC_CHECK_SIZEOF(size_t, 4)
+AC_CHECK_SIZEOF(void *, 4)
+AC_OUTPUT(Makefile)

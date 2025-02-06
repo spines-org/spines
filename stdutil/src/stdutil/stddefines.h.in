@@ -1,0 +1,130 @@
+#ifndef stddefines_h_2000_10_22_18_20_30_jschultz_at_cnds_jhu_edu
+#define stddefines_h_2000_10_22_18_20_30_jschultz_at_cnds_jhu_edu
+
+#include <stddef.h>
+#include <limits.h>
+
+/* define three endian types for architectures for STDENDIAN */
+
+#define STDBIG_ENDIAN     0
+#define STDLITTLE_ENDIAN  1
+#define STDUNKNOWN_ENDIAN 2
+
+/* configure fills in the following values */
+
+#undef inline
+#define STDENDIAN         STDUNKNOWN_ENDIAN
+#undef SIZEOF_CHAR
+#undef SIZEOF_SHORT
+#undef SIZEOF_INT
+#undef SIZEOF_LONG
+#undef SIZEOF_SIZE_T
+#undef SIZEOF_VOID_P
+
+/* define the max value of a size_t */
+
+#define STD_SIZE_T_MAX (~(size_t) 0)
+
+/* how many bytes are in half of a size_t? */
+
+#define SIZEOF_HSIZE_T (SIZEOF_SIZE_T >> 1)
+
+/* define a hsize_t type that has half as much storage as a size_t */
+
+#if SIZEOF_HSIZE_T == SIZEOF_CHAR
+# define stdhsize_t unsigned char
+#elif SIZEOF_HSIZE_T == SIZEOF_SHORT
+# define stdhsize_t unsigned short
+#elif SIZEOF_HSIZE_T == SIZEOF_INT
+# define stdhsize_t unsigned int
+#elif SIZEOF_HSIZE_T == SIZEOF_LONG
+# define stdhsize_t unsigned long
+#endif
+
+/* define a signed size_t type */
+
+#if SIZEOF_SIZE_T == SIZEOF_CHAR
+# define stdssize_t signed char
+#elif SIZEOF_SIZE_T == SIZEOF_SHORT
+# define stdssize_t short
+#elif SIZEOF_SIZE_T == SIZEOF_INT
+# define stdssize_t int
+#elif SIZEOF_SIZE_T == SIZEOF_LONG
+# define stdssize_t long
+#endif
+
+/* define a boolean type */
+
+#define stdbool      unsigned char
+#define stdtrue      1
+#define stdfalse     0
+
+/* define a 8b integer type: stdint8, stduint8 */
+
+#define stdint8      signed char
+#define stduint8     unsigned char
+#define STDINT8_MAX  SCHAR_MAX
+#define STDINT8_MIN  SCHAR_MIN
+#define STDUINT8_MAX UCHAR_MAX
+
+/* if the platform has one, define a 16b integer type: stdint16, stduint16 */
+
+#if SIZEOF_SHORT == 2
+ #define stdint16      short
+ #define stduint16     unsigned short
+ #define STDINT16_MAX  SHRT_MAX
+ #define STDINT16_MIN  SHRT_MIN
+ #define STDUINT16_MAX USHRT_MAX
+#endif
+
+/* if the platform has one, define a 32b integer type: stdint32, stduint32 */
+
+#if SIZEOF_SHORT == 4
+ #define stdint32      short
+ #define stduint32     unsigned short
+ #define STDINT32_MAX  SHRT_MAX
+ #define STDINT32_MIN  SHRT_MIN
+ #define STDUINT32_MAX USHRT_MAX
+#elif SIZEOF_INT == 4
+ #define stdint32      int
+ #define stduint32     unsigned int
+ #define STDINT32_MAX  INT_MAX
+ #define STDINT32_MIN  INT_MIN
+ #define STDUINT32_MAX UINT_MAX
+#elif SIZEOF_LONG == 4
+ #define stdint32      long
+ #define stduint32     unsigned long
+ #define STDINT32_MAX  LONG_MAX
+ #define STDINT32_MIN  LONG_MIN
+ #define STDUINT32_MAX ULONG_MAX
+#endif
+
+/* if the platform has one, define a 64b integer type: stdint64, stduint64 */
+
+#if SIZEOF_SHORT == 8
+ #define stdint64      short
+ #define stduint64     unsigned short
+ #define STDINT64_MAX  SHRT_MAX
+ #define STDINT64_MIN  SHRT_MIN
+ #define STDUINT64_MAX USHRT_MAX
+#elif SIZEOF_INT == 8
+ #define stdint64      int
+ #define stduint64     unsigned int
+ #define STDINT64_MAX  INT_MAX
+ #define STDINT64_MIN  INT_MIN
+ #define STDUINT64_MAX UINT_MAX
+#elif SIZEOF_LONG == 8
+ #define stdint64      long
+ #define stduint64     unsigned long
+ #define STDINT64_MAX  LONG_MAX
+ #define STDINT64_MIN  LONG_MIN
+ #define STDUINT64_MAX ULONG_MAX
+#endif
+
+/* define some standard macros */
+
+#define STDSWAP(x, y, t) ((t) = (x), (x) = (y), (y) = (t))
+#define STDMAX(x, y) ((x) > (y) ? (x) : (y))
+#define STDMIN(x, y) ((x) < (y) ? (x) : (y))
+
+#endif

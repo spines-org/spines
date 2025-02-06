@@ -1,0 +1,345 @@
+Spines Documentation
+~~~~~~~~~~~~~~~~~~~~
+
+Spines is a software research platform that allows the deployment of
+overlay networks in the Internet. Spines instantiates overlay nodes on
+participating computers and creates virtual links between these
+nodes. Once a message is sent on a Spines overlay network it will be
+forwarded on the overlay links until it reaches the destination. Many
+Spines overlays can coexist in the Internet, and even overlap on some
+of the nodes or links. Both the source and the destination of a
+connection that uses Spines should be part of the same Spines overlay
+network.
+
+Spines runs a software daemon on each of the overlay nodes. The daemon
+acts both as a router, forwarding packets toward other nodes, and as a
+server, providing network services to client applications.  Clients
+use a library to connect to a Spines daemon and send and receive
+messages. The API is very similar to the Unix Socket interface.
+Virtually any socket-based application can be easily adapted to work
+with Spines. Spines API provides TCP and UDP-like functions for both
+reliable, and best effort communication.
+
+A spines_socket() call returns a socket, which is actually a TCP/IP
+connection to the daemon. The application can use that socket to bind,
+listen, connect, send and receive, using Spines library calls
+(e.g. spines_send() is the equivalent to the regular send() call,
+etc.). In the current implementation, the maximum size of a message 
+that can be sent through Spines is 1420 bytes.
+
+
+
+Spines Daemon
+~~~~~~~~~~~~~
+
+NAME
+    spines - The Spines software daemon 
+
+
+SYNOPSIS
+    spines [-p spines_port] [-l local_address] [[-a destination] 
+    [-a destination]...] [-r] [-e error_rate] [-x time_to_live]
+    [-u up_down_interval]
+
+
+DESCRIPTION
+    spines starts an overlay daemon. In the current distribution,
+    overlay networks are built incrementally. When staring a new
+    overlay node/daemon, the user needs to specify in the command line
+    to which other existing nodes (if any), this daemon will connect.
+
+
+OPTIONS
+    -p spines_port 
+          The port on which the daemon will send and receive messages
+          (default 8100). All the daemons in a Spines overlay network
+          need to run on the same port.
+
+    -l local_address
+          Local IP address that will be used by Spines (default the
+          address of the first defined network interface).
+
+    -a destination
+          The address of an existing node participating in a Spines
+	  overlay network. The current daemon will create an overlay
+	  link together with the daemon running at this address. There
+	  can be at most 15 such addresses in the command
+	  line. However, a Spines daemon accepts overlay link requests
+	  from other daemons up to 255 links per node.
+
+    -r 
+          Sets the reliable link ON. If this option is set, all the
+          messages originating at the current node will be forwarded
+          using reliable overlay links.
+
+    -e error_rate
+          Sets the loss rate in percents (e.g. 15 means 15%). If a
+          loss rate is given the daemon will drop received packets
+          according to that rate.
+
+    -x time_to_live
+          Sets the time (in seconds) until the daemon will exit. If no
+          such time is given, the daemon will run indeffinitely.
+
+    -u up_down_interval
+          Sets an interval (in seconds) at which the daemon will
+          switch from normal operation to sleep, and reverse. During
+          sleep operation the daemon is considered partitioned away as
+          it will drop all the packets received from other daemons.
+
+
+	 
+
+Spines client API
+~~~~~~~~~~~~~~~~~
+
+NAME
+    spines_socket - Opens a connection to a Spines Daemon
+
+
+SYNOPSIS 
+    #include "spines_lib.h"
+
+    int spines_socket(int port, int address);
+
+
+DESCRIPTION
+    The spines_socket() function opens a connection to a Spines daemon
+    defined by the combination 'port' and 'address', and returns a
+    socket to the application. The socket returned can be used for
+    sending, receiving, binding to a port, etc. by means of functions
+    provided by the Spines API
+
+
+RETURN VALUE
+    The spines_socket() function returns a socket defining the
+    connection to the Spines daemon, or -1 in case of an error.
+
+
+
+=====================================================================
+
+NAME
+    spines_close - Closes a connection to Spines
+
+
+SYNOPSIS
+    #include "spines_lib.h"
+  
+    void spines_close(int sk);
+
+
+DESCRIPTION
+    Closes a connection to Spines, defined by the socket 'sk'.
+
+
+RETURN VALUE
+    NONE
+
+
+
+=====================================================================
+
+NAME
+
+    spines_bind - Binds a Spines port and an address to a Spines
+    socket
+
+
+SYNOPSIS
+    #include "spines_lib.h"
+
+    int spines_bind(int sk, int port);
+
+
+DESCRIPTION
+    spines_bind() binds a Spines port and address to a Spines
+    socket. Note that a Spines port is only defined (and needs to be
+    unique) in the context of a Spines daemon, and is not related to a
+    real port on that machine.
+
+
+RETURN VALUE
+    spines_bind() returns 1 if the bind was successfull, and -1
+    otherwise.
+
+
+
+=====================================================================
+
+NAME
+
+    spines_sendto - Sends a message to a Spines socket
+
+
+SYNOPSIS
+    #include "spines_lib.h"
+
+    int spines_sendto(int sk, int address, int port 
+                      char *buff, int len);
+
+
+DESCRIPTION
+    spines_sendto() is used to send a message to a Spines
+    socket. 'buff' points to the begining of the packet and 'len' is
+    the length of it. The destination client should be connected to a
+    daemon running on a computer specified by 'address', and should
+    bind to the Spines port specified by 'port' in order to receive
+    the packet.
+
+
+RETURN VALUE
+    spines_sendto() returns the number of bytes sent or -1 if an error
+    occured.
+
+
+
+=====================================================================
+
+NAME
+
+    spines_recvfrom - Receive a message from a Spines socket
+
+
+SYNOPSIS
+    #include "spines_lib.h"
+
+    int spines_recvfrom(int sk, int *sender, int *port,     
+                        char *buff, int len);
+
+
+DESCRIPTION
+    spines_recvfrom() is used to receive a message from a Spines
+    socket.  'sender' and 'port' are set to the address and port of
+    the sender client, wile the message will be stored in 'buff'.
+
+
+RETURN VALUE
+    spines_recvfrom() returns the number of bytes received, or 
+    -1 in case of an error
+
+
+
+=====================================================================
+
+NAME
+
+    spines_connect - Innitiates a connection on a Spines socket
+
+
+SYNOPSIS
+    #include "spines_lib.h"
+
+    int spines_connect(int sk, int address, int port);
+
+
+DESCRIPTION
+    spines_connect() innitiates a connection on a Spines socket
+    defined by 'address' and 'port'. 
+
+
+RETURN VALUE
+    1 if the connection was successful, -1 in case of a failure.
+
+
+
+=====================================================================
+
+NAME
+
+    spines_send - Sends reliable data through the Spines network 
+
+
+SYNOPSIS
+    #include "spines_lib.h"
+
+    int spines_send(int sk, char *buff, int len);
+
+
+DESCRIPTION
+    'sk' must refer to a Spines socket that is already connected to
+    some other Spines socket. 'buff' and 'len' define the message to
+    be sent
+
+
+RETURN VALUE
+    spines_send() returns the number of bytes sent or -1 if an error
+    occured.
+
+
+
+=====================================================================
+
+NAME
+
+    spines_recv - Receives reliable data through the Spines network 
+
+
+SYNOPSIS
+    #include "spines_lib.h"
+
+    int spines_recv(int sk, char *buff, int len);
+
+DESCRIPTION
+    'sk' must refer to a Spines socket that is already connected to
+    some other Spines socket. 'buff' defines a memory address where
+    the message can be stored, and 'len' is the available size for the
+    message.
+
+RETURN VALUE
+    spines_recv() returns the number of bytes received or -1 if an
+    error occured.
+
+
+
+=====================================================================
+
+NAME
+
+    spines_listen - Listens for a connection on a Spines socket 
+
+
+SYNOPSIS
+    #include "spines_lib.h"
+
+    int spines_listen(int sk);	
+
+
+DESCRIPTION
+    Before accepting a connection with spines_accept() a Spines socket
+    needs to listen for incoming connections. 'sk' is a Spines socket
+    that has to be bind first on a listening port.
+
+
+RETURN VALUE
+    1 if the listen call was successful, -1 in case of a failure.
+
+
+
+=====================================================================
+
+NAME
+
+    spines_accept - Accepts a connection on a Spines socket 
+
+
+SYNOPSIS
+    #include "spines_lib.h"
+
+    int spines_accept(int sk, int port int address);
+    
+
+DESCRIPTION
+    spines_accept() accepts a connection. The socket 'sk' is the
+    Spines socket on which the application listens. Upon accepting the
+    connection, it returns a new socket on which the application can
+    send and receive messages on that connection. 'port' and 'address'
+    define the connction of the socket 'sk' to the Spines daemon, the
+    same as given in the spines_socket() call.
+
+
+RETURN VALUE
+    spines_accept() returns a new Spines socket for the accepted
+    connection or -1 in case of an error.
+
+

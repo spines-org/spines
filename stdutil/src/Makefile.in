@@ -1,0 +1,78 @@
+CC=@CC@
+RANLIB=@RANLIB@
+AR=@AR@
+
+# use thread safe libs and enable std locking mechanisms
+THREAD_SAFE = -D_REENTRANT 
+
+# USE_EXCEPTIONS - abort program on unexpected errors (e.g. malloc fails)
+USE_EXCEPTIONS = # -DSTD_USE_EXCEPTIONS
+
+# STD_CONSTRUCT_CHECKS - check if std DS's are constructed before usage, abort if not
+CONSTRUCT_CHECKS = # -DSTD_CONSTRUCT_CHECKS 
+
+# BOUNDS_CHECKS - check that the user is using the DS's properly (doesn't check all uses)
+BOUNDS_CHECKS = # -DSTD_BOUNDS_CHECKS 
+
+# SAFE_CHECKS - check and be sure some condition that should be true is true (sanity checks)
+SAFE_CHECKS = # -DSTD_SAFE_CHECKS
+
+# DMALLOC_USE - use the dmalloc lib to check for memory leaks?
+DMALLOC_USE     = # -DUSE_DMALLOC
+DMALLOC_LIB     = # -ldmalloc
+DMALLOC_INC_DIR = # -I dmalloc_include_dir (dmalloc.h)
+DMALLOC_LIB_DIR = # -L dmalloc_lib_dir (libdmalloc.a)
+
+# adds pthreads library if available and dmalloc lib if we're using it
+LIBS = @LIBS@ $(DMALLOC_LIB)
+
+# where to put libraries and test/example programs
+TARGET_DIR = ../lib
+APP_DIR = ../bin
+
+# all the defines for the compilations
+DEFINES = $(THREAD_SAFE) $(USE_EXCEPTIONS) $(CONSTRUCT_CHECKS) $(BOUNDS_CHECKS) $(SAFE_CHECKS) $(DMALLOC_USE)
+
+# all the include directories for the compilations
+INCLUDES = $(DMALLOC_INC_DIR)
+
+# all the library linkage directories
+LDFLAGS = $(DMALLOC_LIB_DIR)
+
+# gcc specific compiler flags
+CFLAGS = -Wall -O -I ./ $(DEFINES)
+
+LIBSTDUTIL = $(TARGET_DIR)/libstdutil.a
+TARGETS = $(LIBSTDUTIL) $(APP_DIR)/stdarch_test $(APP_DIR)/stddll_test $(APP_DIR)/stdarr_test $(APP_DIR)/stdcarr_test $(APP_DIR)/stdhash_test
+
+OBJS = stdutil.o stderror.o stdthread.o stdarr.o stdcarr.o stddll.o stdhash.o
+
+all: $(TARGETS)
+
+$(LIBSTDUTIL): $(APP_DIR)/stdarch_test $(OBJS)
+	$(AR) r $(LIBSTDUTIL) $(OBJS); $(RANLIB) $(LIBSTDUTIL)
+
+$(APP_DIR)/stdarch_test: $(OBJS) stdtest/stdarch_test.c
+	$(CC) $(CFLAGS) -o $(APP_DIR)/stdarch_test stdtest/stdarch_test.c $(OBJS) $(LIBS); sleep 2; $(APP_DIR)/stdarch_test
+
+$(APP_DIR)/stdarr_test: $(APP_DIR)/stddll_test stdtest/stdarr_test.c
+	$(CC) $(CFLAGS) -o $(APP_DIR)/stdarr_test stdtest/stdarr_test.c $(OBJS) $(LIBS)
+#	$(APP_DIR)/stdarr_test
+
+$(APP_DIR)/stdcarr_test: $(APP_DIR)/stddll_test stdtest/stdcarr_test.c
+	$(CC) $(CFLAGS) -o $(APP_DIR)/stdcarr_test stdtest/stdcarr_test.c $(OBJS) $(LIBS) 
+#	$(APP_DIR)/stdcarr_test 
+
+$(APP_DIR)/stddll_test: $(APP_DIR)/stdarch_test stdtest/stddll_test.c
+	$(CC) $(CFLAGS) -o $(APP_DIR)/stddll_test stdtest/stddll_test.c $(OBJS) $(LIBS)
+#	$(APP_DIR)/stddll_test
+
+$(APP_DIR)/stdhash_test: $(APP_DIR)/stdarch_test stdtest/stdhash_test.c
+	$(CC) $(CFLAGS) -o $(APP_DIR)/stdhash_test stdtest/stdhash_test.c $(OBJS) $(LIBS)
+#	$(APP_DIR)/stdhash_test
+
+clean:
+	rm -f *~ stdutil/*~ stdtest/*~ *.o *.bak stdutil/*.bak stdtest/*.bak core $(TARGETS)
+
+distclean: clean
+	rm -f config.* stdutil/stddefines.h Makefile

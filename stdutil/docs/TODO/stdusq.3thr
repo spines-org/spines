@@ -1,0 +1,195 @@
+.TH STDUSQ 3 "NOV 2000" "Stdutil Library"
+
+.SH "WARNING! READ ME!"
+
+This man page doesn't describe an actual data structure that is
+provided with the stdutil library (at least not yet, anyway).
+Instead, it describes the common interface of the stdutil sequence
+data structures.  Currently, the stdutil data structures stdarr,
+stdcarr and stddll support supersets of this interface, while
+providing vastly different run-time performances for the different
+sequence operations.  This man page describes their common interface
+so that their functionality doesn't have to repeated for each data
+structure.  This man page also provides a summary of the run-time
+tradeoffs of the different stdutil sequence data structures.
+
+In the following discussion simply replace stdusq with the name of the
+concrete implementation of your choice (e.g. - stdarr, stdcarr,
+stddll).
+
+.SH "NAME"
+
+stdusq_construct, stdusq_copy_construct, stdusq_destruct,
+stdusq_push_front, stdusq_pop_front, stdusq_push_back,
+stdusq_pop_back, stdusq_multi_push_front, stdusq_multi_pop_front,
+stdusq_multi_push_back, stdusq_multi_pop_back, stdusq_insert,
+stdusq_erase, stdusq_repeat_insert, stdusq_multi_insert,
+stdusq_multi_erase, stdusq_resize, stdusq_clear, stdusq_begin,
+stdusq_end, stdusq_last, stdusq_get, stdusq_size, stdusq_empty,
+stdusq_max_size, stdusq_val_size
+
+Operations on a stdusq, a sequence data structure.
+
+.SH "SYNOPSIS"
+
+.B "#include <stdutil/stdusq.h>"
+
+.BI "int stdusq_construct(stdusq *" usq ", size_t " sizeof_val ");"
+
+.BI "int stdusq_copy_construct(stdusq *" dst ", const stdusq *" src ");"
+
+.BI "void stdusq_destruct(stdusq *" usq ");"
+
+.BI "int stdusq_push_front(stdusq *" usq ", const void *" val ");"
+
+.BI "int stdusq_pop_front(stdusq *" usq ");"
+
+.BI "int stdusq_push_back(stdusq *" usq ", const void *" val ");"
+
+.BI "int stdusq_pop_back(stdusq *" usq ");"
+
+.BI "int stdusq_multi_push_front(stdusq *" usq ", const void *" vals ", size_t " num_push ");"
+
+.BI "int stdusq_multi_pop_front(stdusq *" usq ", size_t " num_pop ");"
+
+.BI "int stdusq_multi_push_back(stdusq *" usq ", const void *" vals ", size_t " num_push ");"
+
+.BI "int stdusq_multi_pop_back(stdusq *" usq ", size_t " num_pop ");"
+
+.BI "stdusq_it *stdusq_insert(stdusq_it *" it ", const void *" val ");"
+
+.BI "stdusq_it *stdusq_erase(stdusq_it *" it ");"
+
+.BI "stdusq_it *stdusq_repeat_insert(stdusq_it *" it ", const void *" val ", size_t " num_times ");"
+
+.BI "stdusq_it *stdusq_multi_insert(stdusq_it *" it ", const void *" vals ", size_t " num_insert ");"
+
+.BI "stdusq_it *stdusq_multi_erase(stdusq_it *" it ", size_t " num_erase ");"
+
+.BI "int stdusq_resize(stdusq *" usq ", size_t " num_elems ");"
+
+.BI "int stdusq_clear(stdusq *" usq ");"
+
+.BI "stdusq_it *stdusq_begin(const stdusq *" usq ", stdusq_it *" it ");"
+
+.BI "stdusq_it *stdusq_end(const stdusq *" usq ", stdusq_it *" it ");"
+
+.BI "stdusq_it *stdusq_last(const stdusq *" usq ", stdusq_it *" it ");"
+
+.BI "stdusq_it *stdusq_get(const stdusq *" usq ", stdusq_it *" it ", size_t " elem_num ");"
+
+.BI "size_t stdusq_size(const stdusq *" usq ");"
+
+.BI "stdbool stdusq_empty(const stdusq *" usq ");"
+
+.BI "size_t stdusq_max_size(const stdusq *" usq ");"
+
+.BI "size_t stdusq_val_size(const stdusq *" usq ");"
+
+.SH "DESCRIPTION"
+
+A stdusq is a data structure that contains, by value, a sequence of
+same sized values. A sequence is a generic concept that represents a
+collection of values arranged in an ascending linear order. For my
+purposes, if a sequence S contains n values, then each contained value
+in S is uniquely associated with an integer rank in the range [0, n),
+which is equal to the number of elements in S that precede it in the
+order. The order of values in a sequence is soley determined by
+structural operations (described below) and the order in which those
+operations are performed on the sequence and not by the values
+themselves.
+
+Contained values can be accessed through iterators. An iterator is a
+software design pattern for iterating through a collection of values
+(see stdutil). A sequence iterator, a stdusq_it, can be set to
+reference a particular value by manipulating an already valid iterator
+using iterator functions to traverse the sequence in the obvious
+linear fashion (next, prev, see stdusq_it), or by getting an iterator
+to a particular value directly. A stdusq provides access to iterators
+to the beginning, end, last, and ith value of the contained sequence.
+
+.SH "CONSTRUCTION OPERATIONS"
+
+Before a stdusq can legally be used it must be successfully
+constructed.
+.B "stdusq_construct"
+dynamically constructs the stdusq object pointed to by
+.I "usq"
+to contain values of size 
+.I "sizeof_val"
+bytes.
+.I "sizeof_val"
+should be the sizeof(val_type) the type of values you want the
+sequence to contain. A sequence constructed using this method
+initially contains no values.
+.B "stdusq_copy_construct"
+constructs
+.I "dst"
+to initially contain a clone (copy by value) of the sequence that the
+successfully constructed
+.I "src"
+sequence contains. The clone sequence has the same operational
+parameters (e.g. - sizeof_val) as the source sequence. It is illegal
+to call a constructor on an already successfully constructed stdusq --
+doing so will cause memory leaks at best. A constructor returns zero
+on success and non-zero on failure. When a sequence is no longer in
+use its memory should be released by calling
+.BR "stdusq_destruct"
+on it. Once a stdusq has been destructed it must be successfully
+constructed again before being legally used.
+
+.SH "STRUCTURAL OPERTIONS"
+
+A sequence supports the structural operations of inserting values into
+and erasing values from the linear order of the sequence.  When a
+value is inserted into a sequence at a rank i, the values in the rank
+range [i, n) (before the insertion) have their ranks increased by one
+and the newly inserted value has rank i after the insertion.  When the
+ith value of a sequence is erased, the values in the rank range [i+1,
+n) (before the erasure) have their ranks decreased by one after the
+erasure.  These basic structural opertions can be extended to allow
+multiple insertions or erasures to occur in one logical operation.
+When j values are inserted into a sequence at a rank i the values in
+the rank range [i, n) (before the insertion) have their ranks
+increased by j and the inserted values take on the ranks [i, i+j),
+respectively, after the insertion.  When j values based at the ith
+value (i.e. rank range [i, i+j)) are erased from a sequence the values
+in the rank range [i+j, n) have their ranks decreased by j after the
+erasure.
+
+For convenience's sake, a stdutil sequence also defines several
+functions for inserting and erasing values from the beginning (front)
+and the end (back) of a sequence. Pushing or popping values on the
+front of a sequence has the same effect as inserting or erasing,
+respectively, values at rank 0. Pushing values on the back of a
+sequence has the same effect as inserting at rank n.  While popping
+j values off of the back of a sequence has the same effect as erasing
+j values based at rank n-j.
+
+.SH "ITERATOR OPERATIONS"
+
+.SH "INFORMATIONAL OPERATIONS"
+
+The following operations have no state changing effect on a stdusq.
+
+.B "stdusq_size"
+indicates the current number of values contained in the sequence.
+.B "stdusq_empty"
+indicates whether or not the sequence contains no values.
+.B "stdusq_max_size"
+returns the absolute maximum number of the contained value type the
+sequence can hold.
+.B "stddll_val_size"
+returns the size, in bytes, of the contained value type.
+
+.SH "RETURN VALUES"
+
+.SH "NOTES"
+
+.SH "AUTHOR"
+
+John Schultz <jschultz@cnds.jhu.edu>
+
+.SH "SEE ALSO"
+
+stdusq_it, stdutil, stdarr, stdcarr, stddll

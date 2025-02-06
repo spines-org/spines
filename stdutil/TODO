@@ -1,0 +1,50 @@
+Things to do sometime in the future in rough order of priority:
+
+ *  Write more documentation!
+
+ *  Change the make/distribution to be more GNUish: use libtool, 
+    automake, configure, etc. Change the Makefile.in to use 
+    Makefile semantics that are accepted by almost every version
+    of make. Make both non-debug, debug and dynamic libraries with
+    which to link. Figure out how to do Installs so that the 
+    libraries and .h's will be installed in the usual spots, but 
+    also allow for --prefix. *** Anybody who wants to contribute
+    a more complex build/install setup, please feel free, as this
+    is not one of my strong points! ***
+
+ *  Test stdutil (stdthread in particular) on and make source and 
+    binary distributions for Win32 platforms.
+
+ *  Code another version of a hash table that uses buckets instead
+    of open-addressing. Then code a test program to test them 
+    probabilistically against one another.
+    Note - stdhash needs to be more hard core tested in general!
+
+ *  Code a threaded red-black tree based on keys.
+
+ *  Code a skip list based on keys and then probabilistically test 
+    the skl and the rbt against one another.
+
+ *  Figure out how to generically lay out structures in memory at
+    run-time. In other words, given two sizeof() types how can I lay 
+    out a structure in memory that contains both of those types 
+    exactly like the compiler would? This will allow me to cut down 
+    on calls to malloc and free as I could append values to data
+    structure nodes; this would also could reduce the number of page
+    in-outs because as soon as the node is accessed the value is already
+    paged in. Also, this would allow key-value pairs to be put into 
+    value based DSs (e.g. stdhash(key, val) -> stdarr(val)) and would 
+    allow for generalization of the iterator concept (just like in STL). 
+    Basically, this would allow a non-type (only size) safe version of 
+    templates in C.
+
+ *  Generalize the idea of iterators: make an iterator that can
+    work with any of the DS's and inter-operate (maybe).
+
+ *  Code a tree based sequence (arr, carr, dll, etc.) DS.
+
+ *  Throw in some other common DSs such as heaps, fib heaps, tries etc.
+
+ *  Generalize the idea of a sequence(?) Maybe make a generic 
+    sequence class and you can choose which implementation you 
+    want to back it at run-time.
