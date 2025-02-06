@@ -1,4 +1,3 @@
-
 /*
  * The Spread Toolkit.
  *     
@@ -17,18 +16,18 @@
  * License.
  *
  * The Creators of Spread are:
- *  Yair Amir, Michal Miskin-Amir, Jonathan Stanton.
+ *  Yair Amir, Michal Miskin-Amir, Jonathan Stanton, John Schultz.
  *
- *  Copyright (C) 1993-2003 Spread Concepts LLC <spread@spreadconcepts.com>
+ *  Copyright (C) 1993-2006 Spread Concepts LLC <info@spreadconcepts.com>
  *
  *  All Rights Reserved.
  *
  * Major Contributor(s):
  * ---------------
- *    Cristina Nita-Rotaru crisn@cnds.jhu.edu - group communication security.
- *    Theo Schlossnagle    jesus@omniti.com - Perl, skiplists, autoconf.
+ *    Ryan Caudy           rcaudy@gmail.com - contributions to process groups.
+ *    Cristina Nita-Rotaru crisn@cs.purdue.edu - group communication security.
+ *    Theo Schlossnagle    jesus@omniti.com - Perl, autoconf, old skiplist.
  *    Dan Schoenblum       dansch@cnds.jhu.edu - Java interface.
- *    John Schultz         jschultz@cnds.jhu.edu - contribution to process group membership.
  *
  *
  * This file is also licensed by Spread Concepts LLC under the Spines 
@@ -42,19 +41,27 @@
  */
 
 
-
 #ifndef INC_DATA_LINK
 #define INC_DATA_LINK
 
 #include "arch.h"
 #include "scatter.h"
 
+#define		MAX_PACKET_SIZE		1472    /*1472 = 1536-64 (of udp)*/
+
 #define		SEND_CHANNEL	0x00000001
 #define		RECV_CHANNEL    0x00000002
+#define         NO_LOOP         0x00000004
+#define         REUSE_ADDR      0x00000008
+
 
 channel	DL_init_channel( int32 channel_type, int16 port, int32 mcast_address, int32 interface_address );
 void    DL_close_channel(channel chan);
 int	DL_send( channel chan, int32 address, int16 port, sys_scatter *scat );
 int	DL_recv( channel chan, sys_scatter *scat );
+
+#ifdef SPINES_SSL
+int		DL_recv_enh(channel chan, sys_scatter *scat, struct sockaddr_in *source_addr);
+#endif
 
 #endif  /* INC_DATA_LINK */

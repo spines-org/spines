@@ -16,18 +16,18 @@
  * License.
  *
  * The Creators of Spread are:
- *  Yair Amir, Michal Miskin-Amir, Jonathan Stanton.
+ *  Yair Amir, Michal Miskin-Amir, Jonathan Stanton, John Schultz.
  *
- *  Copyright (C) 1993-2003 Spread Concepts LLC <spread@spreadconcepts.com>
+ *  Copyright (C) 1993-2006 Spread Concepts LLC <info@spreadconcepts.com>
  *
  *  All Rights Reserved.
  *
  * Major Contributor(s):
  * ---------------
- *    Cristina Nita-Rotaru crisn@cnds.jhu.edu - group communication security.
- *    Theo Schlossnagle    jesus@omniti.com - Perl, skiplists, autoconf.
+ *    Ryan Caudy           rcaudy@gmail.com - contributions to process groups.
+ *    Cristina Nita-Rotaru crisn@cs.purdue.edu - group communication security.
+ *    Theo Schlossnagle    jesus@omniti.com - Perl, autoconf, old skiplist.
  *    Dan Schoenblum       dansch@cnds.jhu.edu - Java interface.
- *    John Schultz         jschultz@cnds.jhu.edu - contribution to process group membership.
  *
  *
  * This file is also licensed by Spread Concepts LLC under the Spines 
@@ -39,7 +39,6 @@
  * or in the file ``LICENSE.txt'' found in this distribution.
  *
  */
-
 
 
 #ifndef MEMORY_H
@@ -129,6 +128,8 @@ int             dec_ref_cnt(void *object);
  * Effects: Returns the reference count of an object. 
  */
 int             get_ref_cnt(void *object);            
+
+
 
 
 /***************************************************************************

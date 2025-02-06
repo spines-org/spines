@@ -18,8 +18,14 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2007 The Johns Hopkins University.
  * All rights reserved.
+ *
+ * Major Contributor(s):
+ * --------------------
+ *    John Lane
+ *    Raluca Musaloiu-Elefteri
+ *    Nilo Rivera
  *
  */
 
@@ -36,6 +42,5 @@ void Reliable_timeout(int linkid, void *dummy);
 void Send_Nack_Retransm(int linkid, void *dummy); 
 void Process_ack_packet(int32 sender, char *buf, int16u ack_len, int32u type, int mode);
 int Process_Ack(int16 linkid, char *buff, int16u ack_len, int32u type);
-void Pad_Link(int linkid, void *dummy); 
 
 #endif

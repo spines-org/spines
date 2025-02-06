@@ -18,8 +18,14 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2007 The Johns Hopkins University.
  * All rights reserved.
+ *
+ * Major Contributor(s):
+ * --------------------
+ *    John Lane
+ *    Raluca Musaloiu-Elefteri
+ *    Nilo Rivera
  *
  */
 
@@ -43,6 +49,8 @@
 #include "hello.h"
 #include "protocol.h"
 #include "route.h"
+#include "kernel_routing.h"
+
 
 extern Node* Neighbor_Nodes[MAX_LINKS/MAX_LINKS_4_EDGE];
 extern stdhash   All_Nodes;
@@ -51,16 +59,33 @@ extern Link* Links[MAX_LINKS];
 extern int32 My_Address;
 extern Prot_Def Edge_Prot_Def;
 extern Prot_Def Groups_Prot_Def;
+extern int Schedule_Set_Route;
+extern int Wireless;
+extern int16 KR_Flags;
+
 
 /* Local variables */
-
 static const sp_time zero_timeout        = {     0,    0};
-static const sp_time short_timeout       = {     0,    20000}; /* 20 milliseconds */
+static const sp_time short_timeout       = {     0,    5000};  /* 5 milliseconds */
+static const sp_time wireless_timeout    = {     0,    5000};  /* 5 milliseconds */
+static const sp_time kr_timeout          = {     0,    12000};
 static const sp_time state_resend_time   = { 30000,    0};     /* 8 h 20 mins */
 static const sp_time resend_call_timeout = {  3000,    0}; 
 static const sp_time resend_fast_timeout = {     1,    0};     /* one second */
 static const sp_time gb_collect_remove   = { 90000,    0};     /* about one day */
 static const sp_time gb_collect_timeout  = { 10000,    0}; 
+
+
+
+void Flip_state_cell(State_Cell *s_cell)
+{
+    s_cell->dest           = Flip_int32(s_cell->dest);
+    s_cell->timestamp_sec  = Flip_int32(s_cell->timestamp_sec);
+    s_cell->timestamp_usec = Flip_int32(s_cell->timestamp_usec);
+    s_cell->value          = Flip_int16(s_cell->value);
+    s_cell->age            = Flip_int16(s_cell->age);
+}
+
 
 
 
@@ -90,7 +115,7 @@ void Net_Send_State_All(int lk_id, void *p_data)
     State_Packet *pkt;
     State_Cell *state_cell;
     State_Chain *s_chain;
-    stdhash_it it, src_it;
+    stdit it, src_it;
     State_Data *s_data;
     int ret;
     int pack_bytes = 0;
@@ -101,7 +126,7 @@ void Net_Send_State_All(int lk_id, void *p_data)
 
     /* See if we have anything to send */
     stdhash_begin(p_def->All_States(), &src_it); 
-    if(stdhash_it_is_end(&src_it)) 
+    if(stdhash_is_end(p_def->All_States(), &src_it)) 
         return;
 
     now = E_get_time();
@@ -115,19 +140,19 @@ void Net_Send_State_All(int lk_id, void *p_data)
     /* Create the state packet */
 
     /* All the sources */
-    while(!stdhash_it_is_end(&src_it)) {
+    while(!stdhash_is_end(p_def->All_States(), &src_it)) {
 	/* source by source */
 	s_chain = *((State_Chain **)stdhash_it_val(&src_it));
 	stdhash_begin(&s_chain->states, &it); 
-	while(!stdhash_it_is_end(&it)) {
+	while(!stdhash_is_end(&s_chain->states, &it)) {
 	    /* one by one, the destinations... */
 	    s_data = *((State_Data **)stdhash_it_val(&it));
 	    
 	    /* Do we still have room in the packet for a 
 	     * state containing at least one cell ? */
 	    
-	    if(pack_bytes > sizeof(packet_body) - sizeof(reliable_tail) -
-	       p_def->State_header_size() - p_def->Cell_packet_size()) {
+	    if(pack_bytes > (int)(sizeof(packet_body) - sizeof(reliable_tail) -
+	       p_def->State_header_size() - p_def->Cell_packet_size())) {
 	        
 	        Alarm(DEBUG, "%s%s",
 		      "Net_Send_State_All: not enough room in the packet (1)\n",
@@ -175,13 +200,13 @@ void Net_Send_State_All(int lk_id, void *p_data)
 	    /* See if we still have other states for this source */
 	    
 	    stdhash_it_next(&it);
-	    while(!stdhash_it_is_end(&it)) {
+	    while(!stdhash_is_end(&s_chain->states, &it)) {
 	        s_data = *((State_Data **)stdhash_it_val(&it));
 
 		/* Do we still have room in the packet for a 
 		 * at least a state cell ? */
-		if(pack_bytes > sizeof(packet_body) - sizeof(reliable_tail) -
-		   p_def->Cell_packet_size()) {
+		if(pack_bytes > (int)(sizeof(packet_body) - sizeof(reliable_tail) -
+		   p_def->Cell_packet_size())) {
 		    
 		    Alarm(DEBUG, "%s%s",
 			  "Net_Send_State_All: not enough room in the packet (2)\n",
@@ -317,7 +342,7 @@ int Net_Send_State_Updates(Prot_Def *p_def, int16 node_id)
     State_Cell *state_cell;
     stdhash *hash_struct;
     int32u node_mask;
-    stdhash_it it, src_it, tmp_it;
+    stdit it, src_it, tmp_it;
     Changed_State *cg_state, *cg_state_tmp, *cg_state_src;
     int16 linkid;
     stdhash  sources;
@@ -345,7 +370,7 @@ int Net_Send_State_Updates(Prot_Def *p_def, int16 node_id)
 
     /* See if we have anything to send */
     stdhash_begin(hash_struct, &it); 
-    while(!stdhash_it_is_end(&it)) {
+    while(!stdhash_is_end(hash_struct, &it)) {
         cg_state = *((Changed_State **)stdhash_it_val(&it));
 	Alarm(DEBUG, "state mask: %X node mask: %X\n", 
 	      cg_state->mask[node_id/32], node_mask);
@@ -372,14 +397,13 @@ int Net_Send_State_Updates(Prot_Def *p_def, int16 node_id)
 
     /* 'sources' is a temporary hash where we keep the processed 
      * source nodes */
-    stdhash_construct(&sources, sizeof(int32), 0, 
-                      stdhash_int_equals, stdhash_int_hashcode);
+    stdhash_construct(&sources, sizeof(int32), 0, NULL, NULL, 0); 
 
     /* Create the state packet */
 
     /* All the states */
     stdhash_begin(hash_struct, &it); 
-    while(!stdhash_it_is_end(&it)) {
+    while(!stdhash_is_end(hash_struct, &it)) {
         /* one by one... */
 	cg_state_src = *((Changed_State **)stdhash_it_val(&it));
 	tmp_data = (State_Data*)cg_state_src->state;
@@ -393,7 +417,7 @@ int Net_Send_State_Updates(Prot_Def *p_def, int16 node_id)
 
 	/* did we consider this source ? */
 	stdhash_find(&sources, &src_it, &tmp_data->source_addr);
-	if(stdhash_it_is_end(&src_it)) {
+	if(stdhash_is_end(&sources, &src_it)) {
 	    /* we didn't, so let's see the states originating from it */
 	    stdhash_find(hash_struct, &tmp_it, &tmp_data->source_addr);
 	    cg_state_tmp = *((Changed_State **)stdhash_it_val(&tmp_it));
@@ -405,15 +429,15 @@ int Net_Send_State_Updates(Prot_Def *p_def, int16 node_id)
 	    if((cg_state_tmp->mask[node_id/32]&node_mask) != 0) {
 	        /* No, we aren't */
 		Alarm(DEBUG, "Identical mask\n");
-	        stdhash_it_keyed_next(&tmp_it);
-		while(!stdhash_it_is_end(&tmp_it)) {
+	        stdhash_keyed_next(hash_struct, &tmp_it);
+		while(!stdhash_is_end(hash_struct, &tmp_it)) {
 		    cg_state_tmp = *((Changed_State **)stdhash_it_val(&tmp_it));
 		    if((cg_state_tmp->mask[node_id/32]&node_mask) == 0) {
 			break;
 		    }
-		    stdhash_it_keyed_next(&tmp_it);
+		    stdhash_keyed_next(hash_struct, &tmp_it);
 		}
-		if(stdhash_it_is_end(&tmp_it)) {
+		if(stdhash_is_end(hash_struct, &tmp_it)) {
 		    /* Ok, this source was useless, we didn't find 
 		     * anything for it. Move to the next one. */
 		    stdhash_insert(&sources, &src_it, &tmp_data->source_addr, NULL);
@@ -432,8 +456,8 @@ int Net_Send_State_Updates(Prot_Def *p_def, int16 node_id)
 	    /* Do we still have room in the packet for a 
 	     * state containing at least one cell ? */
 
-	    if(pack_bytes > sizeof(packet_body)  - sizeof(reliable_tail) -
-	       p_def->State_header_size() - p_def->Cell_packet_size()) {
+	    if(pack_bytes > (int)(sizeof(packet_body)  - sizeof(reliable_tail) -
+	       p_def->State_header_size() - p_def->Cell_packet_size())) {
 	        
 	        Alarm(DEBUG, "%s%s",
 		      "Net_Send_State_Updates: not enough room in the packet (1)\n",
@@ -489,8 +513,8 @@ int Net_Send_State_Updates(Prot_Def *p_def, int16 node_id)
 	   
 	    /* See if we still have other states for this source */
 	    
-	    stdhash_it_keyed_next(&tmp_it);
-	    while(!stdhash_it_is_end(&tmp_it)) {
+	    stdhash_keyed_next(hash_struct, &tmp_it);
+	    while(!stdhash_is_end(hash_struct, &tmp_it)) {
 	        cg_state_tmp = *((Changed_State **)stdhash_it_val(&tmp_it));
 
 		Alarm(DEBUG, "%X\t%X\n", cg_state_tmp->mask[node_id/32], node_mask);
@@ -499,7 +523,7 @@ int Net_Send_State_Updates(Prot_Def *p_def, int16 node_id)
 		if((cg_state_tmp->mask[node_id/32]&node_mask) != 0) {
 		    /* No, we aren't */
 		    Alarm(DEBUG, "Identical mask\n");
-		    stdhash_it_keyed_next(&tmp_it);
+		    stdhash_keyed_next(hash_struct, &tmp_it);
 		    continue;
 		}
 		
@@ -511,8 +535,8 @@ int Net_Send_State_Updates(Prot_Def *p_def, int16 node_id)
 		}
 		/* Do we still have room in the packet for a 
 		 * at least a state cell ? */
-		if(pack_bytes > sizeof(packet_body)  - sizeof(reliable_tail) 
-		   - p_def->Cell_packet_size()) {
+		if(pack_bytes > (int)(sizeof(packet_body)  - sizeof(reliable_tail) 
+		   - p_def->Cell_packet_size())) {
 		  
 		    Alarm(DEBUG, "%s%s",
 			  "Net_Send_State_Updates: not enough room in the packet (2)\n",
@@ -559,7 +583,7 @@ int Net_Send_State_Updates(Prot_Def *p_def, int16 node_id)
 		/* Add anything specific to the protocol */
 		pack_bytes += p_def->Set_state_cell(s_data, buff+pack_bytes);  
 	    
-		stdhash_it_keyed_next(&tmp_it);	
+		stdhash_keyed_next(hash_struct, &tmp_it);	
 
 		Alarm(DEBUG, "Upd: Packing another state: %d.%d.%d.%d -> %d.%d.%d.%d | %d:%d\n", 
 		      IP1(pkt->source), IP2(pkt->source), 
@@ -624,7 +648,7 @@ void Process_state_packet(int32 sender, char *buf,
     State_Packet *pkt;
     State_Cell *state_cell;
     Node *sender_node;
-    stdhash_it it;
+    stdit it;
     Link *lk;
     State_Data *s_data;
     int32 sender_ip = sender;
@@ -633,10 +657,12 @@ void Process_state_packet(int32 sender, char *buf,
     int processed_bytes = 0;
     int i, flag;
     int changed_route_flag = 0;
+    int my_endianess_type;
    
+
     /* Check if we knew about the sender of this message */
     stdhash_find(&All_Nodes, &it, &sender_ip);
-    if(stdhash_it_is_end(&it)) { /* I had no idea about the sender node */
+    if(stdhash_is_end(&All_Nodes, &it)) { /* I had no idea about the sender node */
 	/* This guy should first send hello messages to setup 
 	   the link, etc. Ignore the packet. It's either a bug, 
 	   race condition, or an attack */
@@ -699,19 +725,29 @@ void Process_state_packet(int32 sender, char *buf,
 	return;
     }
     
-    /* Get the protocol function pointers */
+    if(!Same_endian(type)) {
+	my_endianess_type = Flip_int32(type);
+    }
+    else {
+	my_endianess_type = type;
+    }
 
-    p_def = Get_Prot_Def(type);
+    /* Get the protocol function pointers */
+    p_def = Get_Prot_Def(my_endianess_type);
     
     /* Process the data in the packet */
 
     while(processed_bytes < data_len) {
 	pkt = (State_Packet*)(buf+processed_bytes);
-	p_def->Process_state_header(buf+processed_bytes);
+	p_def->Process_state_header(buf+processed_bytes, type);
 
 	processed_bytes += p_def->State_header_size();
 	for(i=0; i< pkt->num_cells; i++) {
 	    state_cell = (State_Cell*)(buf+processed_bytes);
+	    
+	    if(!Same_endian(type)) {
+		Flip_state_cell(state_cell);
+	    }
 	    /* Did I know about this state ? */
 	    if((s_data = Find_State(p_def->All_States(), pkt->source, 
 				 state_cell->dest)) == NULL) {
@@ -739,7 +775,10 @@ void Process_state_packet(int32 sender, char *buf,
 	}
     }
     if((changed_route_flag == 1)&&(p_def->Is_route_change())) {
-	Set_Routes();
+	if(Schedule_Set_Route == 0) {
+	    Schedule_Set_Route = 1;
+	    E_queue(Set_Routes, 0, NULL, short_timeout);
+	}
     }
 }
 
@@ -770,7 +809,7 @@ void Resend_States (int dummy_int, void* p_data)
     State_Chain *s_chain;
     sp_time now, diff, state_time;
     stdhash *hash_struct;
-    stdhash_it it, src_it;
+    stdit it, src_it;
     int cnt = 0;
 
     
@@ -779,10 +818,10 @@ void Resend_States (int dummy_int, void* p_data)
     now = E_get_time();
 
     stdhash_find(hash_struct, &src_it, &My_Address);
-    if(!stdhash_it_is_end(&src_it)) {
+    if(!stdhash_is_end(hash_struct, &src_it)) {
 	s_chain = *((State_Chain **)stdhash_it_val(&src_it));
 	stdhash_begin(&s_chain->states, &it); 
-	while(!stdhash_it_is_end(&it)) {
+	while(!stdhash_is_end(&s_chain->states, &it)) {
 	    s_data = *((State_Data **)stdhash_it_val(&it));
 	    
 	    state_time.sec  = s_data->my_timestamp_sec;
@@ -845,7 +884,7 @@ void State_Garbage_Collect(int dummy_int, void* p_data)
 {
     Prot_Def *p_def;
     stdhash *hash_struct, *hash_struct_by_dest;
-    stdhash_it it, dst_it, src_it, st_it;
+    stdit it, dst_it, src_it, st_it;
     State_Data *s_data;
     State_Chain *s_chain_src, *s_chain_dst;
     sp_time now, diff, state_time;
@@ -861,23 +900,23 @@ void State_Garbage_Collect(int dummy_int, void* p_data)
     /* All the states */
 
     stdhash_begin(hash_struct, &src_it); 
-    while(!stdhash_it_is_end(&src_it)) {
+    while(!stdhash_is_end(hash_struct, &src_it)) {
         /* sources one by one... */
 	s_chain_src = *((State_Chain **)stdhash_it_val(&src_it));
 	stdhash_begin(&s_chain_src->states, &it);
-	while(!stdhash_it_is_end(&it)) {
+	while(!stdhash_is_end(&s_chain_src->states, &it)) {
 	    s_data = *((State_Data **)stdhash_it_val(&it));
 	    flag = 0;
 	    state_time.sec  = s_data->my_timestamp_sec - (s_data->age*10);
 	    state_time.usec = s_data->my_timestamp_usec;
 	    
-	    Alarm(PRINT, "now : %d, %d\n", now.sec, now.usec);
-	    Alarm(PRINT, "state: %d, %d; age: %d\n", state_time.sec, state_time.usec, s_data->age);
+	    Alarm(DEBUG, "now : %d, %d\n", now.sec, now.usec);
+	    Alarm(DEBUG, "state: %d, %d; age: %d\n", state_time.sec, state_time.usec, s_data->age);
 	    
 	    
 	    diff = E_sub_time(now, state_time);
 	    
-	    Alarm(PRINT, "diff: %d, %d\n", diff.sec, diff.usec);
+	    Alarm(DEBUG, "diff: %d, %d\n", diff.sec, diff.usec);
 	    
 	    if(E_compare_time(diff, gb_collect_remove) >= 0) {
 		
@@ -889,24 +928,24 @@ void State_Garbage_Collect(int dummy_int, void* p_data)
 		      IP3(s_data->dest_addr), IP4(s_data->dest_addr));
 		
 		/* Ok, this is a very old state. It should be removed... */
-		stdhash_erase(&it);
+		stdhash_erase(&s_chain_src->states, &it);
 
 		/* Remove it from the "by_Dest" structure */
 		if(hash_struct_by_dest != NULL) {
 		    stdhash_find(hash_struct_by_dest, &dst_it, &s_data->dest_addr);
-		    if(stdhash_it_is_end(&dst_it)) {
+		    if(stdhash_is_end(hash_struct_by_dest, &dst_it)) {
 			Alarm(EXIT, "Garbage collect: no entry in the by_dest hash\n");
 		    }
 
 		    s_chain_dst = *((State_Chain **)stdhash_it_val(&dst_it));
 		    stdhash_find(&s_chain_dst->states, &st_it, &s_data->source_addr);
-		    if(stdhash_it_is_end(&st_it)) {
+		    if(stdhash_is_end(&s_chain_dst->states, &st_it)) {
 			Alarm(EXIT, "Garbage collect: no entry in the state_chain hash\n");
 		    }
-		    stdhash_erase(&st_it);
+		    stdhash_erase(&s_chain_dst->states, &st_it);
 		    if(stdhash_empty(&s_chain_dst->states)) {
 			stdhash_destruct(&s_chain_dst->states);
-			stdhash_erase(&dst_it);
+			stdhash_erase(hash_struct_by_dest, &dst_it);
 			dispose(s_chain_dst);
 		    }
 		}
@@ -927,7 +966,7 @@ void State_Garbage_Collect(int dummy_int, void* p_data)
 	}
 	if(stdhash_empty(&s_chain_src->states)) {
 	    stdhash_destruct(&s_chain_src->states);
-	    stdhash_erase(&src_it);
+	    stdhash_erase(hash_struct, &src_it);
 	    dispose(s_chain_src);
 	    continue;
 	}
@@ -935,7 +974,6 @@ void State_Garbage_Collect(int dummy_int, void* p_data)
     }
     E_queue(State_Garbage_Collect, 0, p_data, gb_collect_timeout);
 }
-
 
 
 /***********************************************************/
@@ -948,7 +986,7 @@ void State_Garbage_Collect(int dummy_int, void* p_data)
 /* Arguments                                               */
 /*                                                         */
 /* hash_struct:   The hash structure to look into          */
-/*                (should be indexed by destination)       */
+/*                (should be indexed by source)            */
 /* source: IP address of the source                        */
 /* dest:   IP address of the destination                   */
 /*                                                         */
@@ -961,15 +999,15 @@ void State_Garbage_Collect(int dummy_int, void* p_data)
 
 State_Data* Find_State(stdhash *hash_struct, int32 source, int32 dest) 
 {
-    stdhash_it it, src_it;
+    stdit it, src_it;
     State_Data *s_data;
     State_Chain *s_chain;
 
     stdhash_find(hash_struct, &src_it, &source);
-    if(!stdhash_it_is_end(&src_it)) {
+    if(!stdhash_is_end(hash_struct, &src_it)) {
 	s_chain = *((State_Chain **)stdhash_it_val(&src_it));
 	stdhash_find(&s_chain->states, &it, &dest);
-	if(!stdhash_it_is_end(&it)) {
+	if(!stdhash_is_end(&s_chain->states, &it)) {
 	    s_data = *((State_Data **)stdhash_it_val(&it));
 	    return(s_data);
 	}
@@ -1006,7 +1044,7 @@ void Add_to_changed_states(Prot_Def *p_def, int32 sender,
 			   State_Data *s_data, int how)
 {
 
-    stdhash_it it;
+    stdit it;
     Node *nd;
     int32 ip_address = sender;
     Changed_State *cg_state;
@@ -1034,7 +1072,7 @@ void Add_to_changed_states(Prot_Def *p_def, int32 sender,
 
     /* Find sender node in the datastructure */
     stdhash_find(&All_Nodes, &it, &ip_address);
-    if(stdhash_it_is_end(&it)) {
+    if(stdhash_is_end(&All_Nodes, &it)) {
         Alarm(EXIT, "Add_to_changed_states(): non existing sender node\n");
     }
     nd = *((Node **)stdhash_it_val(&it));
@@ -1052,13 +1090,34 @@ void Add_to_changed_states(Prot_Def *p_def, int32 sender,
     }
     
     if(stdhash_empty(p_def->Changed_States())) {
-        E_queue(Send_State_Updates, 0, (void*)p_def, short_timeout);
+        if (Wireless) {
+            E_queue(Send_State_Updates, 0, (void*)p_def, wireless_timeout);
+        } else {
+            E_queue(Send_State_Updates, 0, (void*)p_def, short_timeout);
+        }
     }
 
     if(nd->address == My_Address)
         Alarm(DEBUG, "nodeid: local, it's my update\n");
     else
         Alarm(DEBUG, "nodeid: %d\n", nd->node_id);
+
+
+    /* If multicast change, schedule kernel route change if necessary
+       Always schedule after Send_State_Updates */
+    if(p_def == &Groups_Prot_Def) {
+	/* Multicast change */
+	Discard_Mcast_Neighbors(s_data->dest_addr); 
+        if (Is_valid_kr_group(s_data->dest_addr)) {
+            if (!E_in_queue(KR_Set_Group_Route, s_data->dest_addr, NULL)) {
+                E_queue(KR_Set_Group_Route, s_data->dest_addr, NULL, kr_timeout);
+            }
+        } 
+    }
+    else {
+	/*Topology change. Discard in route.c*/
+	/*Discard_All_Mcast_Neighbors();*/
+    }
 
     /* Find the state in the to_be_sent buffer (if it exists and 
        it wasn't sent already) */
@@ -1133,7 +1192,7 @@ void Add_to_changed_states(Prot_Def *p_def, int32 sender,
 
 Changed_State* Find_Changed_State(stdhash *hash_struct, int32 source, int32 dest) 
 {
-    stdhash_it it;
+    stdit it;
     int32 src;
     int32 dst;
     Changed_State *cg_state;
@@ -1142,7 +1201,7 @@ Changed_State* Find_Changed_State(stdhash *hash_struct, int32 source, int32 dest
     src = source; dst = dest;
     
     stdhash_find(hash_struct, &it, &src);
-    if(stdhash_it_is_end(&it))
+    if(stdhash_is_end(hash_struct, &it))
         return NULL;
     
     cg_state = *((Changed_State **)stdhash_it_val(&it));
@@ -1150,14 +1209,14 @@ Changed_State* Find_Changed_State(stdhash *hash_struct, int32 source, int32 dest
     if(s_data->dest_addr == dst) {
         return cg_state;
     }
-    stdhash_it_keyed_next(&it); 
-    while(!stdhash_it_is_end(&it)) {
+    stdhash_keyed_next(hash_struct, &it); 
+    while(!stdhash_is_end(hash_struct, &it)) {
 	cg_state = *((Changed_State **)stdhash_it_val(&it));
 	s_data = (State_Data*)cg_state->state;
 	if(s_data->dest_addr == dst) {
 	    return cg_state;
 	}
-	stdhash_it_keyed_next(&it); 
+	stdhash_keyed_next(hash_struct, &it); 
     }
     return NULL;
 }
@@ -1183,11 +1242,11 @@ Changed_State* Find_Changed_State(stdhash *hash_struct, int32 source, int32 dest
 
 void Empty_Changed_States(stdhash *hash_struct)
 {
-    stdhash_it it;
+    stdit it;
     Changed_State *cg_state;
 
     stdhash_begin(hash_struct, &it); 
-    while(!stdhash_it_is_end(&it)) {
+    while(!stdhash_is_end(hash_struct, &it)) {
         cg_state = *((Changed_State **)stdhash_it_val(&it));
 	dispose(cg_state);
 	stdhash_it_next(&it);

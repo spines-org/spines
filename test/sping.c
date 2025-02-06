@@ -18,8 +18,14 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2005 The Johns Hopkins University.
  * All rights reserved.
+ *
+ * Major Contributor(s):
+ * --------------------
+ *    John Lane
+ *    Raluca Musaloiu-Elefteri
+ *    Nilo Rivera
  *
  */
 
@@ -47,6 +53,7 @@ static int  sendPort;
 static int  recvPort;
 static int  Address;
 static int  Send_Flag;
+static int  Exit_Timeout;
 
 static void Usage(int argc, char *argv[]);
 
@@ -122,13 +129,14 @@ int main( int argc, char *argv[] )
     port = (int*)(buf+3*sizeof(struct timeval)+2*sizeof(int));
     addr = (long*)(buf+3*sizeof(struct timeval)+3*sizeof(int));
 
+
+    FD_ZERO(&mask);
+    FD_ZERO(&dummy_mask);
+    FD_SET(sk,&mask);
+    
     if(Send_Flag == 1) {
 	printf("Checking %s, %d; %d byte pings, every %d milliseconds: %d rounds\n\n",
 	       IP, sendPort, Num_bytes, Delay, Num_rounds);
-
-	FD_ZERO(&mask);
-	FD_ZERO(&dummy_mask);
-	FD_SET(sk,&mask);
 
 	/* Shared mem init */
 
@@ -168,8 +176,8 @@ int main( int argc, char *argv[] )
 	avg_clockdiff = (long long int*)mem_addr;
 
 
-        bcopy(gethostbyname(IP), &h_ent, sizeof(h_ent));
-        bcopy(h_ent.h_addr, &host_num, sizeof(host_num));
+        memcpy(&h_ent, gethostbyname(IP), sizeof(h_ent));
+        memcpy(&host_num, h_ent.h_addr, sizeof(host_num));
 
 	send_addr.sin_family = AF_INET;
 	send_addr.sin_addr.s_addr = host_num; 
@@ -178,8 +186,8 @@ int main( int argc, char *argv[] )
         if(strlen(My_name) == 0){
 	   gethostname(My_name, sizeof(My_name));
 	}
-	bcopy(gethostbyname(My_name), &h_ent, sizeof(h_ent));
-        bcopy(h_ent.h_addr, &local_addr, sizeof(local_addr));
+	memcpy(&h_ent, gethostbyname(My_name), sizeof(h_ent));
+        memcpy(&local_addr, h_ent.h_addr, sizeof(local_addr));
 	   
 	gettimeofday(&start, &tz);
 
@@ -281,22 +289,32 @@ int main( int argc, char *argv[] )
     else {
 	printf("Just answering pings on port %d\n", recvPort);
 	while(1) {
-	    ret = recv(sk, buf, sizeof(buf),  0);  
+	    temp_mask = mask;
+	    temp_timeout.tv_sec = Exit_Timeout;
+	    temp_timeout.tv_usec = 0;
+	    select( FD_SETSIZE, &temp_mask, &dummy_mask, &dummy_mask, &temp_timeout);
+		
+	    if(FD_ISSET(sk, &temp_mask)) {
+		ret = recv(sk, buf, sizeof(buf), 0);  
 
-	    if(ret != *msg_size) {
-		perror("corrupted packet...\n");
-		exit(0);
+		if(ret != *msg_size) {
+		    perror("corrupted packet...\n");
+		    exit(0);
+		}
+		
+		gettimeofday(t2, &tz);
+		
+		send_addr.sin_family = AF_INET;
+		send_addr.sin_addr.s_addr = *addr; 
+		send_addr.sin_port = *port;
+		
+		gettimeofday(t3, &tz);
+		ret = sendto(sk, buf, *msg_size,  0, 
+			     (struct sockaddr *)&send_addr, sizeof(send_addr));
 	    }
-
-	    gettimeofday(t2, &tz);
-
-	    send_addr.sin_family = AF_INET;
-	    send_addr.sin_addr.s_addr = *addr; 
-	    send_addr.sin_port = *port;
-
-	    gettimeofday(t3, &tz);
-	    ret = sendto(sk, buf, *msg_size,  0, 
-		    (struct sockaddr *)&send_addr, sizeof(send_addr));
+	    else {
+		return(1);
+	    }
 	}
     }
     return(1);
@@ -317,6 +335,7 @@ static  void    Usage(int argc, char *argv[])
     Send_Flag = 0;
     strcpy(IP, "127.0.0.1");
     strcpy(My_name, ""); 
+    Exit_Timeout = 3600;
     while( --argc > 0 ) {
 	argv++;
 	
@@ -341,10 +360,13 @@ static  void    Usage(int argc, char *argv[])
 	}else if( !strncmp( *argv, "-n", 2 ) ){
 	    sscanf(argv[1], "%d", (int*)&Num_rounds );
 	    argc--; argv++;
+	}else if( !strncmp( *argv, "-x", 2 ) ){
+	    sscanf(argv[1], "%d", (int*)&Exit_Timeout );
+	    argc--; argv++;
 	}else if( !strncmp( *argv, "-s", 2 ) ){
 	    Send_Flag = 1;
 	}else{
-	    printf( "Usage: sp_ping\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n",
+	    printf( "Usage: sping\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n",
 		    "\t[-d <port number>] : to send packets on, default is 8400",
 		    "\t[-r <port number>] : to receive packets on, default is 8400",
 		    "\t[-a <IP address> ] : IP address to send ping packets to",
@@ -352,6 +374,7 @@ static  void    Usage(int argc, char *argv[])
 		    "\t[-b <size>       ] : size of the ping packets (in bytes)",
 		    "\t[-t <delay>      ] : delay between ping packets (in milliseconds)",
 		    "\t[-n <rounds>     ] : number of rounds",
+		    "\t[-x <exit delay> ] : time until exit (sec), default 3600",
 		    "\t[-s              ] : sender ping");
 	    exit( 0 );
 	}

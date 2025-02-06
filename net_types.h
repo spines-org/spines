@@ -18,14 +18,23 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2007 The Johns Hopkins University.
  * All rights reserved.
+ *
+ * Major Contributor(s):
+ * --------------------
+ *    John Lane
+ *    Raluca Musaloiu-Elefteri
+ *    Nilo Rivera
  *
  */
 
 
 #ifndef	NET_TYPES
 #define	NET_TYPES
+
+#include "util/data_link.h"
+
 
 
 /*      Dont forget that 0x80000080 is kept for endians */
@@ -70,12 +79,12 @@
 #define         LINK_ACK_TYPE           0x00000001
 #define         UDP_DATA_TYPE           0x00000002
 #define         REL_UDP_DATA_TYPE       0x00000003
+#define         REALTIME_DATA_TYPE      0x00000004
+#define         REALTIME_NACK_TYPE      0x00000005
 #define         DATA_MASK               0x0000007f
 
 
 /* Other types */
-#define         REL_MCAST_ACK_TYPE      0x00000001
-
 
 
 /* Type macros */
@@ -91,8 +100,14 @@
 
 #define		Is_udp_data(type)	((type & DATA_MASK) == UDP_DATA_TYPE)
 #define		Is_rel_udp_data(type)	((type & DATA_MASK) == REL_UDP_DATA_TYPE)
+#define		Is_realtime_data(type)	((type & DATA_MASK) == REALTIME_DATA_TYPE)
+#define		Is_realtime_nack(type)	((type & DATA_MASK) == REALTIME_NACK_TYPE)
 #define		Is_link_ack(type)	((type & DATA_MASK) == LINK_ACK_TYPE)
 
+
+/* IP Address Class Check */
+#define		Is_mcast_addr(x)	((x & 0xF0000000) == 0xE0000000)
+#define		Is_acast_addr(x)	((x & 0xF0000000) == 0xF0000000)
 
 
 /*This goes in front of each packet (any kind), as it is sent on the network */
@@ -116,7 +131,10 @@ typedef	struct	dummy_udp_pkt_header {
     int16u          source_port;
     int16u          dest_port;
     int16u          len;
-    int16u          seq_no;    /* sequence number for end-to-end loss_rate */
+    int16u          seq_no;
+    char            frag_num;   /* For fragmented packets: total num of fragments */
+    char            frag_idx;   /* Fragment index */
+    int16u          sess_id;
 } udp_header;
 
 typedef struct dummy_rel_udp_pkt_add {
@@ -137,6 +155,7 @@ typedef	struct	dummy_hello_packet {
     int32u          seq_no;
     int32           my_time_sec;
     int32           my_time_usec;
+    int32u          response_seq_no;
     int32           diff_time;
     int32           loss_rate;   /* estimated loss rate of data */
                                  /* (from 0 to LOSS_RATE_SCALE for 0% to 100%) */
@@ -182,19 +201,11 @@ typedef struct dummy_reliable_tail {
 } reliable_tail;
 
 
-typedef struct dummy_reliable_mcast_ack {
-    int32           type;
-    int32           mcast_address;
-    int32           seq_no;
-    int32           timestamp_sec;
-    int32           timestamp_usec;
-} reliable_mcast_ack;
-
-
-typedef struct dummy_rel_mcast_tail {
-    int32u          seq_no;            /* seq no of this reliable message */
-    int32           acker;             /* who will ack this message*/
-} rel_mcast_tail;
+typedef struct dummy_reliable_ses_tail {
+    int32u          seq_no;            /* seq no of this reliable message */ 
+    int32u          cummulative_ack;   /* cummulative in order ack */
+    int32u          adv_win;           /* advertised window for flow control */
+} reliable_ses_tail;
 
 
 #endif	/* NET_TYPES */

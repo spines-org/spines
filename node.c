@@ -18,17 +18,25 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2007 The Johns Hopkins University.
  * All rights reserved.
+ *
+ * Major Contributor(s):
+ * --------------------
+ *    John Lane
+ *    Raluca Musaloiu-Elefteri
+ *    Nilo Rivera
  *
  */
 
+#include <netinet/in.h>
 
 #include "util/arch.h"
 #include "util/alarm.h"
 #include "util/sp_events.h"
 #include "util/memory.h"
 #include "stdutil/src/stdutil/stdhash.h"
+#include "stdutil/src/stdutil/stddll.h"
 
 #include "objects.h"
 #include "link.h"
@@ -38,10 +46,12 @@
 #include "link_state.h"
 #include "route.h"
 #include "multicast.h"
+#include "kernel_routing.h"
+
 
 /* Global variables */
 
-extern int32    Address[256];
+extern int32    Address[MAX_NEIGHBORS];
 extern int16    Num_Initial_Nodes;
 extern stdhash  All_Nodes;
 extern stdhash  All_Edges;
@@ -54,9 +64,30 @@ extern Prot_Def Edge_Prot_Def;
 extern stdhash  All_Groups_by_Node; 
 extern stdhash  All_Groups_by_Name; 
 extern stdhash  Changed_Group_States;
-extern stdhash  Monitor_Loss;
+extern stdhash  Monitor_Params;
+extern int16    KR_Flags;
 
 
+#ifdef SPINES_SSL
+/* openssl */
+extern stdhash  SSL_Recv_Queue[MAX_LINKS_4_EDGE];
+extern stddll   SSL_Resend_Queue;
+
+stdbool stdhash_sockaddr_in_equals(const void *sa1, const void *sa2) {
+    struct sockaddr_in sa1_tmp;
+    struct sockaddr_in sa2_tmp;
+        
+    sa1_tmp = *((struct sockaddr_in *) sa1);
+    sa2_tmp = *((struct sockaddr_in *) sa2);
+
+    return (sa1_tmp.sin_addr.s_addr == sa2_tmp.sin_addr.s_addr) &&
+           (sa1_tmp.sin_port == sa2_tmp.sin_port);
+/*
+        return (((struct sockaddr_in *) sa1)->sin_addr.s_addr == (((struct sockaddr_in *) sa2)->sin_addr.s_addr)) &&
+                        (((struct sockaddr_in *) sa1)->sin_port == (((struct sockaddr_in *) sa2)->sin_port));
+*/
+}
+#endif
 
 /***********************************************************/
 /* void Init_Nodes(void)                                   */
@@ -82,23 +113,37 @@ void Init_Nodes(void) {
     }
 
     stdhash_construct(&All_Nodes, sizeof(int32), sizeof(Node*), 
-		      stdhash_int_equals, stdhash_int_hashcode);
+		      NULL, NULL, 0);
 
     stdhash_construct(&All_Edges, sizeof(int32), sizeof(State_Chain*), 
-		      stdhash_int_equals, stdhash_int_hashcode);
+		      NULL, NULL, 0);
+
     stdhash_construct(&Changed_Edges, sizeof(int32), sizeof(Changed_Edge*), 
-		      stdhash_int_equals, stdhash_int_hashcode);
+		      NULL, NULL, 0);
 
     stdhash_construct(&All_Groups_by_Node, sizeof(int32), sizeof(State_Chain*), 
-		      stdhash_int_equals, stdhash_int_hashcode);
+		      NULL, NULL, 0);
+
     stdhash_construct(&All_Groups_by_Name, sizeof(int32), sizeof(State_Chain*), 
-		      stdhash_int_equals, stdhash_int_hashcode);
+		      NULL, NULL, 0);
+
     stdhash_construct(&Changed_Group_States, sizeof(int32), sizeof(Group_State*), 
-		      stdhash_int_equals, stdhash_int_hashcode);
+		      NULL, NULL, 0);
 
-    stdhash_construct(&Monitor_Loss, sizeof(int32), sizeof(struct Loss_d), 
-		      stdhash_int_equals, stdhash_int_hashcode);
+    stdhash_construct(&Monitor_Params, sizeof(int32), sizeof(struct Lk_Param_d), 
+		      NULL, NULL, 0);
 
+
+#ifdef SPINES_SSL
+    /* openssl */
+    for (i = 0; i < MAX_LINKS_4_EDGE; i++) {
+      stdhash_construct(&SSL_Recv_Queue[i], sizeof(int), sizeof(struct SSL*), 
+			NULL, NULL, 0);
+    }
+    
+    stddll_construct(&SSL_Resend_Queue, sizeof(struct send_item));
+    /* end of ssl */
+#endif
 
     for(i=0; i<MAX_LINKS; i++)
         Links[i] = NULL;
@@ -132,7 +177,7 @@ void Init_Nodes(void) {
 void Create_Node(int32 address, int16 mode) {
     int i, nodeid;
     Node *node_p;
-    stdhash_it it;
+    stdit it;
     int32 ip_address = address;
 
     if((node_p = (Node*) new(TREE_NODE))==NULL)
@@ -144,10 +189,9 @@ void Create_Node(int32 address, int16 mode) {
     node_p->node_id = -1;
     node_p->flags = 0x0;
     node_p->counter = 0;
-    node_p->last_time_heard = E_get_time();
     node_p->flags = mode;
-    stdhash_construct(&node_p->routes, sizeof(int32), sizeof(Route*),
-		      stdhash_int_equals, stdhash_int_hashcode);
+    node_p->device_name = NULL;
+
     node_p->prev = NULL;
     node_p->next = NULL;
 
@@ -182,6 +226,10 @@ void Create_Node(int32 address, int16 mode) {
     Alarm(DEBUG, "Create_Node(): Node %d.%d.%d.%d created with mode %d\n",
 	  IP1(address), IP2(address), IP3(address), IP4(address), 
 	  node_p->flags);
+
+    if (KR_Flags & KR_OVERLAY_NODES) {
+        KR_Create_Overlay_Node(address);
+    }
 }
 
 
@@ -204,16 +252,18 @@ void Create_Node(int32 address, int16 mode) {
 
 void Disconnect_Node(int32 address) 
 {
-    stdhash_it it;
+    stdit it;
     Node *nd;
     Edge *edge;
     int32 address_t;
     int i;
     int16 tmp_nodeid;
+    /* Lk_Param lkp; */
+
 
     address_t = address;
     stdhash_find(&All_Nodes, &it, &address_t);
-    if(stdhash_it_is_end(&it)) {
+    if(stdhash_is_end(&All_Nodes, &it)) {
         Alarm(EXIT, "Disconnect_Node(): Node does not exist: %d.%d.%d.%d\n",
 	      IP1(address), IP2(address), IP3(address), IP4(address));
     }
@@ -229,10 +279,25 @@ void Disconnect_Node(int32 address)
 	}
     }
     
+    Alarm(PRINT, "Disconnect_Node(): %d.%d.%d.%d\n",
+	      IP1(address), IP2(address), IP3(address), IP4(address));
+
+
+#if 0    
+    lkp.loss_rate = 100;
+    stdhash_find(&Monitor_Params, &it, &address);
+    if (!stdhash_is_end(&Monitor_Params, &it)) {
+        stdhash_erase(&Monitor_Params, &it);
+    }
+    stdhash_insert(&Monitor_Params, &it, &address, &lkp);
+    
+#endif
+
+
     edge = Destroy_Edge(My_Address, address, 1);
     if(edge != NULL) {
         Add_to_changed_states(&Edge_Prot_Def, My_Address, (State_Data*)edge, NEW_CHANGE);
-	Set_Routes();
+	Set_Routes(0, NULL);
     }
 
     if(nd->flags & NEIGHBOR_NODE)
@@ -283,27 +348,27 @@ void Disconnect_Node(int32 address)
 
 int Try_Remove_Node(int32 address)
 {
-    stdhash_it it, node_it, src_it, route_it;
+    stdit it, node_it, src_it;
     int flag;
     State_Chain *s_chain;
     Node* nd;
-    Route* route;
    
 
     if(address == My_Address)
 	return(0);
 
+
     /* See if the  node is the source of an existing edge */
     stdhash_find(&All_Edges, &src_it, &address);
-    if(stdhash_it_is_end(&src_it)) {
+    if(stdhash_is_end(&All_Edges, &src_it)) {
 	/* it's not, so let's see if the node is a destination */
 	stdhash_begin(&All_Edges, &src_it);
 	
 	flag = 0;
-	while(!stdhash_it_is_end(&src_it)) {
+	while(!stdhash_is_end(&All_Edges, &src_it)) {
 	    s_chain = *((State_Chain **)stdhash_it_val(&src_it));
 	    stdhash_find(&s_chain->states, &it, &address);
-	    if(!stdhash_it_is_end(&it)) {
+	    if(!stdhash_is_end(&s_chain->states, &it)) {
 		flag = 1;
 		break;
 	    }
@@ -317,7 +382,7 @@ int Try_Remove_Node(int32 address)
 		  IP1(address), IP2(address), IP3(address), IP4(address));
 
 	    stdhash_find(&All_Nodes, &node_it, &address);
-	    if(stdhash_it_is_end(&node_it)) { 
+	    if(stdhash_is_end(&All_Nodes, &node_it)) { 
 		Alarm(PRINT, "Try_Remove_Node(): No node structure !\n");
 		return(-1);
 	    }
@@ -329,15 +394,14 @@ int Try_Remove_Node(int32 address)
 		return(-1);
 	    }
 	    
-	    stdhash_begin(&nd->routes, &route_it);
-	    while(!stdhash_it_is_end(&route_it)) {
-		route = *((Route **)stdhash_it_val(&route_it));	    
-		dispose(route);
-		stdhash_it_next(&route_it);
-	    }
-	    stdhash_destruct(&nd->routes);
-	    stdhash_erase(&node_it);
+	    stdhash_erase(&All_Nodes, &node_it);
 	    dispose(nd);
+
+        /* If kernel routing enabled, delete route */
+        if (KR_Flags & KR_OVERLAY_NODES) {
+            KR_Delete_Overlay_Node(address);
+        }
+
 	    return(1);
 	}
     }

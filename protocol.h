@@ -18,8 +18,14 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2007 The Johns Hopkins University.
  * All rights reserved.
+ *
+ * Major Contributor(s):
+ * --------------------
+ *    John Lane
+ *    Raluca Musaloiu-Elefteri
+ *    Nilo Rivera
  *
  */
 
@@ -29,6 +35,7 @@
 
 #include "util/scatter.h"
 
-void Prot_process_scat(sys_scatter *scat, int total_bytes, int mode);
+void Prot_process_scat(sys_scatter *scat, int total_bytes, int mode, int32 type);
+
 
 #endif

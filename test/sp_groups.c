@@ -18,8 +18,14 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2005 The Johns Hopkins University.
  * All rights reserved.
+ *
+ * Major Contributor(s):
+ * --------------------
+ *    John Lane
+ *    Raluca Musaloiu-Elefteri
+ *    Nilo Rivera
  *
  */
 
@@ -99,8 +105,8 @@ int main(int argc, char *argv[])
 	    print_usage();
 	    return(1);	    
 	}
-	bcopy(h_tmp, &h_ent, sizeof(h_ent));
-	bcopy(h_ent.h_addr, &address, sizeof(address) );
+	memcpy(&h_ent, h_tmp, sizeof(h_ent));
+	memcpy(&address, h_ent.h_addr, sizeof(address) );
 	address = ntohl(address);	
 	if(argc == 3) {
 	    sscanf(argv[6], "%d", (int*)&port);

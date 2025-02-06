@@ -18,12 +18,21 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2007 The Johns Hopkins University.
  * All rights reserved.
+ *
+ * Major Contributor(s):
+ * --------------------
+ *    John Lane
+ *    Raluca Musaloiu-Elefteri
+ *    Nilo Rivera
  *
  */
 
+#include <stdlib.h>
 #include <math.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 
 #include "util/arch.h"
 #include "util/alarm.h"
@@ -39,6 +48,7 @@
 #include "state_flood.h"
 #include "net_types.h"
 #include "hello.h"
+#include "kernel_routing.h"
 
 
 /* Global variables */
@@ -51,10 +61,14 @@ extern Link*    Links[MAX_LINKS];
 extern Prot_Def Edge_Prot_Def;
 extern int32    My_Address;
 extern int      Route_Weight;
-
+extern int16    KR_Flags;
+extern int      Wireless;
 
 /* Local variables */
-static const sp_time zero_timeout        = {     0,    0};
+static const sp_time zero_timeout        = {     0,      0};
+
+#define MAX_RETR_DELAY 30
+
 
 
 /***********************************************************/
@@ -313,6 +327,7 @@ int Edge_Set_state_cell(void *state, char *pos)
 /* Arguments                                               */
 /*                                                         */
 /* pos: pointer to where to set the fields in the packet   */
+/* type: contains the endianess of the message             */
 /*                                                         */
 /* Return Value                                            */
 /*                                                         */
@@ -320,9 +335,21 @@ int Edge_Set_state_cell(void *state, char *pos)
 /*                                                         */
 /***********************************************************/
 
-int Edge_Process_state_header(char *pos)
+int Edge_Process_state_header(char *pos, int32 type)
 {
     /* Nothing for now... */
+    /* Just flip the header endianess if necessary */
+    
+    link_state_packet *lk_st_pkt;
+    
+    lk_st_pkt = (link_state_packet*)pos;
+
+    if(!Same_endian(type)) {
+	lk_st_pkt->source = Flip_int32(lk_st_pkt->source);
+	lk_st_pkt->num_edges = Flip_int16(lk_st_pkt->num_edges);
+	lk_st_pkt->src_data = Flip_int16(lk_st_pkt->src_data);
+    }
+
     return(0);
 }
 
@@ -373,15 +400,13 @@ void* Edge_Process_state_cell(int32 source, char *pos)
     Node *nd_source, *nd_dest;
     Node *nd = NULL;
     edge_cell_packet *edge_cell;
-    stdhash_it it;
+    stdit it;
     int16 nodeid, linkid;
     int flag_tmp;
 
-
-
     /* Check if we knew about the source node */
     stdhash_find(&All_Nodes, &it, &source);
-    if(stdhash_it_is_end(&it)) { /* I had no idea about this node */
+    if(stdhash_is_end(&All_Nodes, &it)) { /* I had no idea about this node */
 	Create_Node(source, REMOTE_NODE);
 	stdhash_find(&All_Nodes, &it, &source);
     }
@@ -391,18 +416,21 @@ void* Edge_Process_state_cell(int32 source, char *pos)
 
     /* Check if we knew about the destination node */
     stdhash_find(&All_Nodes, &it, &edge_cell->dest);
-    if(stdhash_it_is_end(&it)) { /* I had no idea about this node */
+    if(stdhash_is_end(&All_Nodes, &it)) { /* I had no idea about this node */
 	Create_Node(edge_cell->dest, REMOTE_NODE);
 	stdhash_find(&All_Nodes, &it, &edge_cell->dest);
     }
     nd_dest = *((Node **)stdhash_it_val(&it));
 
+
     if((edge_cell->cost < 0)&&(nd_source->address == My_Address)) {
 	/* somebody tells me that an edge of mine is deleted. */
-	Alarm(DEBUG, "Hey, this is my edge !!!\n");
+	Alarm(PRINT, "Hey, this is my edge !!!\n");
+#if 0
 	edge = (Edge*)Find_State(&All_Edges, nd_source->address, 
 			 nd_dest->address);
 	return((void*)edge);
+#endif
     }
 
     /* Did I know about this edge ? */
@@ -472,11 +500,12 @@ void* Edge_Process_state_cell(int32 source, char *pos)
     }
 
     /* Update edge structure here... */
-    Alarm(DEBUG, "Updating edge: %d.%d.%d.%d -> %d.%d.%d.%d\n",
+    Alarm(PRINT, "Updating edge: %d.%d.%d.%d -> %d.%d.%d.%d; %d -> %d\n",
 	  IP1(edge->source->address), IP2(edge->source->address), 
 	  IP3(edge->source->address), IP4(edge->source->address), 
 	  IP1(edge->dest->address), IP2(edge->dest->address), 
-	  IP3(edge->dest->address), IP4(edge->dest->address));
+	  IP3(edge->dest->address), IP4(edge->dest->address),
+	  edge->cost, edge_cell->cost);
     
     edge->timestamp_sec = edge_cell->timestamp_sec;
     edge->timestamp_usec = edge_cell->timestamp_usec;
@@ -509,7 +538,7 @@ void* Edge_Process_state_cell(int32 source, char *pos)
 /***********************************************************/
 
 Edge* Create_Overlay_Edge(int32 source, int32 dest) {
-    stdhash_it it;
+    stdit it;
     Edge *edge;
     Node *src_nd;
     Node *dst_nd;
@@ -527,13 +556,13 @@ Edge* Create_Overlay_Edge(int32 source, int32 dest) {
 
     /* Find the src and dest node structures */
     stdhash_find(&All_Nodes, &it, &source);
-    if(stdhash_it_is_end(&it))
+    if(stdhash_is_end(&All_Nodes, &it))
         Alarm(EXIT, "Create_Overlay_Edge(): Non existent source\n");
 
     src_nd = *((Node **)stdhash_it_val(&it));
 
     stdhash_find(&All_Nodes, &it, &dest);
-    if(stdhash_it_is_end(&it))
+    if(stdhash_is_end(&All_Nodes, &it))
         Alarm(EXIT, "Create_Overlay_Edge(): Non existent destination\n");
 
     dst_nd = *((Node **)stdhash_it_val(&it));
@@ -559,19 +588,24 @@ Edge* Create_Overlay_Edge(int32 source, int32 dest) {
     edge->source = src_nd;
     edge->dest = dst_nd;
     edge->age = 0;
-    edge->cost = 1;
+    if((Route_Weight == LATENCY_ROUTE)||(Route_Weight == AVERAGE_ROUTE)) {
+    	edge->cost = 4;
+    }
+    else {
+	edge->cost = 1;
+    }
     edge->flags = REMOTE_EDGE;
 
 
     /* Insert the edge in the global data structures */
 
     stdhash_find(&All_Edges, &it, &source);
-    if(stdhash_it_is_end(&it)) {
+    if(stdhash_is_end(&All_Edges, &it)) {
 	if((s_chain = (State_Chain*) new(STATE_CHAIN))==NULL)
 	    Alarm(EXIT, "Create_Overlay_Edge: Cannot allocte object\n");
 	s_chain->address = source;
 	stdhash_construct(&s_chain->states, sizeof(int32), sizeof(Edge*), 
-                      stdhash_int_equals, stdhash_int_hashcode);
+			  NULL, NULL, 0);
 	stdhash_insert(&All_Edges, &it, &source, &s_chain);
 	stdhash_find(&All_Edges, &it, &source);
     }
@@ -673,7 +707,10 @@ int Edge_Update_Cost(int linkid, int mode)
     Link *lk;
     Control_Data *c_data;
     Edge *edge;
-    float tmp;
+    float tmp, tmp1, tmp2, cost;
+    sp_time now;
+
+    now = E_get_time();
 
     if(mode != Route_Weight) {
 	return(1);
@@ -690,33 +727,48 @@ int Edge_Update_Cost(int linkid, int mode)
 	Alarm(PRINT, "Edge_Update_Cost(): No edge...\n");
 	return(-1);
     }
-    
+        
     c_data = (Control_Data*)lk->prot_data;
     if(c_data == NULL) {
 	Alarm(PRINT, "Edge_Update_Cost(): No edge...\n");
 	return(-1);
     }
-    
     if(Route_Weight == LATENCY_ROUTE) {
-	if(c_data->rtt < 30000) {
-	    edge->cost = c_data->rtt;
+	tmp = (float)c_data->rtt;
+
+	/* One way delay */
+	tmp = (float)(tmp/2.0);
+
+	if(tmp < 1) {
+	    tmp = 1;
+	}
+	tmp += 4.0;
+	if(tmp < 300) {
+	    cost = tmp;
 	}
         else {
-	    edge->cost = 30000;
+	    cost = 300.0;
 	}
+	
+	if(abs((int)(edge->cost - cost)) < (int)(0.1*edge->cost)) {
+	    return(-1);
+	}
+
+	edge->cost = (short)cost;
+
 	edge->timestamp_usec++;
 	if(edge->timestamp_usec >= 1000000) {
 	    edge->timestamp_usec = 0;
 	    edge->timestamp_sec++;
 	}
 	Add_to_changed_states(&Edge_Prot_Def, My_Address, (State_Data*)edge, NEW_CHANGE);
-	Set_Routes();
+	Set_Routes(0, NULL);
     }
     else if(Route_Weight == LOSSRATE_ROUTE) {
-	tmp = log(1-c_data->est_loss_rate);
+	tmp = (float)log(1-c_data->est_loss_rate);
 	tmp *= 10000;
 	if(1-tmp < 30000) {
-	    edge->cost = 1-tmp;
+	    edge->cost = (short)(1-tmp);
 	}
 	else {
 	    edge->cost = 30000;
@@ -727,46 +779,160 @@ int Edge_Update_Cost(int linkid, int mode)
 	    edge->timestamp_sec++;
 	}
 	Add_to_changed_states(&Edge_Prot_Def, My_Address, (State_Data*)edge, NEW_CHANGE);
-	Set_Routes();
+	Set_Routes(0, NULL);
     }
-    
+    else if(Route_Weight == AVERAGE_ROUTE) {	
+	tmp = (float)(c_data->rtt);
+	/* one way delay */
+	tmp = (float)(tmp/2.0);   
+
+	if(c_data->est_loss_rate > 0.0) {
+	    /* 2*p^2 * max_latency (lost even after recovery) */
+	    tmp1 = (float)(2.0*c_data->est_loss_rate*c_data->est_loss_rate*100.0);
+	    
+	    /* (p - 2*p^2)(3*delay + delta) */
+	    tmp2 = (float)((tmp*3.0 + 10.0)*(c_data->est_loss_rate - 2.0*c_data->est_loss_rate*c_data->est_loss_rate));
+	    
+	    /* (1-p)*delay + (p - 2*p^2)(3*delay + delta) + 2*p^2 * max_latency */
+	    tmp = (float)(tmp*(1.0-c_data->est_loss_rate) + tmp1 + tmp2);
+	    
+	}
+	
+	if(tmp < 1) {
+	    tmp = 1;
+	}
+	tmp += 4.0;
+	if(tmp < 300.0) {
+	    cost = tmp;
+	}
+        else {
+	    cost = 300.0;
+	}
+	/*
+	 *if(edge->cost > MAX_RETR_DELAY) {
+	 *   if(cost > MAX_RETR_DELAY - 5) {
+	 *	cost = cost + MAX_RETR_DELAY;
+	 *   }
+	 *}
+	 *else {
+	 *   if(cost > MAX_RETR_DELAY) {
+	 *	cost = cost + MAX_RETR_DELAY;
+	 *   }
+	 *}
+	 */
+
+	if((edge->cost > cost)&&(edge->cost - cost < edge->cost*0.15)) {
+	    return(-1);
+	}
+	else if((edge->cost <= cost)&&(cost - edge->cost < edge->cost*0.15)) {
+	    return(-1);
+	}
+
+	
+       	Alarm(DEBUG, "@\tupdate\t%d -- %d: delay: %5.3f loss: %5.3f; new_cost: %5.3f; old_cost: %d\n",
+	      now.sec, linkid, (c_data->rtt/2.0), c_data->est_loss_rate, cost, edge->cost);
+	
+
+	edge->cost = (short)(cost+0.5);
+
+
+	edge->timestamp_usec++;
+	if(edge->timestamp_usec >= 1000000) {
+	    edge->timestamp_usec = 0;
+	    edge->timestamp_sec++;
+	}
+	Add_to_changed_states(&Edge_Prot_Def, My_Address, (State_Data*)edge, NEW_CHANGE);
+	Set_Routes(0, NULL);
+    }
+
+    Alarm(DEBUG, "Edge_Update_Cost()\n");
+
     return(1);
 }
 
 
-
-
-
-/* For debuging only */
+/* For debugging or logging purpose. 
+ * The snapshot will write the current spines route every
+ * print_timeout, overwriting the previous file.  So the 
+ * latest state of Spines can be found in SNAPSHOT_FILE     
+ */
+#define PRINT_EDGES 0
+#define SNAPSHOT_PRINT_EDGES 1
+#define SNAPSHOT 1
+#define SNAPSHOT_FILE "spines.snapshot"
 
 void Print_Edges(int dummy_int, void* dummy) 
 {
-    stdhash_it it, c_it;
-    Edge *edge;
-    State_Chain *s_chain;
-    const sp_time print_timeout = {    15,    0};
+    sp_time print_timeout = {   300,    0};
+    FILE *fp = NULL;
+    char line[256];
+    char file_name[50];
+    static int snapshot = SNAPSHOT;
 
-
-    Alarm(PRINT, "\n\nAvailable edges:\n");
-    stdhash_begin(&All_Edges, &it); 
-    while(!stdhash_it_is_end(&it)) {
-	s_chain = *((State_Chain **)stdhash_it_val(&it));
-	stdhash_begin(&s_chain->states, &c_it);
-	while(!stdhash_it_is_end(&c_it)) {
-	    edge = *((Edge **)stdhash_it_val(&c_it));
-	    Alarm(PRINT, "\t\t%d.%d.%d.%d -> %d.%d.%d.%d :: %d | %d:%d\n", 
-		  IP1(edge->source->address), IP2(edge->source->address), 
-		  IP3(edge->source->address), IP4(edge->source->address), 
-		  IP1(edge->dest->address), IP2(edge->dest->address), 
-		  IP3(edge->dest->address), IP4(edge->dest->address), 
-		  edge->cost, edge->timestamp_sec, edge->timestamp_usec); 
-	    stdhash_it_next(&c_it);
-	}
-	stdhash_it_next(&it);
+    /* If wireless, I want to have snapshot file /tmp for scp */
+    if (Wireless) {
+        sprintf(file_name, "/tmp/%s", SNAPSHOT_FILE);
+        print_timeout.sec = 20;
+    } else {
+        sprintf(file_name, "%s", SNAPSHOT_FILE);
     }
 
-    Alarm(PRINT, "\n\n");
-    Print_Routes();
+    if (snapshot) { 
+	fp = fopen(file_name, "w"); 
+	if (fp == NULL) { 
+	    perror("Could not open spines snapshot file\n");
+	    Alarm(PRINT,"\nWill continue without attempting to write to snapshot file\n");
+	    snapshot=0;
+	} else { 
+	    chmod(file_name, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH|S_IWOTH);
+	    fprintf(fp, "\n\n"); 
+	}
+    }
+
+    if (PRINT_EDGES || SNAPSHOT_PRINT_EDGES) { 
+	stdit it, c_it; 
+	Edge *edge; 
+	State_Chain *s_chain; 
+	
+	sprintf(line, "\n\nAvailable edges:\n"); 
+	if (PRINT_EDGES) Alarm(PRINT, "%s", line); 
+	if (fp != NULL && SNAPSHOT_PRINT_EDGES) fprintf(fp, "%s", line); 
+	stdhash_begin(&All_Edges, &it); 
+	while(!stdhash_is_end(&All_Edges, &it)) { 
+	    s_chain = *((State_Chain **)stdhash_it_val(&it)); 
+	    stdhash_begin(&s_chain->states, &c_it); 
+	    while(!stdhash_is_end(&s_chain->states, &c_it)) { 
+		edge = *((Edge **)stdhash_it_val(&c_it)); 
+		sprintf(line, "\t\t%d.%d.%d.%d -> %d.%d.%d.%d :: %d | %d:%d\n", 
+			IP1(edge->source->address), IP2(edge->source->address), 
+			IP3(edge->source->address), IP4(edge->source->address), 
+			IP1(edge->dest->address), IP2(edge->dest->address), 
+			IP3(edge->dest->address), IP4(edge->dest->address), 
+			edge->cost, edge->timestamp_sec, edge->timestamp_usec); 
+		stdhash_it_next(&c_it); 
+		if (PRINT_EDGES) Alarm(PRINT, "%s", line); 
+		if (fp != NULL && SNAPSHOT_PRINT_EDGES) fprintf(fp, "%s", line); 
+	    } 
+	    stdhash_it_next(&it); 
+	} 
+    }
+
+    sprintf(line, "\n\n");
+    Alarm(PRINT, "%s", line);
+    if (fp != NULL) fprintf(fp, "%s", line);
+
+    Print_Routes(fp);
+
+    if (KR_Flags) {
+        KR_Print_Routes(fp);
+    }
+
+
+    if (fp != NULL) { 
+	fclose(fp);
+	fp = NULL;
+    }
+
     E_queue(Print_Edges, 0, NULL, print_timeout);
 }
 

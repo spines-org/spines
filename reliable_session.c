@@ -18,8 +18,14 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2007 The Johns Hopkins University.
  * All rights reserved.
+ *
+ * Major Contributor(s):
+ * --------------------
+ *    John Lane
+ *    Raluca Musaloiu-Elefteri
+ *    Nilo Rivera
  *
  */
 
@@ -44,7 +50,10 @@
 #include <stropts.h>
 #endif
 
+#ifndef _WIN32_WCE
 #include <errno.h>
+#endif
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -62,6 +71,7 @@
 #include "link.h"
 #include "udp.h"
 #include "reliable_udp.h"
+#include "realtime_udp.h"
 #include "session.h"
 #include "route.h"
 #include "reliable_session.h"
@@ -82,6 +92,7 @@ extern int16     Link_Sessions_Blocked_On;
 static const sp_time zero_timeout       = {     0,    0};
 static const sp_time one_sec_timeout    = {     1,    0};
 static const sp_time disconnect_timeout = {    30,    0};
+
 
 
 /***********************************************************/
@@ -112,7 +123,7 @@ int Init_Reliable_Session(Session *ses, int32 address, int16u port)
 
     if(ses->port == 0) {
         Alarm(PRINT, "Init_Reliable_Session(): port not defined\n");
-        Session_Close(ses->sk, PORT_IN_USE);
+        Session_Close(ses->sess_id, PORT_IN_USE);
         return(NO_BUFF);
     }
 
@@ -126,7 +137,7 @@ int Init_Reliable_Session(Session *ses, int32 address, int16u port)
 	Alarm(EXIT, "Process_Session_Packet: Cannot allocte reliable_data object\n");
     r_data->flags = UNAVAILABLE_LINK;
     r_data->seq_no = 0;
-    stdcarr_construct(&(r_data->msg_buff), sizeof(Buffer_Cell*));
+    stdcarr_construct(&(r_data->msg_buff), sizeof(Buffer_Cell*), 0);
     for(i=0;i<MAX_WINDOW;i++) {
 	r_data->window[i].buff = NULL;
 	r_data->window[i].data_len = 0;
@@ -139,6 +150,7 @@ int Init_Reliable_Session(Session *ses, int32 address, int16u port)
     r_data->tail = 0;
     r_data->recv_head = 0;
     r_data->recv_tail = 0;
+    r_data->adv_win = MAX_BUFF_SESS;
     r_data->nack_buff = NULL;
     r_data->nack_len = 0;
     r_data->scheduled_ack = 0;
@@ -188,21 +200,6 @@ int Init_Reliable_Session(Session *ses, int32 address, int16u port)
 
 int Init_Reliable_Connect(Session *ses, int32 address, int16u port)
 {
-    stdhash_it it;
-    int i;
-
-    for(i= 30000; i< 65535; i++) {
-	stdhash_find(&Sessions_Port, &it, &i);
-	if(stdhash_it_is_end(&it)) {
-	    break;
-	}
-    }
-    if(i == 65535) {
-	return(-1);
-    }
-    
-    ses->port = (int16u)i;
-    stdhash_insert(&Sessions_Port, &it, &i, &ses);
 
     Init_Reliable_Session(ses, address, port);
 
@@ -247,44 +244,46 @@ int Init_Reliable_Connect(Session *ses, int32 address, int16u port)
 int Accept_Rel_Session(Session *ses, udp_header *cmd, char *buf)
 {
     ses_hello_packet *hello_pkt;
-    stdhash_it it;
-    int i, orig_port;
+    stdit it;
+    int orig_port;
+    rel_udp_pkt_add *r_add;
 
-    Alarm(DEBUG, "\n\n !!!!!!!!!!ACCEPT!!!!!!!! Session ID: %d\n", ses->sess_id);
 
-    Alarm(DEBUG, "source: %d\ndest: %d\nsource_port: %d\ndest_port: %d\nlen: %d\nseq_no: %d\n\n",
-	  cmd->source,
-	  cmd->dest,
+
+
+    Alarm(DEBUG, "source: "IPF"\ndest: "IPF"\nsource_port: %d\ndest_port: %d\nlen: %d\n\n",
+	  IP(cmd->source),
+	  IP(cmd->dest),
 	  cmd->source_port,
 	  cmd->dest_port,
-	  cmd->len,
-	  cmd->seq_no);
+	  cmd->len);
 
     if(cmd->len != sizeof(rel_udp_pkt_add) + sizeof(ses_hello_packet))
 	Alarm(EXIT, "Accept_Rel_Session: corrupt packet\n");
     
+    r_add = (rel_udp_pkt_add*)buf;
     hello_pkt = (ses_hello_packet*)(buf+sizeof(rel_udp_pkt_add));
 
-    Alarm(DEBUG, "HELLO:\ntype: %d\nseq_no: %d\nmy_sess_id: %d\nmy_port: %d\norig_port: %d\n\n",
+    if(!Same_endian(r_add->type)) {
+	hello_pkt->type = Flip_int32(hello_pkt->type);
+	hello_pkt->seq_no = Flip_int32(hello_pkt->seq_no);
+	hello_pkt->my_sess_id = Flip_int32(hello_pkt->my_sess_id);
+	hello_pkt->my_port = Flip_int16(hello_pkt->my_port);
+	hello_pkt->orig_port = Flip_int16(hello_pkt->orig_port);
+    }
+    Alarm(DEBUG, "HELLO:\ntype: %08X\nseq_no: %d\nmy_sess_id: %d\nmy_port: %d\norig_port: %d\n\n",
 	  hello_pkt->type,
 	  hello_pkt->seq_no,
 	  hello_pkt->my_sess_id,
 	  hello_pkt->my_port,
 	  hello_pkt->orig_port);
+    
 
-
-    for(i= 30000; i< 65535; i++) {
-	stdhash_find(&Sessions_Port, &it, &i);
-	if(stdhash_it_is_end(&it)) {
-	    break;
-	}
-    }
-    if(i == 65535) {
+    if(hello_pkt->seq_no != 0) {
+	Alarm(PRINT, "Accept_Rel_Session: got wrong hello message\n");
 	return(-1);
     }
-
-    ses->port = (int16u)i;
-    stdhash_insert(&Sessions_Port, &it, &i, &ses);
+	
 
     Init_Reliable_Session(ses, cmd->dest, cmd->dest_port);
     orig_port = hello_pkt->orig_port;
@@ -296,7 +295,9 @@ int Accept_Rel_Session(Session *ses, udp_header *cmd, char *buf)
     ses->r_data->flags = ACCEPT_WAIT_LINK;
     ses->rel_orig_port = hello_pkt->orig_port;
     ses->rel_otherside_id = hello_pkt->my_sess_id;
+    ses->rel_otherside_port = hello_pkt->my_port;
     
+    Alarm(DEBUG, "before: %d -> %d\n", ses->port, ses->rel_otherside_port);
     
     /* send the second packet of the handshake */
 
@@ -334,11 +335,11 @@ void Ses_Send_Rel_Hello(int sesid, void* dummy)
     char *send_buff;
     Node* next_hop;
     Session *ses;
-    stdhash_it it;
+    stdit it;
 
 
     stdhash_find(&Sessions_ID, &it, &sesid);
-    if(stdhash_it_is_end(&it)) {
+    if(stdhash_is_end(&Sessions_ID, &it)) {
 	/* The session is gone */
         return;
     }
@@ -349,13 +350,16 @@ void Ses_Send_Rel_Hello(int sesid, void* dummy)
 	Alarm(EXIT, "Ses_Send_Rel_Hello: Not a reliable sesion\n");
     
 
-    if(ses->rel_hello_cnt > 4*DEAD_LINK_CNT) {
-	Session_Close(ses->sk, SOCK_ERR);
+    if(ses->rel_hello_cnt > 5) {
+	if(ses->r_data->flags != CONNECTED_LINK) {
+	    Alarm(DEBUG, "Ses_Send_Rel_Hello timeout, sess_id: %d; flags: %d\n", sesid, ses->r_data->flags);
+	    Session_Close(sesid, SOCK_ERR);
+	}
 	return;
     }
 
     next_hop = Get_Route(My_Address, ses->rel_otherside_addr);
-    if(next_hop == NULL) {
+    if((next_hop == NULL)&&(ses->rel_otherside_addr != My_Address)) {
 	/* I don't have a route to the destination. 
 	   It might be temporary */
 	E_queue(Ses_Send_Rel_Hello, ses->sess_id, NULL, one_sec_timeout);    
@@ -389,26 +393,26 @@ void Ses_Send_Rel_Hello(int sesid, void* dummy)
 	hello_data->my_port = ses->port;
 	hello_data->orig_port = ses->rel_otherside_port;
 	hello_data->seq_no = 0;
-	Alarm(DEBUG, "send_hello: CONNECT_WAIT_LINK\n");
+	Alarm(DEBUG, "send_hello: CONNECT_WAIT_LINK %d -> %d\n", hello_data->my_port, u_hdr->dest_port);
     }
     else if(ses->r_data->flags == ACCEPT_WAIT_LINK) {
 	hello_data->my_port = ses->port;
 	hello_data->orig_port = ses->rel_orig_port;
 	hello_data->seq_no = 1;
-	Alarm(DEBUG, "send_hello: ACCEPT_WAIT_LINK\n");
+	Alarm(DEBUG, "send_hello: ACCEPT_WAIT_LINK %d -> %d\n", hello_data->my_port, u_hdr->dest_port);
     }
     else if(ses->r_data->flags == CONNECTED_LINK) {
 	hello_data->my_port = ses->port;
 	hello_data->orig_port = ses->rel_orig_port;
 	if(ses->client_stat == SES_CLIENT_ON) {
 	    hello_data->seq_no = 2;
-	    Alarm(DEBUG, "send_hello: CONNECTED_LINK; INIT\n");
+	    Alarm(DEBUG, "send_hello: CONNECTED_LINK; INIT %d -> %d\n", hello_data->my_port, u_hdr->dest_port);
 	}
 	else {
 	    ses->r_data->last_seq_sent = ses->r_data->seq_no;
 	    r_add->type = Set_endian(HELLO_DISCNCT_TYPE);
 	    hello_data->seq_no = ses->r_data->seq_no;
-	    Alarm(DEBUG, "send_hello: CONNECTED_LINK; DISCONNECT\n");
+	    Alarm(DEBUG, "send_hello: CONNECTED_LINK; DISCONNECT %d -> %d\n", hello_data->my_port, u_hdr->dest_port);
 	}
     }
     else if(ses->r_data->flags == DISCONNECT_LINK) {
@@ -416,7 +420,7 @@ void Ses_Send_Rel_Hello(int sesid, void* dummy)
 	hello_data->orig_port = ses->rel_orig_port;
 	r_add->type = Set_endian(HELLO_CLOSE_TYPE);
 	hello_data->seq_no = 0;
-	Alarm(DEBUG, "send_hello: CONNECTED_LINK; CLOSE\n");
+	Alarm(DEBUG, "send_hello: CONNECTED_LINK; CLOSE %d -> %d\n", hello_data->my_port, u_hdr->dest_port);
     }
     else {
 	Alarm(EXIT, "Ses_Send_Rel_Hello: Invalid state -> BUG!!!\n");
@@ -426,21 +430,32 @@ void Ses_Send_Rel_Hello(int sesid, void* dummy)
 
     ses->rel_hello_cnt++;
 
+
     /* Send the Packet */
 
-    if(ses->links_used == RELIABLE_LINKS) {
-	Forward_Rel_UDP_Data(next_hop, send_buff, 
-			     u_hdr->len+sizeof(udp_header), 0);
+    if(ses->rel_otherside_addr != My_Address) {
+	if(ses->links_used == SOFT_REALTIME_LINKS) {
+	    Forward_RT_UDP_Data(next_hop, send_buff,
+				u_hdr->len+sizeof(udp_header));
+	}
+	else if(ses->links_used == RELIABLE_LINKS) {
+	    Forward_Rel_UDP_Data(next_hop, send_buff, 
+				 u_hdr->len+sizeof(udp_header), 0);
+	}
+	else {
+	    Forward_UDP_Data(next_hop, send_buff, 
+			     u_hdr->len+sizeof(udp_header));
+	}
     }
     else {
-	Forward_UDP_Data(next_hop, send_buff, 
-			 u_hdr->len+sizeof(udp_header));
+	/* This is for a session connected locally */
+	Deliver_UDP_Data(send_buff, u_hdr->len+sizeof(udp_header), 0);
     }
 
     dec_ref_cnt(send_buff);
 
     /* Schedule a timeout for the hello message */
-
+    
     E_queue(Ses_Send_Rel_Hello, ses->sess_id, NULL, one_sec_timeout);    
 }
 
@@ -469,8 +484,8 @@ void Close_Reliable_Session(Session* ses)
 {
     int32u i;
     Reliable_Data *r_data;
-    stdcarr_it c_it;
-    stdhash_it h_it;
+    stdit c_it;
+    stdit h_it;
     Buffer_Cell *buf_cell;
     char *msg;
     int32 dummy_port;
@@ -532,13 +547,13 @@ void Close_Reliable_Session(Session* ses)
 
     dummy_port = (int32)ses->rel_orig_port;
     stdhash_find(&Rel_Sessions_Port, &h_it, &dummy_port);
-    while(!stdhash_it_is_end(&h_it)) {
+    while(!stdhash_is_end(&Rel_Sessions_Port, &h_it)) {
 	tmp_ses = *((Session **)stdhash_it_val(&h_it));
 	if(tmp_ses->sess_id == ses->sess_id) {
-	    stdhash_erase(&h_it);
+	    stdhash_erase(&Rel_Sessions_Port, &h_it);
 	    break;
 	}
-	stdhash_it_keyed_next(&h_it); 
+	stdhash_keyed_next(&Rel_Sessions_Port, &h_it); 
     }
 }
 
@@ -563,7 +578,8 @@ void Close_Reliable_Session(Session* ses)
 
 void Disconnect_Reliable_Session(Session* ses)
 {
-    stdcarr_it c_it;
+    stdit c_it;
+    stdit it;
     UDP_Cell *u_cell;
     char *buff;
 
@@ -582,20 +598,27 @@ void Disconnect_Reliable_Session(Session* ses)
 	E_detach_fd(ses->sk, WRITE_FD);
     
 
+    stdhash_find(&Sessions_Sock, &it, &ses->sk);
+    if(!stdhash_is_end(&Sessions_Sock, &it)) {
+	stdhash_erase(&Sessions_Sock, &it);
+    }
+    
+
+    Alarm(PRINT, "Disconnect_Reliable_Session: closing channel: %d\n", ses->sk);
     DL_close_channel(ses->sk);    
     Alarm(PRINT, "session closed: %d\n", ses->sk);
 
-    while(!stdcarr_empty(&ses->udp_deliver_buff)) {
-	stdcarr_begin(&ses->udp_deliver_buff, &c_it);
+    while(!stdcarr_empty(&ses->rel_deliver_buff)) {
+	stdcarr_begin(&ses->rel_deliver_buff, &c_it);
 	
 	u_cell = *((UDP_Cell **)stdcarr_it_val(&c_it));
 	buff = u_cell->buff;
 	
 	dec_ref_cnt(buff);
 	dispose(u_cell);
-	stdcarr_pop_front(&ses->udp_deliver_buff);
+	stdcarr_pop_front(&ses->rel_deliver_buff);
     }
-    stdcarr_destruct(&ses->udp_deliver_buff);
+    stdcarr_destruct(&ses->rel_deliver_buff);
     
 
     /* Set the flags for a disconnected (orphan for now) session */
@@ -628,12 +651,12 @@ void Disconnect_Reliable_Session(Session* ses)
 void Ses_Delay_Close(int sesid, void* dummy) 
 {
     Session *ses;
-    stdhash_it it;
+    stdit it;
 
     Alarm(DEBUG, "Ses_Delay_Close, timeout on session: %d\n", sesid);
     
     stdhash_find(&Sessions_ID, &it, &sesid);
-    if(stdhash_it_is_end(&it)) {
+    if(stdhash_is_end(&Sessions_ID, &it)) {
 	/* The session is gone */
 	Alarm(DEBUG, "Session: %d is gone !!!\n\n", sesid);
         return;
@@ -641,7 +664,7 @@ void Ses_Delay_Close(int sesid, void* dummy)
 
     ses = *((Session **)stdhash_it_val(&it));
 
-    Session_Close(ses->sk, SES_DELAY_CLOSE);
+    Session_Close(ses->sess_id, SES_DELAY_CLOSE);
 }
 
 /***********************************************************/
@@ -666,7 +689,7 @@ int Process_Reliable_Session_Packet(Session *ses)
     udp_header *u_hdr;
     rel_udp_pkt_add *r_add;
     Reliable_Data *r_data;
-    reliable_tail *r_tail;
+    reliable_ses_tail *r_tail;
     int ret;
 
 
@@ -685,16 +708,17 @@ int Process_Reliable_Session_Packet(Session *ses)
 
 
     /* Setting the reliability tail of the packet */
-    r_tail = (reliable_tail*)(ses->data+ses->total_len);
+    r_tail = (reliable_ses_tail*)(ses->data+ses->read_len);
     r_tail->seq_no = r_data->seq_no++;
     r_tail->cummulative_ack = r_data->recv_tail;
-    
-    r_add->ack_len = sizeof(reliable_tail);
+    r_tail->adv_win = r_data->recv_head + MAX_BUFF_SESS - stdcarr_size(&ses->rel_deliver_buff);
+
+    r_add->ack_len = sizeof(reliable_ses_tail);
     r_add->type = Set_endian(REL_UDP_DATA_TYPE);
     u_hdr->len += r_add->ack_len;
 
     if(u_hdr->dest == My_Address) {
- 	ret = Deliver_Rel_UDP_Data(ses->data, ses->total_len + r_add->ack_len, 0);
+ 	ret = Deliver_Rel_UDP_Data(ses->data, ses->read_len + r_add->ack_len, 0);
     }
     else {
 	ret = Reliable_Ses_Send(ses); 
@@ -731,7 +755,7 @@ int Check_Double_Connect(char *buff, int16u len, int32u type)
     ses_hello_packet *sh_pkt;
     udp_header *hdr;
     Session *tmp_ses;
-    stdhash_it h_it;
+    stdit h_it;
     int32 dummy_port;
 
 
@@ -747,13 +771,14 @@ int Check_Double_Connect(char *buff, int16u len, int32u type)
   
     dummy_port = (int32)sh_pkt->orig_port;
     stdhash_find(&Rel_Sessions_Port, &h_it, &dummy_port);
-    while(!stdhash_it_is_end(&h_it)) {
+    while(!stdhash_is_end(&Rel_Sessions_Port, &h_it)) {
 	tmp_ses = *((Session **)stdhash_it_val(&h_it));
 	if((tmp_ses->rel_otherside_addr == hdr->source)&&
 	   (tmp_ses->rel_otherside_id == sh_pkt->my_sess_id)) {
-	    return(1);;
+	    Alarm(PRINT, "\n\nDouble connect; port: %d; id: %d\n\n\n", dummy_port, sh_pkt->my_sess_id);
+	    return(1);
 	}
-	stdhash_it_keyed_next(&h_it); 
+	stdhash_keyed_next(&Rel_Sessions_Port, &h_it); 
     }
     return(0);
 }
@@ -784,45 +809,59 @@ int Deliver_Rel_UDP_Data(char* buff, int16u len, int32u type) {
     UDP_Cell *u_cell;
     udp_header *hdr;
     rel_udp_pkt_add *r_add;
-    reliable_tail *r_tail;
-    stdhash_it h_it;
+    reliable_ses_tail *r_tail;
+    stdit h_it;
     int flag;
     Session *ses;
     Reliable_Data *r_data;
     int ret, tmp_ret;
     int32 dummy_port;
     sp_time short_timeout;
+    int32 orig_type;
     
 
+    Alarm(DEBUG, "Deliver_Rel_UDP_Data(); len = %d bytes\n", len);
+
+
     hdr = (udp_header*)buff;
+
     dummy_port = (int32)hdr->dest_port;
     stdhash_find(&Sessions_Port, &h_it, &dummy_port);
 
-    if(stdhash_it_is_end(&h_it)) {
+    if(stdhash_is_end(&Sessions_Port, &h_it)) {
 	return(NO_ROUTE);
     }
     ses = *((Session **)stdhash_it_val(&h_it));
 
     r_data = ses->r_data;
-
-    r_add = (rel_udp_pkt_add*)(buff + sizeof(udp_header));
-
-    r_tail = (reliable_tail*)(buff+sizeof(udp_header) + 
-			      sizeof(rel_udp_pkt_add) + r_add->data_len);
-
-    
     if(r_data == NULL)
 	return(BUFF_DROP);
 
 
-    if(Is_hello(r_add->type)) {
-	Alarm(DEBUG, "Got it. Hello type !!!\n");
+    r_add = (rel_udp_pkt_add*)(buff + sizeof(udp_header));
+    orig_type = r_add->type;
 
+    if(!Same_endian(r_add->type)) {
+	r_add->type = Flip_int32(r_add->type);
+	r_add->data_len = Flip_int16(r_add->data_len);
+	r_add->ack_len = Flip_int16(r_add->ack_len);
+    }
+    r_tail = (reliable_ses_tail*)(buff+sizeof(udp_header) + 
+			      sizeof(rel_udp_pkt_add) + r_add->data_len);
+
+    
+    Alarm(DEBUG, "Deliver_Rel_UDP_Data:\n\ttype: %08X\n\tdata: %d\n\tack:  %d\n\n",
+	  r_add->type,
+	  r_add->data_len,
+	  r_add->ack_len);
+
+
+    if(Is_hello(r_add->type)) {
 	if((r_data->flags != CONNECT_WAIT_LINK)&&
 	   (r_data->flags != ACCEPT_WAIT_LINK))
 	    return(BUFF_DROP);
 
-	Process_Rel_Ses_Hello(ses, buff, len);
+	Process_Rel_Ses_Hello(ses, buff, len, orig_type);
 
 	return(BUFF_DROP);
     }
@@ -832,7 +871,7 @@ int Deliver_Rel_UDP_Data(char* buff, int16u len, int32u type) {
 	if(r_data->flags != CONNECTED_LINK)
 	    return(BUFF_DROP);
 
-	Process_Rel_Ses_Hello(ses, buff, len);
+	Process_Rel_Ses_Hello(ses, buff, len, orig_type);
 
 	return(BUFF_DROP);
     }
@@ -842,7 +881,7 @@ int Deliver_Rel_UDP_Data(char* buff, int16u len, int32u type) {
 	if(r_data->flags != CONNECTED_LINK)
 	    return(BUFF_DROP);
 
-	Process_Rel_Ses_Hello(ses, buff, len);
+	Process_Rel_Ses_Hello(ses, buff, len, orig_type);
 
 	return(BUFF_DROP);
     }
@@ -854,8 +893,10 @@ int Deliver_Rel_UDP_Data(char* buff, int16u len, int32u type) {
 
     /* See if we need the packet */
 
+
     /* Here we process the ack, and if we don't need it return */
-    flag = Process_Sess_Ack(ses, (char*)r_tail, r_add->ack_len, r_add->type, type);
+    flag = Process_Sess_Ack(ses, (char*)r_tail, r_add->ack_len, r_add->type, 
+			    type, orig_type);
 
 
     /* This is a data (or ack) packet. This means that the connection is already 
@@ -879,10 +920,10 @@ int Deliver_Rel_UDP_Data(char* buff, int16u len, int32u type) {
     Alarm(DEBUG, "Got pkt: %d : %d\n", r_tail->seq_no, r_data->recv_tail);
 
     /* Close the session if there is no room for the packet in the buffer */
-    if(!stdcarr_empty(&ses->udp_deliver_buff)) {
-	if(stdcarr_size(&ses->udp_deliver_buff) >= MAX_BUFF_SESS) {
+    if(!stdcarr_empty(&ses->rel_deliver_buff)) {
+	if(stdcarr_size(&ses->rel_deliver_buff) >= 3*MAX_BUFF_SESS) {
 	    Disconnect_Reliable_Session(ses);
-	    Alarm(DEBUG, "Session closed due to buffer overflow\n");
+	    Alarm(PRINT, "Session closed due to buffer overflow\n");
 	    return(NO_BUFF);
 	}
     }
@@ -949,7 +990,7 @@ int Deliver_Rel_UDP_Data(char* buff, int16u len, int32u type) {
 
     Alarm(DEBUG, "In order deliver pkt: %d\n", r_data->recv_tail);
 
-    if(!stdcarr_empty(&ses->udp_deliver_buff)) {
+    if(!stdcarr_empty(&ses->rel_deliver_buff)) {
 
 	/* Put the packet in the buffer */
 	if((u_cell = (UDP_Cell*) new(UDP_CELL))==NULL) {
@@ -957,7 +998,7 @@ int Deliver_Rel_UDP_Data(char* buff, int16u len, int32u type) {
 	}
 	u_cell->len = len;
 	u_cell->buff = buff;
-	stdcarr_push_back(&ses->udp_deliver_buff, &u_cell);
+	stdcarr_push_back(&ses->rel_deliver_buff, &u_cell);
 	inc_ref_cnt(buff);
 
 	/* Take it out of the window */
@@ -997,13 +1038,13 @@ int Deliver_Rel_UDP_Data(char* buff, int16u len, int32u type) {
 	Alarm(DEBUG, "In order deliver pkt: %d\n", r_data->recv_tail);
 
 	/* If there is a buffer already, just stick the packet in the buffer*/
-	if(!stdcarr_empty(&ses->udp_deliver_buff)) {
+	if(!stdcarr_empty(&ses->rel_deliver_buff)) {
 	    if((u_cell = (UDP_Cell*) new(UDP_CELL))==NULL) {
 		Alarm(EXIT, "Deliver_Rel_UDP_Data(): Cannot allocte udp cell\n");
 	    }
 	    u_cell->len = r_data->recv_window[r_data->recv_tail%MAX_WINDOW].data.len;
 	    u_cell->buff = r_data->recv_window[r_data->recv_tail%MAX_WINDOW].data.buff;
-	    stdcarr_push_back(&ses->udp_deliver_buff, &u_cell);
+	    stdcarr_push_back(&ses->rel_deliver_buff, &u_cell);
 	    inc_ref_cnt(buff);
 
 	    /* Take the packet from the window */
@@ -1040,7 +1081,7 @@ int Deliver_Rel_UDP_Data(char* buff, int16u len, int32u type) {
 
     if(r_data->connect_state == DISCONNECT_LINK) {
 	if(r_data->recv_tail == r_data->last_seq_sent) {
-	    if(stdcarr_empty(&ses->udp_deliver_buff)) {
+	    if(stdcarr_empty(&ses->rel_deliver_buff)) {
 		Disconnect_Reliable_Session(ses);
 	    }
 	}
@@ -1053,7 +1094,7 @@ int Deliver_Rel_UDP_Data(char* buff, int16u len, int32u type) {
 
 /***********************************************************/
 /* void Process_Rel_Ses_Hello(Session *ses, char* buff     */
-/*                            int len)                     */
+/*                            int len, int32 orig_type)    */
 /*                                                         */
 /* Processes a reliable session HELLO packet               */
 /*                                                         */
@@ -1071,7 +1112,7 @@ int Deliver_Rel_UDP_Data(char* buff, int16u len, int32u type) {
 /*                                                         */
 /***********************************************************/
 
-void Process_Rel_Ses_Hello(Session *ses, char *buff, int len)
+void Process_Rel_Ses_Hello(Session *ses, char *buff, int len, int32 orig_type)
 {
     Reliable_Data *r_data;
     ses_hello_packet *sh_pkt;
@@ -1086,12 +1127,25 @@ void Process_Rel_Ses_Hello(Session *ses, char *buff, int len)
 
     r_add = (rel_udp_pkt_add*)(buff + sizeof(udp_header));
     sh_pkt = (ses_hello_packet*)(buff + sizeof(udp_header) + sizeof(rel_udp_pkt_add));
+    if(!Same_endian(orig_type)) {
+	sh_pkt->type = Flip_int32(sh_pkt->type);
+	sh_pkt->seq_no = Flip_int32(sh_pkt->seq_no);
+	sh_pkt->my_sess_id = Flip_int32(sh_pkt->my_sess_id);
+	sh_pkt->my_port = Flip_int16(sh_pkt->my_port);
+	sh_pkt->orig_port = Flip_int16(sh_pkt->orig_port);
+    }
 
-    Alarm(DEBUG, "Process_Rel_Ses_Hello\n\n\n");
 
-    if(ses->rel_orig_port != sh_pkt->orig_port)
+    Alarm(DEBUG, "Process_Rel_Ses_Hello\ntype:\t%08X\nseq_no:\t%d\nmy_sess_id:\t%d\nmy_port:\t%d\norig_port:\t%d\n\n",
+	  sh_pkt->type, sh_pkt->seq_no, sh_pkt->my_sess_id, sh_pkt->my_port, sh_pkt->orig_port);
+
+    Alarm(DEBUG, "Process_Hello: %d -> %d\n", sh_pkt->my_port, ses->port);
+
+
+    if(ses->rel_orig_port != sh_pkt->orig_port) {
+	Alarm(PRINT, "ERR: ses->rel_orig_port: %d; sh_pkt->orig_port: %d\n", ses->rel_orig_port, sh_pkt->orig_port);
 	return;
-
+    }
 
     if(Is_hello(r_add->type)) {
 	ses->rel_hello_cnt = 0;
@@ -1139,7 +1193,7 @@ void Process_Rel_Ses_Hello(Session *ses, char *buff, int len)
 	else {
 	    r_data->flags = DISCONNECT_LINK;
 	    Ses_Send_Rel_Hello(ses->sess_id, NULL);
-	    Session_Close(ses->sk, SES_DELAY_CLOSE);
+	    Session_Close(ses->sess_id, SES_DELAY_CLOSE);
 	}
     }
     else if(Is_hello_close(r_add->type)) {
@@ -1148,7 +1202,7 @@ void Process_Rel_Ses_Hello(Session *ses, char *buff, int len)
 	    Alarm(DEBUG, "Duplicate Hello Close !\n");
 	    return;
 	}
-	Session_Close(ses->sk, SES_DELAY_CLOSE);
+	Session_Close(ses->sess_id, SES_DELAY_CLOSE);
     }
 }
 
@@ -1177,12 +1231,15 @@ void Process_Rel_Ses_Hello(Session *ses, char *buff, int len)
 
 int Net_Rel_Sess_Send(Session *ses, char *buff, int16u len)
 {
-    int16u total_bytes, data_bytes;
+    int32 total_bytes, data_bytes;
     rel_udp_pkt_add *r_add;
     sys_scatter scat;
     UDP_Cell *u_cell;
     int ret;
 
+#ifdef _WIN32_WCE
+	int sk_errno;
+#endif
 
 
     if(ses->client_stat == SES_CLIENT_OFF)
@@ -1191,23 +1248,32 @@ int Net_Rel_Sess_Send(Session *ses, char *buff, int16u len)
     r_add = (rel_udp_pkt_add*)(buff + sizeof(udp_header));
 
     data_bytes = len - r_add->ack_len;
-    total_bytes = 2 + data_bytes;
-    ses->sent_bytes = 0;
+    total_bytes = sizeof(int32) + data_bytes;
+    /* ses->sent_bytes = 0; */
+    ses->sent_bytes = sizeof(int32) + sizeof(udp_header) + sizeof(rel_udp_pkt_add);
+
+    Alarm(DEBUG, "Net_Rel_Sess_Send(); len =  %d bytes\n", len);
 
     while(ses->sent_bytes < total_bytes) {
-	if(ses->sent_bytes < 2) {
+	if(ses->sent_bytes < sizeof(int32)) {
 	    scat.num_elements = 2;
-	    scat.elements[0].len = 2 - ses->sent_bytes;
+	    scat.elements[0].len = sizeof(int32) - ses->sent_bytes;
 	    scat.elements[0].buf = ((char*)(&data_bytes)) + ses->sent_bytes;
 	    scat.elements[1].len = data_bytes;
 	    scat.elements[1].buf = buff;
 	}
 	else {
 	    scat.num_elements = 1;
-	    scat.elements[0].len = data_bytes - (ses->sent_bytes - 2);
-	    scat.elements[0].buf = buff + (ses->sent_bytes - 2);
+	    scat.elements[0].len = data_bytes - (ses->sent_bytes - sizeof(int32));
+	    scat.elements[0].buf = buff + (ses->sent_bytes - sizeof(int32));
 	}
+
+	Alarm(DEBUG, "session send: %d\n", ses->sk);
 	ret = DL_send(ses->sk,  My_Address, ses->port,  &scat );
+	Alarm(DEBUG, "sent: %d -> %d\n", ses->sk, ret);
+
+	Alarm(DEBUG,"Net_Rel_Sess_Send(): %d %d %d %d\n", ret, ses->sk, ses->port, len); 
+
 	if(ret < 0) {
 	    
 	    Alarm(DEBUG, "Net_Rel_Sess_Send(): write err\n");
@@ -1217,21 +1283,26 @@ int Net_Rel_Sess_Send(Session *ses, char *buff, int16u len)
 	    if((ret == -1)&&
 	       ((errno == EWOULDBLOCK)||(errno == EAGAIN))) 
 #else
+#ifndef _WIN32_WCE
 	    if((ret == -1)&&
 			((errno == WSAEWOULDBLOCK)||(errno == EAGAIN))) 
+#else
+		sk_errno = WSAGetLastError();
+		if((ret == -1)&&	
+			((sk_errno == WSAEWOULDBLOCK)||(sk_errno == EAGAIN))) 
+#endif /* Windows CE */
 #endif	
 	    {
-			
 		if((u_cell = (UDP_Cell*) new(UDP_CELL))==NULL) {
 		    Alarm(EXIT, "Deliver_UDP_Data(): Cannot allocte udp cell\n");
 		}
 		u_cell->len = len;
 		u_cell->buff = buff;
-		stdcarr_push_back(&ses->udp_deliver_buff, &u_cell);
+		stdcarr_push_back(&ses->rel_deliver_buff, &u_cell);
 		inc_ref_cnt(buff);
 		
 		E_attach_fd(ses->sk, WRITE_FD, Session_Write, ses->sess_id, 
-			    NULL, LOW_PRIORITY );
+			    NULL, HIGH_PRIORITY );
 		ses->fd_flags = ses->fd_flags | WRITE_DESC;
 		return(BUFF_OK);
 	    } 
@@ -1258,7 +1329,7 @@ int Net_Rel_Sess_Send(Session *ses, char *buff, int16u len)
 /***********************************************************/
 /* int Process_Sess_Ack(Session *ses, char *buff,          */
 /*                      int16u ack_len, int32 ses_type,    */
-/*                      int32u net_type)                   */
+/*                      int32u net_type, int32 orig_type)  */
 /*                                                         */
 /* Processes an ACK between two reliable sessions          */
 /*                                                         */
@@ -1283,16 +1354,17 @@ int Net_Rel_Sess_Send(Session *ses, char *buff, int16u len)
 /***********************************************************/
 
 int Process_Sess_Ack(Session *ses, char* buf, int16u ack_len, 
-		     int32u ses_type, int32u net_type)
+		     int32u ses_type, int32u net_type, int32 orig_type)
 {
     Reliable_Data *r_data;
-    reliable_tail *r_tail;
+    reliable_ses_tail *r_tail;
     int32u i, ack_window;
     sp_time timeout_val, now, diff;
     int32u rtt_estimate;
     double old_window;
     int congestion_action = 0;
-    
+    int32 *nack;
+   
     
     r_data = ses->r_data;
     
@@ -1322,8 +1394,6 @@ int Process_Sess_Ack(Session *ses, char* buf, int16u ack_len,
     if(congestion_action > 0)
 	Alarm(DEBUG, "action: %d\n", congestion_action);
 
-
-
     if((congestion_action == 0)||(congestion_action == 3)) {
 	ack_window = ses_type & ACK_INTERVAL_MASK;
 	ack_window = ack_window >> 12;
@@ -1334,9 +1404,7 @@ int Process_Sess_Ack(Session *ses, char* buf, int16u ack_len,
 	r_data->ack_window = 1;
     }
 
-
-
-    if(ack_len > sizeof(reliable_tail)) {
+    if(ack_len > sizeof(reliable_ses_tail)) {
 	/* We also have NACKs here... */
 	Alarm(DEBUG, "We also have NACKs here...\n");
 	if(r_data->nack_len + ack_len > sizeof(packet_body)) {
@@ -1350,11 +1418,11 @@ int Process_Sess_Ack(Session *ses, char* buf, int16u ack_len,
 	    else
 		Alarm(DEBUG, "nack_buff not empty; nack_len: %d\n", r_data->nack_len);
 	}
-	if(r_data->nack_len + ack_len - sizeof(reliable_tail) <
+	if(r_data->nack_len + ack_len - sizeof(reliable_ses_tail) <
 	   sizeof(packet_body)) {
-	    memcpy(r_data->nack_buff+r_data->nack_len, buf+sizeof(reliable_tail), 
-		   ack_len-sizeof(reliable_tail));
-	    r_data->nack_len += ack_len - sizeof(reliable_tail);
+	    memcpy(r_data->nack_buff+r_data->nack_len, buf+sizeof(reliable_ses_tail), 
+		   ack_len-sizeof(reliable_ses_tail));
+	    r_data->nack_len += ack_len - sizeof(reliable_ses_tail);
 	    Alarm(DEBUG, "nack_len: %d\n", r_data->nack_len);
 	}
 	Alarm(DEBUG, "queueing nacks...\n");
@@ -1362,8 +1430,17 @@ int Process_Sess_Ack(Session *ses, char* buf, int16u ack_len,
     }
 
     /* Check the cummulative acknowledgement */
-    r_tail = (reliable_tail*)buf;
+    r_tail = (reliable_ses_tail*)buf;
 
+    if(!Same_endian(orig_type)) {
+	r_tail->seq_no          = Flip_int32(r_tail->seq_no);
+	r_tail->cummulative_ack = Flip_int32(r_tail->cummulative_ack);
+	
+	for(i=sizeof(reliable_tail); i<ack_len; i+=sizeof(int32)) {
+	    nack = (int32*)(buf+i);
+	    *nack = Flip_int32(*nack);
+	}
+    }
 
     Alarm(DEBUG, "Got SES ack for %d; tail: %d\n", r_tail->cummulative_ack,
 	  r_data->tail);
@@ -1378,6 +1455,14 @@ int Process_Sess_Ack(Session *ses, char* buf, int16u ack_len,
         return(0);
     }
 
+    if(r_tail->cummulative_ack >= r_data->tail) {
+	/* Copy the adv window */
+	r_data->adv_win = r_tail->adv_win;
+	E_queue(Ses_Try_to_Send, ses->sess_id, NULL, zero_timeout);
+	if(r_data->head >= r_data->adv_win) {
+	    E_queue(Ses_Send_One, ses->sess_id, NULL, one_sec_timeout);
+	}
+    }
 
     if(r_tail->cummulative_ack > r_data->tail) {
 	if((r_data->window[(r_tail->cummulative_ack-1)%MAX_WINDOW].buff != NULL)&&
@@ -1388,7 +1473,7 @@ int Process_Sess_Ack(Session *ses, char* buf, int16u ack_len,
 		r_data->rtt = rtt_estimate;
 	    }
 	    else {
-		r_data->rtt = 0.2*rtt_estimate + 0.8*r_data->rtt;
+		r_data->rtt = (int)(0.2*rtt_estimate + 0.8*r_data->rtt);
 	    }
 	}
 	for(i=r_data->tail; i<r_tail->cummulative_ack; i++) {
@@ -1418,26 +1503,26 @@ int Process_Sess_Ack(Session *ses, char* buf, int16u ack_len,
 			r_data->window_size += 1/r_data->window_size;
 		    }
 		    if(r_data->window_size > r_data->max_window) {
-			r_data->window_size = r_data->max_window;
+			r_data->window_size = (float)r_data->max_window;
 		    }
 		}
 	    }
 	    else if(congestion_action == 1) {
 		r_data->ssthresh /= 2;
-		if(r_data->ssthresh < 1) {
-		    r_data->ssthresh = 1;
+		if(r_data->ssthresh < 2) {
+		    r_data->ssthresh = 2;
 		}
-		r_data->window_size = 1;
+		r_data->window_size = 2;
 		congestion_action = 3;
 	    }
 	    else if(congestion_action == 2) {
 		r_data->ssthresh /= 2;
-		if(r_data->ssthresh < 1) {
-		    r_data->ssthresh = 1;
+		if(r_data->ssthresh < 2) {
+		    r_data->ssthresh = 2;
 		}
 		r_data->window_size /= 2;
-		if(r_data->window_size < 1) {
-		    r_data->window_size = 1;
+		if(r_data->window_size < 2) {
+		    r_data->window_size = 2;
 		}
 		congestion_action = 3;
 	    }
@@ -1446,11 +1531,6 @@ int Process_Sess_Ack(Session *ses, char* buf, int16u ack_len,
 		Alarm(DEBUG, "SES window adjusted: %5.3f\n", r_data->window_size);
 
 	}		    
-	/* This was a fresh brand new ack. See if it freed some window slots
-	 * and we can send some more stuff */	
-
-	E_queue(Ses_Try_to_Send, ses->sess_id, NULL, zero_timeout);
-
     }
 
     /* Reset the timeout exponential back-off */
@@ -1467,11 +1547,11 @@ int Process_Sess_Ack(Session *ses, char* buf, int16u ack_len,
 	Alarm(DEBUG, "+++ Another timeout ! tail: %d, head: %d\n",
 	      r_data->tail, r_data->head);
    
-	timeout_val.sec = (r_data->rtt*5)/1000000;
-	timeout_val.usec = (r_data->rtt*5)%1000000;
+timeout_val.sec = (r_data->rtt*15)/1000000;
+	timeout_val.usec = (r_data->rtt*15)%1000000;
 	
 	if(timeout_val.sec == 0 && timeout_val.usec == 0) {
-	    timeout_val.sec = 1;
+	    timeout_val.sec = 5;
 	}
 	if(timeout_val.sec == 0 && timeout_val.usec < 2000) {
 	    timeout_val.usec = 2000;
@@ -1558,7 +1638,7 @@ int Reliable_Ses_Send(Session* ses)
     rel_udp_pkt_add *r_add;
     Reliable_Data *r_data;
     Buffer_Cell *buf_cell;
-    reliable_tail *r_tail;
+    reliable_ses_tail *r_tail;
     Node* next_hop;
     char *send_buff;
     int16u data_len, ack_len;
@@ -1578,7 +1658,7 @@ int Reliable_Ses_Send(Session* ses)
 
     u_hdr = (udp_header*)send_buff;
     r_add = (rel_udp_pkt_add*)(send_buff + sizeof(udp_header));
-    r_tail = (reliable_tail*)(send_buff + sizeof(udp_header) + 
+    r_tail = (reliable_ses_tail*)(send_buff + sizeof(udp_header) + 
 			      sizeof(rel_udp_pkt_add) + r_add->data_len);
     data_len = sizeof(udp_header) + sizeof(rel_udp_pkt_add) + r_add->data_len;
 
@@ -1588,17 +1668,13 @@ int Reliable_Ses_Send(Session* ses)
 	return(NO_ROUTE);
     }
 
-    /* See if we can free some space in the buffer/window */
-    /*
-     * Ses_Send_Much(ses); 
-     * 
-     */ 
 
     /* If there is no more room in the window, or the connection is not valid yet, 
      * stick the message in the sending buffer */
 
     if((r_data->head - r_data->tail >= r_data->window_size)||
        (!stdcarr_empty(&r_data->msg_buff))||
+       (r_data->head >= r_data->adv_win)||
        (!(r_data->flags & CONNECTED_LINK))) {
 	if((buf_cell = (Buffer_Cell*) new(BUFFER_CELL))==NULL) {
 	    Alarm(EXIT, "Reliable_Send_Control_Msg(): Cannot allocte buffer cell\n");
@@ -1645,7 +1721,7 @@ int Reliable_Ses_Send(Session* ses)
 
 
     /* Add NACKs to the reliable tail */
-    ack_len = sizeof(reliable_tail); 
+    ack_len = sizeof(reliable_ses_tail); 
     p_nack = (char*)r_tail;
     p_nack += ack_len;
     if(ses->links_used != RELIABLE_LINKS) {
@@ -1685,13 +1761,18 @@ int Reliable_Ses_Send(Session* ses)
 	}
     }
 
-    u_hdr->len += ack_len - sizeof(reliable_tail);
+    u_hdr->len += ack_len - sizeof(reliable_ses_tail);
     r_add->ack_len = ack_len;
     r_add->type = Set_endian(REL_UDP_DATA_TYPE);
-    
+
     /* Send the Packet */
 
-    if(ses->links_used == RELIABLE_LINKS) {
+    if(ses->links_used == SOFT_REALTIME_LINKS) {
+	ret = Forward_RT_UDP_Data(next_hop, send_buff,
+			    u_hdr->len+sizeof(udp_header));
+
+    }
+    else if(ses->links_used == RELIABLE_LINKS) {
 	ret = Forward_Rel_UDP_Data(next_hop, send_buff, 
 				   u_hdr->len+sizeof(udp_header), 0);
     }
@@ -1707,11 +1788,11 @@ int Reliable_Ses_Send(Session* ses)
         E_dequeue(Ses_Reliable_Timeout, ses->sess_id, NULL);
     }
 
-    timeout_val.sec = (r_data->rtt*5)/1000000;
-    timeout_val.usec = (r_data->rtt*5)%1000000;
+    timeout_val.sec = (r_data->rtt*15)/1000000;
+    timeout_val.usec = (r_data->rtt*15)%1000000;
     
     if(timeout_val.sec == 0 && timeout_val.usec == 0) {
-	timeout_val.sec = 1;
+	timeout_val.sec = 5;
     }
     if(timeout_val.sec == 0 && timeout_val.usec < 2000) {
 	    timeout_val.usec = 2000;
@@ -1722,8 +1803,8 @@ int Reliable_Ses_Send(Session* ses)
     timeout_val.sec += timeout_val.usec/1000000;
     timeout_val.usec = timeout_val.usec%1000000;
     
-    if(timeout_val.sec > 1)
-	timeout_val.sec = 1;
+    if(timeout_val.sec > 5)
+	timeout_val.sec = 5;
     
     
     Alarm(DEBUG, "---timeout sec: %d; usec: %d\n",
@@ -1762,7 +1843,7 @@ void Ses_Send_Much(Session *ses)
     rel_udp_pkt_add *r_add;
     Reliable_Data *r_data;
     Buffer_Cell *buf_cell;
-    reliable_tail *r_tail;
+    reliable_ses_tail *r_tail;
     Node* next_hop;
     char *send_buff;
     int16u data_len, ack_len;
@@ -1770,7 +1851,7 @@ void Ses_Send_Much(Session *ses)
     sp_time now, timeout_val, tmp_time, sum_time;
     char *p_nack;
     int32u i, ack_window_mask;
-    stdcarr_it it;
+    stdit it;
 
 
     next_hop = Get_Route(My_Address, ses->rel_otherside_addr);
@@ -1802,6 +1883,11 @@ void Ses_Send_Much(Session *ses)
 	return;
     }
 
+    /* Return if the adv window is full */
+    if(r_data->head >= r_data->adv_win) {
+	return;
+    }
+
 
     /* If there is already an ack to be sent on tihs link, cancel it, 
        as this packet will contain the ack info. */
@@ -1812,7 +1898,8 @@ void Ses_Send_Much(Session *ses)
     }
 
     /* If we got up to here, we do have room in the window. Send what we can */
-    while(r_data->head - r_data->tail < r_data->window_size) {
+    while((r_data->head - r_data->tail < r_data->window_size)&&
+	  (r_data->head < r_data->adv_win)) {
 	/* Stop if the buffer is empty */
 	if(stdcarr_empty(&(r_data->msg_buff))) {
 	    break;
@@ -1824,12 +1911,12 @@ void Ses_Send_Much(Session *ses)
 	stdcarr_pop_front(&(r_data->msg_buff));
 	    
 	data_len = buf_cell->data_len;
-	ack_len = sizeof(reliable_tail);
+	ack_len = sizeof(reliable_ses_tail);
 	send_buff = buf_cell->buff;
 
 	u_hdr = (udp_header*)send_buff;
 	r_add = (rel_udp_pkt_add*)(send_buff + sizeof(udp_header));
-	r_tail = (reliable_tail*)(send_buff + data_len);
+	r_tail = (reliable_ses_tail*)(send_buff + data_len);
 	    
 	/* Discard the cell from the buffer */
 	dispose(buf_cell);
@@ -1837,6 +1924,7 @@ void Ses_Send_Much(Session *ses)
 
 	/* Set the cummulative ack */
 	r_tail->cummulative_ack = r_data->recv_tail;
+	r_tail->adv_win = r_data->recv_head + MAX_BUFF_SESS - stdcarr_size(&ses->rel_deliver_buff);
 
 	if(r_data->head > r_tail->seq_no)
 	    Alarm(EXIT, "Ses_Send_Much(): smaller seq_no: %d than head: %d\n",
@@ -1851,7 +1939,7 @@ void Ses_Send_Much(Session *ses)
 
 	
 	/* Add NACKs to the reliable tail */
-	ack_len = sizeof(reliable_tail); 
+	ack_len = sizeof(reliable_ses_tail); 
 	p_nack = (char*)r_tail;
 	p_nack += ack_len;
 	if(ses->links_used != RELIABLE_LINKS) {
@@ -1892,11 +1980,11 @@ void Ses_Send_Much(Session *ses)
 	}
 
 
-	u_hdr->len += ack_len - sizeof(reliable_tail);
+	u_hdr->len += ack_len - sizeof(reliable_ses_tail);
 	r_add->ack_len = ack_len;
 
 	if(ses->links_used == RELIABLE_LINKS) {
-	    ack_window_mask = r_data->window_size/4;
+	    ack_window_mask = (unsigned int)(r_data->window_size/4);
 
 	    if(ack_window_mask > stdcarr_size(&r_data->msg_buff)) 
 		ack_window_mask = stdcarr_size(&r_data->msg_buff);
@@ -1918,7 +2006,11 @@ void Ses_Send_Much(Session *ses)
 
 	/* Send the Packet */
 	
-	if(ses->links_used == RELIABLE_LINKS) {
+	if(ses->links_used == SOFT_REALTIME_LINKS) {
+	    ret = Forward_RT_UDP_Data(next_hop, send_buff,
+				      u_hdr->len+sizeof(udp_header));
+	}
+	else if(ses->links_used == RELIABLE_LINKS) {
 	    ret = Forward_Rel_UDP_Data(next_hop, send_buff, 
 				 u_hdr->len+sizeof(udp_header), 0);
 	}
@@ -1943,11 +2035,11 @@ void Ses_Send_Much(Session *ses)
          E_dequeue(Ses_Reliable_Timeout, ses->sess_id, NULL);
     }
 
-    timeout_val.sec = (r_data->rtt*5)/1000000;
-    timeout_val.usec = (r_data->rtt*5)%1000000;
+    timeout_val.sec = (r_data->rtt*15)/1000000;
+    timeout_val.usec = (r_data->rtt*15)%1000000;
     
     if(timeout_val.sec == 0 && timeout_val.usec == 0) {
-	timeout_val.sec = 1;
+	timeout_val.sec = 5;
     }
     if(timeout_val.sec == 0 && timeout_val.usec < 2000) {
 	    timeout_val.usec = 2000;
@@ -1958,8 +2050,8 @@ void Ses_Send_Much(Session *ses)
     timeout_val.sec += timeout_val.usec/1000000;
     timeout_val.usec = timeout_val.usec%1000000;
     
-    if(timeout_val.sec > 1)
-	timeout_val.sec = 1;
+    if(timeout_val.sec > 5)
+	timeout_val.sec = 5;
     
     
     Alarm(DEBUG, "---timeout sec: %d; usec: %d\n",
@@ -1968,6 +2060,56 @@ void Ses_Send_Much(Session *ses)
     E_queue(Ses_Reliable_Timeout, ses->sess_id, NULL, timeout_val);
 
     r_data->scheduled_timeout = 1;
+}
+
+
+/***********************************************************/
+/* void Ses_Send_One(int sesid, void* dummy)               */
+/*                                                         */
+/* Tries to send a packet to see if the receiver's         */
+/* control unblocked                                       */
+/*                                                         */
+/*                                                         */
+/* Arguments                                               */
+/*                                                         */
+/* sesid:     ID of the session that sends the ack         */
+/* dummy:     Not used                                     */
+/*                                                         */
+/*                                                         */
+/* Return Value                                            */
+/*                                                         */
+/* NONE                                                    */
+/*                                                         */
+/***********************************************************/
+
+void Ses_Send_One(int sesid, void* dummy) 
+{
+    Reliable_Data *r_data;
+    Session *ses;
+    stdit it;
+
+
+    stdhash_find(&Sessions_ID, &it, &sesid);
+    if(stdhash_is_end(&Sessions_ID, &it)) {
+	/* The session is gone */
+        return;
+    }
+
+    ses = *((Session **)stdhash_it_val(&it));
+
+    if(ses->r_data == NULL) 
+	Alarm(EXIT, "Ses_Send_Ack: Not a reliable sesion\n");
+    
+    r_data = ses->r_data;
+
+    if(r_data->head < r_data->adv_win) {
+	return;
+    }
+
+    r_data->adv_win++;
+
+    E_queue(Ses_Try_to_Send, ses->sess_id, NULL, zero_timeout);
+    E_queue(Ses_Send_One, ses->sess_id, NULL, one_sec_timeout);
 }
 
 
@@ -1997,11 +2139,11 @@ void Ses_Send_Ack(int sesid, void* dummy)
     rel_udp_pkt_add *r_add;
     char *send_buff;
     Reliable_Data *r_data;
-    reliable_tail *r_tail;
+    reliable_ses_tail *r_tail;
     Node* next_hop;
     int16u data_len, ack_len;
     Session *ses;
-    stdhash_it it;
+    stdit it;
     sp_time now, tmp_time, sum_time;
     char *p_nack;
     int32u ack_congestion_flag;
@@ -2009,7 +2151,7 @@ void Ses_Send_Ack(int sesid, void* dummy)
 
 
     stdhash_find(&Sessions_ID, &it, &sesid);
-    if(stdhash_it_is_end(&it)) {
+    if(stdhash_is_end(&Sessions_ID, &it)) {
 	/* The session is gone */
         return;
     }
@@ -2053,21 +2195,22 @@ void Ses_Send_Ack(int sesid, void* dummy)
     r_add = (rel_udp_pkt_add*)(send_buff + sizeof(udp_header));
     r_add->type = Set_endian(LINK_ACK_TYPE);
     r_add->data_len = 0;
-    r_add->ack_len = sizeof(reliable_tail);
+    r_add->ack_len = sizeof(reliable_ses_tail);
     u_hdr->len += r_add->ack_len;
 
     /* Setting the reliability tail of the ack */
-    r_tail = (reliable_tail*)(send_buff + sizeof(udp_header) + 
+    r_tail = (reliable_ses_tail*)(send_buff + sizeof(udp_header) + 
 			      sizeof(rel_udp_pkt_add));
     r_tail->seq_no = r_data->seq_no;
     r_tail->cummulative_ack = r_data->recv_tail;
+    r_tail->adv_win = r_data->recv_head + MAX_BUFF_SESS - stdcarr_size(&ses->rel_deliver_buff);
 
     r_data->last_ack_sent = r_data->recv_tail;
     r_data->unacked_msgs = 0;
     
 
     data_len = 0;
-    ack_len = sizeof(reliable_tail); 
+    ack_len = sizeof(reliable_ses_tail); 
     /* Add NACKs to the reliable tail */
     p_nack = (char*)r_tail;
     p_nack += ack_len;
@@ -2109,14 +2252,18 @@ void Ses_Send_Ack(int sesid, void* dummy)
 	}
     }
 
-    u_hdr->len += ack_len - sizeof(reliable_tail);
+    u_hdr->len += ack_len - sizeof(reliable_ses_tail);
     r_add->ack_len = ack_len;
 
     ack_congestion_flag = r_data->congestion_flag << 2;
 
     /* Send the Packet */
 
-    if(ses->links_used == RELIABLE_LINKS) {
+    if(ses->links_used == SOFT_REALTIME_LINKS) {
+	Forward_RT_UDP_Data(next_hop, send_buff,
+				  u_hdr->len+sizeof(udp_header));
+    }
+    else if(ses->links_used == RELIABLE_LINKS) {
 	Forward_Rel_UDP_Data(next_hop, send_buff, 
 				   u_hdr->len+sizeof(udp_header), ack_congestion_flag);
     }
@@ -2155,19 +2302,19 @@ void Ses_Reliable_Timeout(int sesid, void *dummy)
     rel_udp_pkt_add *r_add;
     char *send_buff;
     Reliable_Data *r_data;
-    reliable_tail *r_tail;
+    reliable_ses_tail *r_tail;
     int32u pack_type;
     Node* next_hop;
     int16u data_len, ack_len;
     Session *ses;
-    stdhash_it it;
+    stdit it;
     sp_time now, timeout_val, tmp_time, sum_time;
     char *p_nack;
     int32u i, cur_seq;
 
     
     stdhash_find(&Sessions_ID, &it, &sesid);
-    if(stdhash_it_is_end(&it)) {
+    if(stdhash_is_end(&Sessions_ID, &it)) {
 	/* The session is gone */
         return;
     }
@@ -2188,8 +2335,10 @@ void Ses_Reliable_Timeout(int sesid, void *dummy)
  
     now = E_get_time();
     
-    if(!(r_data->flags & CONNECTED_LINK))
-	Alarm(EXIT, "Ses_Reliable_Timeout: Link not valid yet\n");
+    if(!(r_data->flags & CONNECTED_LINK)) {
+	Alarm(PRINT, "Ses_Reliable_Timeout: Link not valid yet: %d\n", ses->sess_id);
+	return;
+    }
 
     /* First see if we have anything in the window */
     if(r_data->head == r_data->tail) {
@@ -2202,10 +2351,10 @@ void Ses_Reliable_Timeout(int sesid, void *dummy)
     Alarm(DEBUG, "SES_REL_TIMEOUT: tail: %d; head:%d\n", r_data->tail, r_data->head);
  
     /* Congestion control */
-    r_data->ssthresh = r_data->window_size/2;
-    if(r_data->ssthresh < 1)
-	r_data->ssthresh = 1;
-    r_data->window_size = 1;
+    r_data->ssthresh = (unsigned int)(r_data->window_size/2);
+    if(r_data->ssthresh < 2)
+	r_data->ssthresh = 2;
+    r_data->window_size = 2;
 
     Alarm(DEBUG, "SES window adjusted: %5.3f timeout\n", r_data->window_size);
 
@@ -2225,7 +2374,7 @@ void Ses_Reliable_Timeout(int sesid, void *dummy)
     for(cur_seq=r_data->tail; cur_seq<r_data->head; cur_seq++) {
 
 	data_len  = r_data->window[cur_seq%MAX_WINDOW].data_len;
-	ack_len   = sizeof(reliable_tail);
+	ack_len   = sizeof(reliable_ses_tail);
 	pack_type = r_data->window[cur_seq%MAX_WINDOW].pack_type;
 	send_buff = r_data->window[cur_seq%MAX_WINDOW].buff;
 	r_data->window[cur_seq%MAX_WINDOW].resent = 1;
@@ -2234,17 +2383,18 @@ void Ses_Reliable_Timeout(int sesid, void *dummy)
 	r_add = (rel_udp_pkt_add*)(send_buff + sizeof(udp_header));
 	
 	
-	r_tail = (reliable_tail*)(send_buff + data_len);
+	r_tail = (reliable_ses_tail*)(send_buff + data_len);
 	Alarm(DEBUG, "SES: ((( tail: %d; seq_no: %d\n",
 	      r_data->tail, r_tail->seq_no);
 	
 	
 	/* Set the cummulative ack */
 	r_tail->cummulative_ack = r_data->recv_tail;
-	
+	r_tail->adv_win = r_data->recv_head + MAX_BUFF_SESS - stdcarr_size(&ses->rel_deliver_buff);
+
 	
 	/* Add NACKs to the reliable tail */
-	ack_len = sizeof(reliable_tail); 
+	ack_len = sizeof(reliable_ses_tail); 
 	p_nack = (char*)r_tail;
 	p_nack += ack_len;
 	
@@ -2293,7 +2443,11 @@ void Ses_Reliable_Timeout(int sesid, void *dummy)
 	
 	/* Send the Packet */
 	
-	if(ses->links_used == RELIABLE_LINKS) {
+	if(ses->links_used == SOFT_REALTIME_LINKS) {
+	    Forward_RT_UDP_Data(next_hop, send_buff,
+				      u_hdr->len+sizeof(udp_header));
+	}
+	else if(ses->links_used == RELIABLE_LINKS) {
 	    Forward_Rel_UDP_Data(next_hop, send_buff, 
 				 u_hdr->len+sizeof(udp_header), 0);
 	}
@@ -2303,11 +2457,11 @@ void Ses_Reliable_Timeout(int sesid, void *dummy)
 	}
     }
 
-    timeout_val.sec = (r_data->rtt*5)/1000000;
-    timeout_val.usec = (r_data->rtt*5)%1000000;
+    timeout_val.sec = (r_data->rtt*15)/1000000;
+    timeout_val.usec = (r_data->rtt*15)%1000000;
     
     if(timeout_val.sec == 0 && timeout_val.usec == 0) {
-	timeout_val.sec = 1;
+	timeout_val.sec = 5;
     }
     if(timeout_val.sec == 0 && timeout_val.usec < 2000) {
 	timeout_val.usec = 2000;
@@ -2326,8 +2480,8 @@ void Ses_Reliable_Timeout(int sesid, void *dummy)
     timeout_val.sec += timeout_val.usec/1000000;
     timeout_val.usec = timeout_val.usec%1000000;
     
-    if(timeout_val.sec > 1)
-	timeout_val.sec = 1;
+    if(timeout_val.sec > 5)
+	timeout_val.sec = 5;
     
     Alarm(DEBUG, "---timeout sec: %d; usec: %d\n",
 	  timeout_val.sec, timeout_val.usec);
@@ -2362,12 +2516,12 @@ void Ses_Send_Nack_Retransm(int sesid, void *dummy)
     rel_udp_pkt_add *r_add;
     char *send_buff;
     Reliable_Data *r_data;
-    reliable_tail *r_tail;
+    reliable_ses_tail *r_tail;
     int32u pack_type;
     Node* next_hop;
     int16u data_len, ack_len;
     Session *ses;
-    stdhash_it it;
+    stdit it;
     sp_time now, tmp_time, sum_time;
     char *p_nack;
     int j;
@@ -2375,7 +2529,7 @@ void Ses_Send_Nack_Retransm(int sesid, void *dummy)
 
     
     stdhash_find(&Sessions_ID, &it, &sesid);
-    if(stdhash_it_is_end(&it)) {
+    if(stdhash_is_end(&Sessions_ID, &it)) {
 	/* The session is gone */
         return;
     }
@@ -2412,13 +2566,13 @@ void Ses_Send_Nack_Retransm(int sesid, void *dummy)
     }
 	
     /* Congestion control */
-    r_data->ssthresh = r_data->window_size/2;
-    if(r_data->ssthresh < 1) {
-	r_data->ssthresh = 1;
+    r_data->ssthresh = (unsigned int)(r_data->window_size/2);
+    if(r_data->ssthresh < 2) {
+	r_data->ssthresh = 2;
     }
     r_data->window_size = r_data->window_size/2;
-    if(r_data->window_size < 1) {
-	r_data->window_size = 1;
+    if(r_data->window_size < 2) {
+	r_data->window_size = 2;
     }
 
     Alarm(DEBUG, "SES window adjusted: %5.3f\n", r_data->window_size);
@@ -2442,17 +2596,18 @@ void Ses_Send_Nack_Retransm(int sesid, void *dummy)
 	Alarm(DEBUG, "NACK Resending: %d\n", nack_seq);
 
 	data_len  = r_data->window[nack_seq%MAX_WINDOW].data_len;
-	ack_len   = sizeof(reliable_tail);
+	ack_len   = sizeof(reliable_ses_tail);
 	pack_type = r_data->window[nack_seq%MAX_WINDOW].pack_type;
 	send_buff = r_data->window[nack_seq%MAX_WINDOW].buff;
 	r_data->window[nack_seq%MAX_WINDOW].resent = 1;
 
 	u_hdr = (udp_header*)send_buff;
 	r_add = (rel_udp_pkt_add*)(send_buff + sizeof(udp_header));
-	r_tail = (reliable_tail*)(send_buff + data_len);
+	r_tail = (reliable_ses_tail*)(send_buff + data_len);
 	
 	/* Set the cummulative ack */
 	r_tail->cummulative_ack = r_data->recv_tail;
+	r_tail->adv_win = r_data->recv_head + MAX_BUFF_SESS - stdcarr_size(&ses->rel_deliver_buff);
 	    
 	/* Add NACKs to the reliable tail */
 	p_nack = (char*)r_tail;
@@ -2501,7 +2656,11 @@ void Ses_Send_Nack_Retransm(int sesid, void *dummy)
 
 	/* Send the Packet */
 	
-	if(ses->links_used == RELIABLE_LINKS) {
+	if(ses->links_used == SOFT_REALTIME_LINKS) {
+	    Forward_RT_UDP_Data(next_hop, send_buff,
+				      u_hdr->len+sizeof(udp_header));
+	}
+	else if(ses->links_used == RELIABLE_LINKS) {
 	    Forward_Rel_UDP_Data(next_hop, send_buff, 
 				 u_hdr->len+sizeof(udp_header), 0);
 	}
@@ -2521,11 +2680,11 @@ void Ses_Send_Nack_Retransm(int sesid, void *dummy)
 void Ses_Try_to_Send(int sesid, void* dummy) 
 {
     Session *ses;
-    stdhash_it it;
+    stdit it;
 
     
     stdhash_find(&Sessions_ID, &it, &sesid);
-    if(stdhash_it_is_end(&it)) {
+    if(stdhash_is_end(&Sessions_ID, &it)) {
 	/* The session is gone */
         return;
     }

@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, The Johns Hopkins University
+/* Copyright (c) 2000-2005, The Johns Hopkins University
  * All rights reserved.
  *
  * The contents of this file are subject to a license (the ``License'')
@@ -23,60 +23,102 @@
 #ifndef stderror_h_2000_05_15_14_04_16_jschultz_at_cnds_jhu_edu
 #define stderror_h_2000_05_15_14_04_16_jschultz_at_cnds_jhu_edu
 
+#include <errno.h>
+#include <stdio.h>
+
+#include <stdutil/stddefines.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#ifndef STDERR_MAX_ERR_MSG_LEN 
+/* NOTE: redefining this variable only has an effect at compile time of the stdutil library */
+#  define STDERR_MAX_ERR_MSG_LEN 1024
+#endif
+
 /* stderr error routines */
 
-/* change this and recompile if 1024 characters isn't long enough for your error msgs */
-#define STDERR_MAX_ERR_MSG_LEN 1024
+int  stderr_msg(const char *fmt, ...);
+int  stderr_ret(const char *fmt, ...);
+void stderr_quit(const char *fmt, ...);
+void stderr_abort(const char *fmt, ...);
+void stderr_sys(const char *fmt, ...);
+void stderr_dump(const char *fmt, ...);
 
-int stderr_msg(const char *fmt, ...);
-int stderr_ret(const char *fmt, ...);
-int stderr_quit(const char *fmt, ...);
-int stderr_abort(const char *fmt, ...);
-int stderr_pabort(const char *file_name, unsigned line_num, const char *fmt, ...);
-int stderr_sys(const char *fmt, ...);
-int stderr_dump(const char *fmt, ...);
+STDINLINE const char *stderr_strerr(stdcode code);
 
-#define STD_EXCEPTION(x) \
-stderr_dump("STD_EXCEPTION: file: %s, line: %d, msg: %s", __FILE__, __LINE__, #x)
+/* error macros */
 
-#ifdef STD_USE_EXCEPTIONS
-# define STD_ERROR(x)      STD_EXCEPTION(x)
-# define STD_ON_ERROR(x)   ((x) ? STD_EXCEPTION(x) : 0)
-# define STD_MEM_ERROR(x)  ((x) ? (x) : STD_EXCEPTION(x))
+#define STDEXCEPTION(x) stderr_abort("STDEXCEPTION: File: %s; Line: %d: %s", __FILE__, __LINE__, #x)
+
+#if defined(STDSAFETY_CHECKS)
+#  define STDSAFETY_CHECK(x) { if (!(x)) { STDEXCEPTION(safety check (x) failed); } }
 #else
-# define STD_ERROR(x)      (x)
-# define STD_ON_ERROR(x)   (x)
-# define STD_MEM_ERROR(x)  (x)
+#  define STDSAFETY_CHECK(x) 
 #endif
 
-#ifdef STD_BOUNDS_CHECKS
-# define STD_BOUNDS_CHECK(x) if (!(x)) STD_EXCEPTION(bounds check (x) failed)
+#if defined(STDBOUNDS_CHECKS)
+#  define STDBOUNDS_CHECK(x) { if (!(x)) { STDEXCEPTION(bounds check (x) failed); } }
 #else
-# define STD_BOUNDS_CHECK(x)
+#  define STDBOUNDS_CHECK(x)
 #endif
 
-#ifdef STD_CONSTRUCT_CHECKS
-# define STD_CONSTRUCT_CHECK(x) if (!(x)) STD_EXCEPTION(construction check (x) failed)
+/* error values */
+
+#define STDESUCCESS 0
+#define STDEOF EOF
+
+#if defined(EUNKNOWN)
+#  define STDEUNKNOWN EUNKNOWN
 #else
-# define STD_CONSTRUCT_CHECK(x)
+#  define STDEUNKNOWN 500
 #endif
 
-#ifdef STD_SAFE_CHECKS
-# define STD_SAFE_CHECK(x) if (!(x)) STD_EXCEPTION(safety check (x) failed)
+#if defined(EINVAL)
+#  define STDEINVAL EINVAL
 #else
-# define STD_SAFE_CHECK(x) 
+#  define STDEINVAL 501
 #endif
 
-/* error codes returned by stdutil fcns */
-enum {
-  STD_SUCCESS       =  0, /* hmmm... I'm not sure about this one */
-  STD_MEM_FAILURE   = -1, /* a call to an alloc fcn failed or a memory request size overflowed */
-  STD_MEM_FAILURE2  =  0, /* used for mem failures when a ptr is returned */
-  STD_ILLEGAL_PARAM = -2, /* an illegal parameter was passed by the caller */
-  STD_FAILURE       = -5  /* an unnamed failure occurred */
-};
+#if defined(ENOMEM)
+#  define STDENOMEM ENOMEM
+#else
+#  define STDENOMEM 502
+#endif
 
-/* internal use - didn't feel like putting in _p.h file :( */
-enum { STD_NO_MEM_CHANGE = -3, STD_MEM_CHANGE = -4 };
+#if defined(EACCES)
+#  define STDEACCES EACCES
+#else
+#  define STDEACCES 503
+#endif
+
+#if defined(EBUSY)
+#  define STDEBUSY EBUSY
+#else
+#  define STDEBUSY 504
+#endif
+
+#if defined(EPERM)
+#  define STDEPERM EPERM
+#else
+#  define STDEPERM 505
+#endif
+
+#if defined(ENOSYS)
+#  define STDENOSYS ENOSYS
+#else
+#  define STDENOSYS 506
+#endif
+
+#if defined(EINTR)
+#  define STDEINTR EINTR
+#else
+#  define STDEINTR 507
+#endif
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

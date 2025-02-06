@@ -18,8 +18,14 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2007 The Johns Hopkins University.
  * All rights reserved.
+ *
+ * Major Contributor(s):
+ * --------------------
+ *    John Lane
+ *    Raluca Musaloiu-Elefteri
+ *    Nilo Rivera
  *
  */
 
@@ -44,33 +50,24 @@
 #include "route.h"
 #include "udp.h"
 #include "reliable_udp.h"
+#include "realtime_udp.h"
 #include "state_flood.h"
 
 
 /* Statistics */
-extern long long int total_udp_pkts;
-extern long long int total_udp_bytes;
-extern long long int total_rel_udp_pkts;
-extern long long int total_rel_udp_bytes;
-extern long long int total_link_ack_pkts;
-extern long long int total_link_ack_bytes;
-extern long long int total_hello_pkts;
-extern long long int total_hello_bytes;
-extern long long int total_link_state_pkts;
-extern long long int total_link_state_bytes;
-extern long long int total_group_state_pkts;
-extern long long int total_group_state_bytes;
+extern long64 total_udp_pkts;
+extern long64 total_udp_bytes;
+extern long64 total_rel_udp_pkts;
+extern long64 total_rel_udp_bytes;
+extern long64 total_link_ack_pkts;
+extern long64 total_link_ack_bytes;
+extern long64 total_hello_pkts;
+extern long64 total_hello_bytes;
+extern long64 total_link_state_pkts;
+extern long64 total_link_state_bytes;
+extern long64 total_group_state_pkts;
+extern long64 total_group_state_bytes;
 
-
-
-void	Flip_pack_hdr( packet_header *pack_hdr )
-{
-    pack_hdr->type	  = Flip_int32( pack_hdr->type );
-    pack_hdr->sender_id	  = Flip_int32( pack_hdr->sender_id );
-    pack_hdr->data_len	  = Flip_int16( pack_hdr->data_len );
-    pack_hdr->ack_len	  = Flip_int16( pack_hdr->ack_len );
-    pack_hdr->seq_no	  = Flip_int16( pack_hdr->seq_no );
-}
 
 
 
@@ -78,7 +75,8 @@ void	Flip_pack_hdr( packet_header *pack_hdr )
 
 /***********************************************************/
 /* int16 Prot_process_scat(sys_scatter *scat,              */
-/*                         int total_bytes, int mode)      */
+/*                         int total_bytes, int mode,      */
+/*                         int32 type)                     */
 /*                                                         */
 /* Processes a scatter received from the network           */
 /*                                                         */
@@ -87,6 +85,7 @@ void	Flip_pack_hdr( packet_header *pack_hdr )
 /* scat:        scatter to be processed                    */
 /* total_bytes: number of bytes received in the scatter    */
 /* mode:        mode of the link (CONTROL, UDP, etc.)      */
+/* type:        the original (unflipped) type of the msg.  */
 /*                                                         */
 /* Return Value                                            */
 /*                                                         */
@@ -100,26 +99,19 @@ void	Flip_pack_hdr( packet_header *pack_hdr )
    At the return of the function I should either:
        - finish processing of scat, so it can be reused for receiving
        - allocate a new scat header/body so I have smthg to receive in */
-void Prot_process_scat(sys_scatter *scat, int total_bytes, int mode)
+void Prot_process_scat(sys_scatter *scat, int total_bytes, int mode, int32 type)
 {
     int remaining_bytes;
     packet_header *pack_hdr;
-    int32 type;
  
 
     pack_hdr = (packet_header *)scat->elements[0].buf;
-    type = pack_hdr->type;
-
-    /* Fliping packet header to my form if needed */
-    if(!Same_endian(pack_hdr->type)) { 
-        Flip_pack_hdr(pack_hdr);
-    }
-
 
     remaining_bytes = total_bytes - scat->elements[0].len;
     if(remaining_bytes != pack_hdr->data_len+pack_hdr->ack_len) {
 	/* Ignore the message */
-	Alarm(DEBUG, "Prot_process_scat(): Got a corrupted message\n");
+	Alarm(PRINT, "Prot_process_scat(): Got a corrupted message: %d; %d; %d\n",
+	      remaining_bytes, pack_hdr->data_len, pack_hdr->ack_len);
 	return;
     }
 
@@ -128,7 +120,7 @@ void Prot_process_scat(sys_scatter *scat, int total_bytes, int mode)
 
     /* Call the appropriate processing function for the packet */
     if(Is_udp_data(pack_hdr->type)) {
-	/*Alarm(DEBUG, "\n\nprocess_udp_data: size: %d\n", total_bytes);   */ 
+	Alarm(DEBUG, "Udp_data: %d\n", total_bytes);   
 
 	total_udp_pkts++;
 	total_udp_bytes += total_bytes;
@@ -149,8 +141,53 @@ void Prot_process_scat(sys_scatter *scat, int total_bytes, int mode)
 	    } 	    
 	}
     }
+    else if(Is_realtime_data(pack_hdr->type)) {
+	Alarm(DEBUG, "\n\nprocess_realtime_udp_data: size: %d\n", total_bytes); 
+
+	total_udp_pkts++;
+	total_udp_bytes += total_bytes;
+
+        Process_RT_UDP_data_packet(pack_hdr->sender_id, scat->elements[1].buf, 
+			   pack_hdr->data_len, pack_hdr->ack_len, type, mode);
+
+	/* Here it's not ok anymore, Process_udp_data_packet() 
+	   might still  need to keep the buffer after returning
+	   Therefore, the function should create a new buffer if needed
+	   and replace the original one. */
+	
+	if(get_ref_cnt(scat->elements[1].buf) > 1) {
+	    dec_ref_cnt(scat->elements[1].buf);
+	    if((scat->elements[1].buf = 
+		(char *) new_ref_cnt(PACK_BODY_OBJ)) == NULL) {
+		Alarm(EXIT, "Prot_process_scat: Could not allocate packet body obj\n");
+	    } 	    
+	}
+    }
+    else if(Is_realtime_nack(pack_hdr->type)) {
+        Alarm(DEBUG, "\n\nprocess_realtime_nack: size: %d\n", total_bytes);
+
+	total_link_ack_pkts++;
+	total_link_ack_bytes += total_bytes;
+ 
+        Process_RT_nack_packet(pack_hdr->sender_id, scat->elements[1].buf, 
+			       pack_hdr->ack_len, type, mode);
+	 
+
+	/* Here it's not ok anymore, Process_RT_nack_packet() 
+	   might still  need to keep the buffer after returning
+	   Therefore, the function should create a new buffer if needed
+	   and replace the original one. */
+	if(get_ref_cnt(scat->elements[1].buf) > 1) {
+	    dec_ref_cnt(scat->elements[1].buf);
+	    if((scat->elements[1].buf = 
+		(char *) new_ref_cnt(PACK_BODY_OBJ)) == NULL) {
+		Alarm(EXIT, "Prot_process_scat: Could not allocate packet body obj\n");
+	    } 	    
+	}
+
+    }
     else if(Is_rel_udp_data(pack_hdr->type)) {
-	/*Alarm(DEBUG, "\n\nprocess_rel_udp_data: size: %d\n", total_bytes);   */ 
+	Alarm(DEBUG, "\n\nprocess_rel_udp_data: size: %d\n", total_bytes);    
 
 	total_rel_udp_pkts++;
 	total_rel_udp_bytes += total_bytes;
@@ -172,7 +209,7 @@ void Prot_process_scat(sys_scatter *scat, int total_bytes, int mode)
 	}
     }
     else if(Is_link_ack(pack_hdr->type)) {
-        Alarm(DEBUG, "\n\nprocess_ack: size: %d\n", total_bytes);
+        /*Alarm(DEBUG, "\n\nprocess_ack: size: %d\n", total_bytes);*/
 
 	total_link_ack_pkts++;
 	total_link_ack_bytes += total_bytes;
@@ -183,7 +220,7 @@ void Prot_process_scat(sys_scatter *scat, int total_bytes, int mode)
 	   after returning */
     }
     else if(Is_hello(pack_hdr->type)||Is_hello_req(pack_hdr->type)) {
-	/*	Alarm(PRINT, "\n\nprocess_hello: size: %d\n", total_bytes); */
+	/*Alarm(PRINT, "\n\nprocess_hello: size: %d\n", total_bytes);*/ 
 
 	total_hello_pkts++;
 	total_hello_bytes += total_bytes;
@@ -194,7 +231,7 @@ void Prot_process_scat(sys_scatter *scat, int total_bytes, int mode)
 	   after returning */
     }
     else if(Is_hello_ping(pack_hdr->type)) {
-        /*  Alarm(PRINT, "\n\nprocess_hello_ping: size: %d\n", total_bytes); */ 
+	/*Alarm(PRINT, "\n\nprocess_hello_ping: size: %d\n", total_bytes);*/  
 
 	total_hello_pkts++;
 	total_hello_bytes += total_bytes;
@@ -204,7 +241,7 @@ void Prot_process_scat(sys_scatter *scat, int total_bytes, int mode)
 	   after returning */
     }
     else if((Is_link_state(pack_hdr->type)||(Is_group_state(pack_hdr->type)))) {
-        /*  Alarm(PRINT, "\n\nprocess_state_packet: size: %d\n", total_bytes); */ 
+        /*Alarm(PRINT, "\n\nprocess_state_packet: size: %d\n", total_bytes);*/ 
 
 	if(Is_link_state(pack_hdr->type)) {
 	    total_link_state_pkts++;

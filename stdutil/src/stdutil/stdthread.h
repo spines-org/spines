@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, The Johns Hopkins University
+/* Copyright (c) 2000-2005, The Johns Hopkins University
  * All rights reserved.
  *
  * The contents of this file are subject to a license (the ``License'')
@@ -23,35 +23,62 @@
 #ifndef stdthread_h_2000_03_14_12_28_17_jschultz_at_cnds_jhu_edu
 #define stdthread_h_2000_03_14_12_28_17_jschultz_at_cnds_jhu_edu
 
-/* stdmutex static initializer */
-#define STDMUTEX_STATIC_CONSTRUCT
+#if defined(_REENTRANT)  /* NOTE: these types and functions are only declared+defined when _REENTRANT is defined */
 
-#include <stdutil/stddefines.h>
-#include <stdutil/stdthread_p.h>
+#  include <stdutil/stddefines.h>
 
-/* stdmutex: work similiar to pthread mutexes, but cannot be copied or moved */
-#define STDMUTEX_FAIL    -1
-#define STDMUTEX_BUSY    -2
+#  ifdef __cplusplus
+extern "C" {
+#  endif
 
-inline int stdmutex_construct(stdmutex *mut);
-inline int stdmutex_destruct(stdmutex *mut);
+typedef enum
+{
+  STDMUTEX_FAST  = (int) 0xa720c831UL,
+  STDMUTEX_RCRSV = (int) 0x3f6c20deUL
 
-inline int stdmutex_lock(stdmutex *mut);
-inline int stdmutex_trylock(stdmutex *mut);
-inline int stdmutex_unlock(stdmutex *mut);
+} stdmutex_type;
 
-/* stdcond: work similiar to pthread conditions, but no static initializer */
-#define STDCOND_TIMEOUT   1
-#define STDCOND_FAIL    -10
-#define STDCOND_BUSY    -11
+#  include <stdutil/private/stdthread_p.h>
 
-inline int stdcond_construct(stdcond *cond);
-inline int stdcond_destruct(stdcond *cond);
+/* Declare thread entry functions like this: void * STDTHREAD_FCN foo(void * arg); */
 
-inline int stdcond_wait(stdcond *cond, stdmutex *mut);
-inline int stdcond_timedwait(stdcond *cond, stdmutex *mut, long ns);
+typedef void *(STDTHREAD_FCN *stdthread_fcn)(void *arg);  
 
-inline int stdcond_signal(stdcond *cond);
-inline int stdcond_broadcast(stdcond *cond);
+/* Thread Management */
 
+STDINLINE stdcode      stdthread_spawn(stdthread * thr_ptr, stdthread_id * id,
+                                       stdthread_fcn thr_fcn, void * fcn_arg);
+
+STDINLINE stdcode      stdthread_detach(stdthread thr);
+STDINLINE stdcode      stdthread_join(stdthread thr, void ** exitval_ptr);
+STDINLINE void         stdthread_exit(void * exitval);
+STDINLINE stdthread_id stdthread_self(void);
+STDINLINE stdbool      stdthread_eq(stdthread_id id1, stdthread_id id2);
+
+/* Mutual Exclusion Locks */
+
+STDINLINE stdcode      stdmutex_construct(stdmutex *mut, stdmutex_type t);
+STDINLINE stdcode      stdmutex_destruct(stdmutex *mut);
+
+STDINLINE stdcode      stdmutex_grab(stdmutex *mut);
+STDINLINE stdcode      stdmutex_trygrab(stdmutex *mut);
+STDINLINE stdcode      stdmutex_drop(stdmutex *mut);
+STDINLINE stdcode      stdmutex_is_owner(stdmutex *mut, unsigned * grab_cnt);
+
+/* Condition Variables */
+
+STDINLINE stdcode      stdcond_construct(stdcond *cond);
+STDINLINE stdcode      stdcond_destruct(stdcond *cond);
+
+STDINLINE stdcode      stdcond_wake_one(stdcond *cond);
+STDINLINE stdcode      stdcond_wake_all(stdcond *cond);
+
+STDINLINE stdcode      stdcond_wait(stdcond *cond, stdmutex *mut);
+/*STDINLINE stdcode      stdcond_timedwait(stdcond *cond, stdmutex *mut, long ns);*/
+
+#  ifdef __cplusplus
+}
+#  endif
+
+#endif
 #endif

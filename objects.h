@@ -18,8 +18,14 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2007 The Johns Hopkins University.
  * All rights reserved.
+ *
+ * Major Contributor(s):
+ * --------------------
+ *    John Lane
+ *    Raluca Musaloiu-Elefteri
+ *    Nilo Rivera
  *
  */
 
@@ -52,6 +58,7 @@
 #define PACK_HEAD_OBJ           10
 #define PACK_BODY_OBJ           11
 #define SYS_SCATTER             12
+#define STDHASH_OBJ             13
 
 
 /* Non-Transmitted objects */
@@ -65,15 +72,26 @@
 
 #define BUFFER_CELL             31
 #define UDP_CELL                32
+#define FRAG_PKT                33
 
 #define CONTROL_DATA            41
 #define RELIABLE_DATA           42
+#define REALTIME_DATA           43
 
 
 #define SESSION_OBJ             51
 
+
+
+#ifdef SPINES_SSL
+/* added for security part */
+#define SSL_IP_BUFFER           53
+#define SSL_PKT_BUFFER          54
+#define SSL_SOCKADDR_IN         55
+#endif
+
 /* Special objects */
-#define UNKNOWN_OBJ             52      /* This represents an object of undertermined or 
+#define UNKNOWN_OBJ             56      /* This represents an object of undertermined or 
                                          * variable type.  Can only be used when appropriate.
                                          * i.e. when internal structure of object is not accessed.
                                          * This is mainly used with queues

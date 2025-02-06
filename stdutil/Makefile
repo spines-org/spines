@@ -1,11 +1,17 @@
-stdutil: src/Makefile
-	cd src; make
+all:
+	cd src; $(MAKE)
 
-src/Makefile:
-	cd src; ./configure
+clean: 
+	rm -f *~ core*
+	cd src; $(MAKE) clean
 
-clean: src/Makefile
-	cd src; make clean
+distclean: 
+	rm -f *~ core* config.*
+	rm -rf autom4te.cache
+	cd src; $(MAKE) distclean
 
-distclean: src/Makefile
-	rm -f config.* *~; cd src; make distclean
+uberclean:
+	rm -f *~ core* config.*
+	rm -rf autom4te.cache
+	rm -f configure
+	cd src; $(MAKE) uberclean

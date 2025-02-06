@@ -18,8 +18,14 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2007 The Johns Hopkins University.
  * All rights reserved.
+ *
+ * Major Contributor(s):
+ * --------------------
+ *    John Lane
+ *    Raluca Musaloiu-Elefteri
+ *    Nilo Rivera
  *
  */
 
@@ -63,7 +69,7 @@ int Edge_Is_route_change(void);
 int Edge_Is_state_relevant(void *state);
 int Edge_Set_state_header(void *state, char *pos);
 int Edge_Set_state_cell(void *state, char *pos);
-int Edge_Process_state_header(char *pos);
+int Edge_Process_state_header(char *pos, int32 type);
 void* Edge_Process_state_cell(int32 source, char *pos);
 int Edge_Destroy_State_Data(void *state);
 

@@ -18,8 +18,14 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2005 The Johns Hopkins University.
  * All rights reserved.
+ *
+ * Major Contributor(s):
+ * --------------------
+ *    John Lane
+ *    Raluca Musaloiu-Elefteri
+ *    Nilo Rivera
  *
  */
 
@@ -39,7 +45,9 @@
 #include <errno.h>
 
 
-
+#ifndef socklen_t
+#define socklen_t int
+#endif 
 
 static int  Num_bytes;
 static int  Rate;
@@ -56,7 +64,29 @@ static int  Sping_Flag;
 
 static void Usage(int argc, char *argv[]);
 
-#define MAX_PACKET_SIZE        1400
+#define MAX_PACKET_SIZE        100000
+
+
+void isleep(int usec)
+{
+    int diff;
+    struct timeval start, now;
+    struct timezone tz;
+
+    gettimeofday(&start, &tz);    
+    diff = 0;
+    
+    while(diff < usec) {
+	if(usec - diff > 11000) {
+	    usleep(1);
+	}
+	gettimeofday(&now, &tz);
+	diff = now.tv_sec - start.tv_sec;
+	diff *= 1000000;
+	diff += now.tv_usec - start.tv_usec;
+    }
+}
+
 
 
 int main( int argc, char *argv[] )
@@ -74,11 +104,11 @@ int main( int argc, char *argv[] )
     int total_read;
     int sent_packets = 0;
     long elapsed_time;
-    FILE *f1;
+    FILE *f1 = NULL;
 
     key_t key;
     int shmid, size, opperm_flags;
-    char *mem_addr;
+    char *mem_addr = NULL;
     long long int *avg_clockdiff;
     long long int zero_diff = 0;
     long long int min_clockdiff, max_clockdiff;
@@ -87,16 +117,14 @@ int main( int argc, char *argv[] )
     struct sockaddr_in name;
     struct hostent     h_ent;
 
-    socklen_t len;
-
 
     Usage(argc, argv);
 
     if(fileflag == 1)
 	f1 = fopen(filename, "wt");
 
-    bcopy(gethostbyname(IP), &h_ent, sizeof(h_ent));
-    bcopy( h_ent.h_addr, &host.sin_addr, sizeof(host.sin_addr) );
+    memcpy(&h_ent, gethostbyname(IP), sizeof(h_ent));
+    memcpy( &host.sin_addr, h_ent.h_addr, sizeof(host.sin_addr) );
 
     
     msg_size = (int*)buf;
@@ -144,11 +172,11 @@ int main( int argc, char *argv[] )
 	    ret= getsockopt(sk, SOL_SOCKET, SO_RCVBUF, (void *)&on, &len );
 	    if( on < i*1024 ) break;
 	}
-#endif
 
 	len = sizeof(on);
 	ret= getsockopt(sk, SOL_SOCKET, SO_SNDBUF, (void *)&on, &len );
 	printf("TCP buffer size: %d\n", (int)on);
+#endif
 
 	ret = connect(sk, (struct sockaddr *)&host, sizeof(host) );
         if( ret < 0)
@@ -237,7 +265,7 @@ int main( int argc, char *argv[] )
 		    if((int_delay <= 0)||(int_delay > 10000000))
 		     	printf("!!! BIG delay !!!  %lld\n", int_delay);
 		    if(int_delay > 0)
-			usleep(int_delay);
+			isleep(int_delay);
 		}
 	    }
 	}
@@ -336,11 +364,11 @@ int main( int argc, char *argv[] )
 	    ret= getsockopt(sk, SOL_SOCKET, SO_RCVBUF, (void *)&on, &len );
 	    if( on < i*1024 ) break;
 	}
-#endif
-
 	len = sizeof(on);
 	ret= getsockopt(sk, SOL_SOCKET, SO_SNDBUF, (void *)&on, &len );
 	printf("TCP buffer size: %d\n", (int)on);
+#endif
+
 
 
 	on = 1;
@@ -349,6 +377,9 @@ int main( int argc, char *argv[] )
 	    exit(1);
 	}
 
+	gettimeofday(&start, &tz);
+
+	Num_pkts = 0;
 	while(1) {
 	    total_read = 0;
 	    while(total_read < sizeof(int)) {
@@ -395,7 +426,8 @@ int main( int argc, char *argv[] )
 	    
 	    if(fileflag == 1) {
 		fprintf(f1, "%d\t%lld\n", *pkt_no+1, oneway_time);
-	    }	    
+	    }
+	    Num_pkts++;
 	}	    
 	if(Sping_Flag == 1) {
 	    ret = shmdt(mem_addr);
@@ -408,7 +440,19 @@ int main( int argc, char *argv[] )
 	    fprintf(f1, "# min_clockdiff: %lld; max_clockdiff: %lld; => %lld\n",
 		    min_clockdiff, max_clockdiff, max_clockdiff - min_clockdiff);
 	}
+
+
+	gettimeofday(&now, &tz);
+	duration_now  = now.tv_sec - start.tv_sec;
+	duration_now *= 1000000; 
+	duration_now += now.tv_usec - start.tv_usec;
 	
+	rate_now = *msg_size;
+	rate_now = rate_now * Num_pkts * 8 * 1000;
+	rate_now = rate_now/duration_now;
+
+	printf("Avg. rate: %8.3f Kbps\n", rate_now);
+
     }
 
     if(fileflag == 1) {

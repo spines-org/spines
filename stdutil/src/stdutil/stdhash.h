@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, The Johns Hopkins University
+/* Copyright (c) 2000-2005, The Johns Hopkins University
  * All rights reserved.
  *
  * The contents of this file are subject to a license (the ``License'')
@@ -23,87 +23,111 @@
 #ifndef stdhash_h_2000_02_14_16_22_38_jschultz_at_cnds_jhu_edu
 #define stdhash_h_2000_02_14_16_22_38_jschultz_at_cnds_jhu_edu
 
-#include <stdutil/stdutil.h>
+#include <stdutil/stdit.h>
 
-/* defined in stdutil.h: only if all the necessary types exist can you use stdhash */
-#ifdef STDRAND_EXISTS 
-
-/* static initializers with no safety checks */
-# define STDHASH_STATIC_CONSTRUCT(sizeof_key, sizeof_val, stdequals_fcn, stdhcode_fcn)
-# define STDHASH_STATIC_CONSTRUCT2(sizeof_key, sizeof_val, stdequals_fcn, stdhcode_fcn, dseed)
-
-# include <stdutil/stddefines.h>
-# include <stdutil/stdkvp.h>
-# include <stdutil/stdhash_p.h>
-
-# ifdef __cplusplus
+#ifdef __cplusplus
 extern "C" {
-# endif
+#endif
 
-/* stdhash_it: must first be initialized by a stdhash iterator fcn (see below) */
-inline void    *stdhash_it_key(const stdhash_it *it);
-inline void    *stdhash_it_val(const stdhash_it *it);
-inline stdkvp  *stdhash_it_kvp(const stdhash_it *it);
-inline stdbool stdhash_it_equals(const stdhash_it *it1, const stdhash_it *it2);
-inline stdbool stdhash_it_is_begin(const stdhash_it *it);
-inline stdbool stdhash_it_is_end(const stdhash_it *it);
+#ifndef STDHASH_MIN_AUTO_ALLOC  /* minimum allocated table capacity */
+#  define STDHASH_MIN_AUTO_ALLOC 16
+#endif
 
-inline stdhash_it *stdhash_it_seek_begin(stdhash_it *it);
-inline stdhash_it *stdhash_it_seek_end(stdhash_it *it);
-inline stdhash_it *stdhash_it_next(stdhash_it *it);
-inline stdhash_it *stdhash_it_advance(stdhash_it *it, size_t num_advance);
-inline stdhash_it *stdhash_it_prev(stdhash_it *it);
-inline stdhash_it *stdhash_it_retreat(stdhash_it *it, size_t num_retreat);
+/* Structors */
 
-inline stdhash_it *stdhash_it_keyed_next(stdhash_it *it);
+#define STDHASH_STATIC_CONSTRUCT(ksize, vsize, kcmp, khcode, opts) \
+{ NULL, NULL, NULL, (stdsize) -1, (stdsize) -1, 0, 0, (ksize), (vsize), (kcmp), (khcode), (opts) }
 
-/* stdhash */
-/* Constructors, Destructor */
-inline int  stdhash_construct(stdhash *h, size_t sizeof_key, size_t sizeof_val, 
-			      stdequals_fcn key_eq, stdhcode_fcn key_hcode);
-inline int  stdhash_construct2(stdhash *h, size_t sizeof_key, size_t sizeof_val, 
-			       stdequals_fcn key_eq, stdhcode_fcn key_hcode, size_t dseed);
-inline int  stdhash_copy_construct(stdhash *dst, const stdhash *src);
-inline void stdhash_destruct(stdhash *h);
+STDINLINE stdcode      stdhash_construct(stdhash *h, stdsize ksize, stdsize vsize, stdcmp_fcn kcmp, stdhcode_fcn khcode, stduint8 opts);
+STDINLINE stdcode      stdhash_copy_construct(stdhash *dst, const stdhash *src);
+STDINLINE void         stdhash_destruct(stdhash *h);
 
-/* Iterator Interface */
-inline stdhash_it *stdhash_begin(const stdhash *h, stdhash_it *it);
-inline stdhash_it *stdhash_last(const stdhash *h, stdhash_it *it);
-inline stdhash_it *stdhash_end(const stdhash *h, stdhash_it *it);
-inline stdhash_it *stdhash_get(const stdhash *h, stdhash_it *it, size_t elem_num);
+/* Assigners */
 
-/* Size and Capacity Information */
-inline size_t  stdhash_size(const stdhash *h);
-inline stdbool stdhash_empty(const stdhash *h);
+STDINLINE stdcode      stdhash_set_eq(stdhash *dst, const stdhash *src);
+STDINLINE void         stdhash_swap(stdhash *h1, stdhash *h2);
 
-inline size_t stdhash_max_size(const stdhash *h);
-inline size_t stdhash_key_size(const stdhash *h);
-inline size_t stdhash_val_size(const stdhash *h);
-inline size_t stdhash_kvp_size(const stdhash *h);
+/* Iterators */
+
+STDINLINE stdit *      stdhash_begin(const stdhash *h, stdit *it);
+STDINLINE stdit *      stdhash_last(const stdhash *h, stdit *it);
+STDINLINE stdit *      stdhash_end(const stdhash *h, stdit *it);
+STDINLINE stdit *      stdhash_get(const stdhash *h, stdit *it, stdsize elem_num);  /* O(n) */
+
+STDINLINE stdbool      stdhash_is_begin(const stdhash *h, const stdit *it);
+STDINLINE stdbool      stdhash_is_end(const stdhash *h, const stdit *it);
+
+STDINLINE stdit *      stdhash_keyed_next(const stdhash *h, stdit *it);
+STDINLINE stdit *      stdhash_keyed_prev(const stdhash *h, stdit *it);
+
+/* Size and Table Load Information */
+
+STDINLINE stdsize      stdhash_size(const stdhash *h);
+STDINLINE stdbool      stdhash_empty(const stdhash *h);
+
+STDINLINE stdsize      stdhash_load_lvl(const stdhash *h);
+STDINLINE stdsize      stdhash_high_thresh(const stdhash *h);
+STDINLINE stdsize      stdhash_low_thresh(const stdhash *h);
+
+STDINLINE stdsize      stdhash_max_size(const stdhash *h);
 
 /* Size and Capacity Operations */
-inline int stdhash_clear(stdhash *h);
-inline int stdhash_reserve(stdhash *h, size_t num_elems);
-inline int stdhash_rehash(stdhash *h);
 
-/* Hash Operations: O(1) expected, O(n) worst case */
-inline stdhash_it *stdhash_find(const stdhash *h, stdhash_it *it, const void *key);
-inline stdhash_it *stdhash_insert(stdhash *h, stdhash_it *it, const void *key, const void *val);
-inline stdhash_it *stdhash_erase(stdhash_it *erase);
-inline int        stdhash_erase_key(stdhash *h, const void *key);
+STDINLINE void         stdhash_clear(stdhash *h);
 
-/* Equals and hashcode function pairs for commonly used key types */
-/* key type is int or uint */
-stdbool stdhash_int_equals(const void *int1, const void *int2);
-size_t  stdhash_int_hashcode(const void *kint);
+STDINLINE stdcode      stdhash_reserve(stdhash *h, stdsize num_elems);
+STDINLINE stdcode      stdhash_rehash(stdhash *h);
 
-/* key type is a C string (key type is pointer to a null terminated array of characters) */
-stdbool stdhash_str_equals(const void *str_ptr1, const void *str_ptr2);
-size_t  stdhash_str_hashcode(const void *str_ptr);
+/* Dictionary Operations: O(1) expected, O(n) worst case */
+
+STDINLINE stdit *      stdhash_find(const stdhash *h, stdit *it, const void *key);
+STDINLINE stdbool      stdhash_contains(const stdhash *h, const void *key);
+
+STDINLINE stdcode      stdhash_put(stdhash *h, stdit *it, const void *key, const void *val);
+STDINLINE stdcode      stdhash_put_n(stdhash *h, stdit *it, const void *keys, const void *vals, stdsize num_put);
+STDINLINE stdcode      stdhash_put_seq(stdhash *h, stdit *it, const stdit *b, const stdit *e);
+STDINLINE stdcode      stdhash_put_seq_n(stdhash *h, stdit *it, const stdit *b, stdsize num_put);
+
+STDINLINE stdcode      stdhash_insert(stdhash *h, stdit *it, const void *key, const void *val);
+STDINLINE stdcode      stdhash_insert_n(stdhash *h, stdit *it, const void *keys, const void *vals, stdsize num_insert);
+STDINLINE stdcode      stdhash_insert_seq(stdhash *h, stdit *it, const stdit *b, const stdit *e);
+STDINLINE stdcode      stdhash_insert_seq_n(stdhash *h, stdit *it, const stdit *b, stdsize num_insert);
+STDINLINE stdcode      stdhash_insert_rep(stdhash *h, stdit *it, const void *key, const void *val, stdsize num_times);
+
+STDINLINE void         stdhash_erase(stdhash *h, stdit *it);
+STDINLINE void         stdhash_erase_key(stdhash *h, const void *key);
+
+/* Type Information + Options */
+
+STDINLINE stdsize      stdhash_key_size(const stdhash *h);
+STDINLINE stdsize      stdhash_val_size(const stdhash *h);
+
+STDINLINE stdcmp_fcn   stdhash_key_cmp(const stdhash *h);  
+STDINLINE stdhcode_fcn stdhash_key_hcode(const stdhash *h);
+
+#define STDHASH_OPTS_DEFAULTS       0x0
+#define STDHASH_OPTS_NO_AUTO_GROW   0x1
+#define STDHASH_OPTS_NO_AUTO_SHRINK 0x2
+
+STDINLINE stduint8     stdhash_get_opts(const stdhash *h);
+STDINLINE stdcode      stdhash_set_opts(stdhash *h, stduint8 opts);
+
+/* Iterator Fcns */
+
+STDINLINE stdsize      stdhash_it_key_size(const stdit *it);
+STDINLINE stdsize      stdhash_it_val_size(const stdit *it);
+
+STDINLINE const void * stdhash_it_key(const stdit *it);
+STDINLINE void *       stdhash_it_val(const stdit *it);
+STDINLINE stdbool      stdhash_it_eq(const stdit *it1, const stdit *it2);
+
+STDINLINE stdit *      stdhash_it_next(stdit *it);
+STDINLINE stdit *      stdhash_it_advance(stdit *it, stdsize num_advance);
+STDINLINE stdit *      stdhash_it_prev(stdit *it);
+STDINLINE stdit *      stdhash_it_retreat(stdit *it, stdsize num_retreat);
 
 # ifdef __cplusplus
 }
 # endif
 
-#endif /* ifdef STDRAND_EXISTS */
 #endif

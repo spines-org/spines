@@ -18,8 +18,14 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2007 The Johns Hopkins University.
  * All rights reserved.
+ *
+ * Major Contributor(s):
+ * --------------------
+ *    John Lane
+ *    Raluca Musaloiu-Elefteri
+ *    Nilo Rivera
  *
  */
 
@@ -27,7 +33,7 @@
 #ifndef HELLO_H
 #define HELLO_H
 
-#define DEAD_LINK_CNT     8 /* Number of hellos unacked until 
+#define DEAD_LINK_CNT     10 /* Number of hellos unacked until 
 			       declaring a dead link */
 
 void Init_Connections(void);
@@ -35,6 +41,7 @@ void Send_Hello(int linkid, void* dummy);
 void Send_Hello_Request(int linkid, void* dummy);
 void Send_Hello_Request_Cnt(int linkid, void* dummy);
 void Send_Hello_Ping(int dummy_int, void* dummy);
+void Send_Discovery_Hello_Ping(int dummy_int, void* dummy);
 void Net_Send_Hello(int16 linkid, int mode);
 void Net_Send_Hello_Ping(int32 address);
 void Process_hello_packet(char *buf , int remaining_bytes, int32 sender, 

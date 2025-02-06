@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, The Johns Hopkins University
+/* Copyright (c) 2000-2005, The Johns Hopkins University
  * All rights reserved.
  *
  * The contents of this file are subject to a license (the ``License'')
@@ -23,63 +23,73 @@
 #ifndef stdutil_h_2000_01_17_16_00_08_jschultz_at_cnds_jhu_edu
 #define stdutil_h_2000_01_17_16_00_08_jschultz_at_cnds_jhu_edu
 
-#include <stdio.h>
 #include <stdutil/stddefines.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* debug printf fcn */
-int std_stkfprintf(FILE *stream, int entering, const char *fmt, ...);
+/* string + memory fcns */
 
-/* in-place endian flippers */
-inline void stdflip_endian16(void *dst);
-inline void stdflip_endian32(void *dst);
-inline void stdflip_endian64(void *dst);
-inline void stdflip_endian_n(void *dst, size_t n);
+STDINLINE stdsize   stdstrcpy(char *dst, const char *src);
+STDINLINE stdsize   stdstrcpy_n(char *dst, const char *src, stdsize n);
+
+STDINLINE char *    stdstrdup(const char *dupme, stdsize *duplen);
+STDINLINE char *    stdstrdup_n(const char *dupme, stdsize *duplen, stdsize n);
+
+STDINLINE void *    stdmemdup(const void *dupme, stdsize n);
+
+/* 32b hcode fcns */
+
+STDINLINE stduint32 stdhcode_oaat(const void * buf, stdsize buf_len);
+
+STDINLINE void      stdhcode_oaat_start(stduint32 *hsh, stdsize tot_len);
+STDINLINE void      stdhcode_oaat_churn(stduint32 *hsh, const void * buf, stdsize buf_len);
+STDINLINE void      stdhcode_oaat_stop(stduint32 *hsh);
+
+STDINLINE stduint32 stdhcode_sfh(const void * buf, stdsize buf_len);
+
+STDINLINE void      stdhcode_sfh_start(stduint32 *hsh, stdsize tot_len);
+STDINLINE void      stdhcode_sfh_churn(stduint32 *hsh, const void * buf, stdsize buf_len);
+STDINLINE void      stdhcode_sfh_stop(stduint32 *hsh);
 
 /* uniform random number generators */
-#if defined(stduint16) && defined(stduint32)
-# define STDRAND32_EXISTS
-inline stduint32 stdrand32(stduint16 x[3]);
-inline void      stdrand32_dseed(stduint16 x[3], stduint32 seed);
-inline void      stdrand32_seed(stduint16 x[3], stduint32 seed);
 
-# if defined(stduint64)
-#  define STDRAND64_EXISTS
-inline stduint64 stdrand64(stduint32 x[3]);
-inline void      stdrand64_dseed(stduint32 x[3], stduint64 seed);
-inline void      stdrand64_seed(stduint32 x[3], stduint64 seed);
-# endif
+STDINLINE stduint32 stdrand32(stduint16 x[3]);
+STDINLINE void      stdrand32_seed(stduint16 x[3], stduint32 seed);
+STDINLINE void      stdrand32_dseed(stduint16 x[3], stduint32 seed);
 
-# if defined(stdhsize_t) && (SIZEOF_SIZE_T == 4 || (SIZEOF_SIZE_T == 8 && defined(stduint64)))
-#  define STDRAND_EXISTS
-inline size_t stdrand(stdhsize_t x[3]);
-inline void   stdrand_dseed(stdhsize_t x[3], size_t seed);
-inline void   stdrand_seed(stdhsize_t x[3], size_t seed);
-# endif
-#endif
+STDINLINE stduint64 stdrand64(stduint32 x[3]);
+STDINLINE void      stdrand64_seed(stduint32 x[3], stduint64 seed);
+STDINLINE void      stdrand64_dseed(stduint32 x[3], stduint64 seed);
 
-/* array allocation routines */
-inline int stdget_mem(char **mem, size_t new_size, size_t *high_cap, 
-		      size_t *low_cap, size_t vsize);
-inline int stdgrow_mem(char **mem, size_t new_size, size_t *high_cap, 
-		       size_t *low_cap, size_t vsize);
-inline int stdshrink_mem(char **mem, size_t new_size, size_t *high_cap,
-			 size_t *low_cap, size_t vsize);
+/* in-place host <-> network byte order (endian) flippers */
 
-inline int stdauto_allocate(char **mem, size_t new_size, size_t *high_cap,
-			    size_t *low_cap, size_t vsize);
-inline int stdset_allocate(char **mem, size_t new_cap, size_t *high_cap,
-			   size_t *low_cap, size_t vsize);
+STDINLINE void      stdhton16(void *io);
+STDINLINE void      stdhton32(void *io);
+STDINLINE void      stdhton64(void *io);
+STDINLINE stdcode   stdhton_n(void *io, size_t n);
+
+STDINLINE void      stdntoh16(void *io);
+STDINLINE void      stdntoh32(void *io);
+STDINLINE void      stdntoh64(void *io);
+STDINLINE stdcode   stdntoh_n(void *io, size_t n);
+
+/* unconditional in-place big <-> little byte order (endian) flippers */
+
+STDINLINE void      stdflip16(void *io);
+STDINLINE void      stdflip32(void *io);
+STDINLINE void      stdflip64(void *io);
+STDINLINE void      stdflip_n(void *io, size_t n);
 
 /* powers of 2 utilities */
-inline size_t stdround_down_pow2(size_t roundme);
-inline size_t stdround_up_pow2(size_t roundme);
-inline size_t stdlg_round_down_pow2(size_t roundme);
-inline size_t stdlg_round_up_pow2(size_t roundme);
-inline size_t stdgood_pow2_cap(size_t request_size);
+
+STDINLINE stduint32 stdlg_down(stduint64 x);
+STDINLINE stduint32 stdlg_up(stduint64 x);
+
+STDINLINE stduint64 stdpow2_down(stduint64 x);
+STDINLINE stduint64 stdpow2_up(stduint64 x);
+STDINLINE stduint64 stdpow2_cap(stduint64 x);
 
 #ifdef __cplusplus
 }

@@ -18,8 +18,14 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2007 The Johns Hopkins University.
  * All rights reserved.
+ *
+ * Major Contributor(s):
+ * --------------------
+ *    John Lane
+ *    Raluca Musaloiu-Elefteri
+ *    Nilo Rivera
  *
  */
 
@@ -63,30 +69,14 @@ extern int16 Link_Sessions_Blocked_On;
 extern int Minimum_Window;
 extern int Fast_Retransmit;
 extern int Stream_Fairness;
+extern int Wireless;
+
+extern int Security;
 
 
 /* Local consts */
 
 static const sp_time zero_timeout  = {     0,    0};
-
-
-void	Flip_ack_tail(char *buff, int16 ack_len)
-{
-    reliable_tail *r_tail;
-    int32 *nack;
-    int processed_bytes;
-    
-    r_tail = (reliable_tail*)buff;
-    r_tail->seq_no          = Flip_int32(r_tail->seq_no);
-    r_tail->cummulative_ack = Flip_int32(r_tail->cummulative_ack);
-    processed_bytes = sizeof(reliable_tail);
-    while(processed_bytes < ack_len) {
-	nack = (int32*)(buff+processed_bytes);
-	*nack = Flip_int32(*nack);
-	processed_bytes += sizeof(int32);
-    }
-}
-
 
 
 /***********************************************************/
@@ -128,7 +118,6 @@ int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_typ
     sp_time timeout_val, sum_time, tmp_time, now;
 
     now = E_get_time();
-    /* Save the address of the buffer from the calling function */
 
     /* Increment the reference count */
     inc_ref_cnt(buff);
@@ -150,14 +139,15 @@ int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_typ
 
 
     /* First try to send whatever is in the buffer in front of us, if possible */    
-    /*    if(r_data->flags & CONNECTED_LINK)
-     *	  Send_Much(linkid);
+    if(r_data->flags & CONNECTED_LINK)
+	Send_Much(linkid);
+    
+    /*
+     *    Alarm(DEBUG, "!!! linkid: %d; head: %d; tail: %d; win_size: %5.3f; max_win: %d\n",
+     *	  linkid, r_data->head, r_data->tail, r_data->window_size, r_data->max_window);
+     *    Alarm(DEBUG, "!!! linkid: %d; recv_head: %d; recv_tail: %d; flags: %d\n",
+     *	  linkid, r_data->recv_head, r_data->recv_tail, r_data->flags);
      */
-
-    Alarm(DEBUG, "!!! linkid: %d; head: %d; tail: %d; win_size: %5.3f; max_win: %d\n",
-	  linkid, r_data->head, r_data->tail, r_data->window_size, r_data->max_window);
-    Alarm(DEBUG, "!!! linkid: %d; recv_head: %d; recv_tail: %d; flags: %d\n",
-	  linkid, r_data->recv_head, r_data->recv_tail, r_data->flags);
 
     /* If there is no more room in the window, or the link is not valid yet, 
      * stick the message in the sending buffer */
@@ -172,10 +162,12 @@ int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_typ
 	buf_cell->pack_type = pack_type;
 	buf_cell->buff = buff;
 	buf_cell->seq_no = r_tail->seq_no;
+
 	stdcarr_push_back(&r_data->msg_buff, &buf_cell);
-	
-	Alarm(DEBUG, "IN buff: seq: %d; tail: %d; head: %d; buff: %d; win: %5.3f\n", 
-	      r_tail->seq_no, r_data->tail, r_data->head, stdcarr_size(&r_data->msg_buff), r_data->window_size);
+	/*	
+	 * Alarm(DEBUG, "IN buff: seq: %d; tail: %d; head: %d; buff: %d; win: %5.3f\n", 
+	 *     r_tail->seq_no, r_data->tail, r_data->head, stdcarr_size(&r_data->msg_buff), r_data->window_size);
+	 */
 	
 	if(stdcarr_size(&r_data->msg_buff) > MAX_BUFF_LINK) {
 	    if(Link_Sessions_Blocked_On == -1) {
@@ -185,31 +177,28 @@ int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_typ
 	}
 
 	/* Alarm(PRINT, "buff: %d\n", stdcarr_size(&r_data->msg_buff)); */
-
-	/* Resend the tail if there is no room in the window and there are packets buffered. 
-	 * It is likely that there will be a timeout */	
-	if(((stdcarr_size(&r_data->msg_buff) >= (int)r_data->window_size) && 
-	    (r_data->tail - r_data->last_tail_resent >= (int)(r_data->window_size/2)))||
-	   ((stdcarr_size(&r_data->msg_buff) >= (int)(2*r_data->window_size))&&
-	    (r_data->tail - r_data->last_tail_resent >= 1))) {
-	    r_data->last_tail_resent = r_data->tail;
-	    if(r_data->nack_buff == NULL) {
-		if((r_data->nack_buff = (char*) new(PACK_BODY_OBJ))==NULL) {
-		    Alarm(EXIT, "Process_Ack(): Cannot allocte pack_body object\n");
-		}	
-		else
-		    Alarm(DEBUG, "nack_buff not empty; nack_len: %d\n", r_data->nack_len);
+	if (r_data->flags & CONNECTED_LINK) {
+	    /* Resend the tail if there is no room in the window and there are packets buffered. 
+	     * It is likely that there will be a timeout */	
+	    if(((stdcarr_size(&r_data->msg_buff) >= (unsigned int)r_data->window_size) && 
+		(r_data->tail - r_data->last_tail_resent >= (unsigned int)(r_data->window_size/2)))||
+	       ((stdcarr_size(&r_data->msg_buff) >= (unsigned int)(2*r_data->window_size))&&
+		(r_data->tail - r_data->last_tail_resent >= 1))) {
+		r_data->last_tail_resent = r_data->tail;
+		if(r_data->nack_buff == NULL) {
+		    if((r_data->nack_buff = (char*) new(PACK_BODY_OBJ))==NULL) {
+			Alarm(EXIT, "Process_Ack(): Cannot allocte pack_body object\n");
+		    }	
+		}
+		if(r_data->nack_len + sizeof(int32) < sizeof(packet_body)) {
+		    memcpy(r_data->nack_buff+r_data->nack_len, (char*)(&r_data->tail), 
+			   sizeof(int32));
+		    r_data->nack_len += sizeof(int32);
+		    r_data->cong_flag = 0;
+		}
+		E_queue(Send_Nack_Retransm, (int)linkid, NULL, zero_timeout);
 	    }
-	    if(r_data->nack_len + sizeof(int32) < sizeof(packet_body)) {
-		memcpy(r_data->nack_buff+r_data->nack_len, (char*)(&r_data->tail), 
-		       sizeof(int32));
-		r_data->nack_len += sizeof(int32);
-		r_data->cong_flag = 0;
-	    }
-	    Alarm(DEBUG, "Resending the tail... %d\n", r_data->tail);
-	    E_queue(Send_Nack_Retransm, (int)linkid, NULL, zero_timeout);	    
 	}
-	
 	
 	return(0);
     }   
@@ -225,17 +214,19 @@ int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_typ
     r_data->window[r_tail->seq_no%MAX_WINDOW].timestamp = now;
     r_data->window[r_tail->seq_no%MAX_WINDOW].seq_no = r_tail->seq_no;
     r_data->window[r_tail->seq_no%MAX_WINDOW].resent = 0;
+
     r_data->head = r_tail->seq_no+1;
 
-    Alarm(DEBUG, " IN wind: seq: %d; tail: %d; head: %d\n", 
-	  r_tail->seq_no, r_data->tail, r_data->head);
+    /*
+     *    Alarm(DEBUG, " IN wind: seq: %d; tail: %d; head: %d\n", 
+     *	  r_tail->seq_no, r_data->tail, r_data->head);
+     */
 
     /* If there is already an ack to be sent on this link, cancel it, 
      * as this packet will contain the ack info. */
     if(r_data->scheduled_ack == 1) {
 	r_data->scheduled_ack = 0;
 	E_dequeue(Send_Ack, (int)linkid, NULL);
-	Alarm(DEBUG, "Ack optimization successfull !!!\n");    
     }
 
 
@@ -263,7 +254,6 @@ int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_typ
 		ack_len += sizeof(int32);
 		r_data->recv_window[i%MAX_WINDOW].flag = NACK_CELL;
 		r_data->recv_window[i%MAX_WINDOW].nack_sent = now;
-		Alarm(DEBUG, "NACK sent: %d\n", i);
 	    }
 	}
 	else if(r_data->recv_window[i%MAX_WINDOW].flag == NACK_CELL) {
@@ -283,14 +273,12 @@ int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_typ
 		p_nack += sizeof(int32);
 		ack_len += sizeof(int32);
 		r_data->recv_window[i%MAX_WINDOW].nack_sent = now;
-		Alarm(DEBUG, "%%% NACK sent again: %d !\n", i);
 	    }
 	}
     }
 
 
-    scat->num_elements = 2; /* For now there are only two elements in 
-			      the scatter */
+    scat->num_elements = 2; 
     scat->elements[0].len = sizeof(packet_header);
     scat->elements[0].buf = (char *) hdr;
     scat->elements[1].len = buff_len + ack_len;  
@@ -306,16 +294,30 @@ int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_typ
 
     /* Sending the data */
     if(network_flag == 1) {
-	ret = DL_send(Links[linkid]->chan, 
-		      Links[linkid]->other_side_node->address,
-		      Links[linkid]->port, 
-		      scat);
+#ifdef SPINES_SSL
+	if (!Security) {
+#endif
+	    ret = DL_send(Links[linkid]->chan, 
+			  Links[linkid]->other_side_node->address,
+			  Links[linkid]->port, 
+			  scat);
+#ifdef SPINES_SSL
+	} else {
+	    ret = DL_send_SSL(Links[linkid]->chan,
+			      Links[linkid]->link_node_id,
+			      Links[linkid]->other_side_node->address,
+			      Links[linkid]->port, 
+			      scat);
+        }
+#endif
+
+
 	
-	Alarm(DEBUG, "Sent: data: %d; ack: %d; hdr: %d; total: %d\n",
-	      buff_len, ack_len, sizeof(packet_header), ret);
+        Alarm(DEBUG, "Sent: data: %d; ack: %d; hdr: %d; total: %d\n",
+              buff_len, ack_len, sizeof(packet_header), ret);
     }
     else {
-	ret = 0;
+        ret = 0;
     }
 
     dispose(scat->elements[0].buf);
@@ -342,12 +344,7 @@ int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_typ
     if(timeout_val.sec > DEAD_LINK_CNT)
 	timeout_val.sec = DEAD_LINK_CNT;
 
-
-    Alarm(DEBUG, "---timeout sec: %d; usec: %d\n",
-	  timeout_val.sec, timeout_val.usec);
-    
     E_queue(Reliable_timeout, (int)linkid, NULL, timeout_val);
-
     r_data->scheduled_timeout = 1;
 
     return ret;
@@ -382,7 +379,7 @@ void Send_Much(int16 linkid)
     Buffer_Cell *buf_cell;
     reliable_tail *r_tail;
     char *p_nack;
-    stdcarr_it it;
+    stdit it;
     char *send_buff;
     int16 data_len;
     int16 ack_len;
@@ -451,7 +448,7 @@ void Send_Much(int16 linkid)
 	data_len = buf_cell->data_len;
 	ack_len = sizeof(reliable_tail);
 	pack_type = buf_cell->pack_type;
-
+	    
 	if((buff_size > MAX_BUFF_LINK/4)&&(buff_size <= MAX_BUFF_LINK/2)) {
 	    if((pack_type & ECN_DATA_MASK) == 0) {
 		pack_type = pack_type | ECN_DATA_T1;
@@ -552,15 +549,27 @@ void Send_Much(int16 linkid)
 	scat.elements[1].len = data_len + ack_len;    
 	scat.elements[1].buf = send_buff;
 
-	/* Sending the data */
-	{
-	    ret = DL_send(Links[linkid]->chan, 
+        /* Sending the data */
+#ifdef SPINES_SSL		
+	if (!Security) {
+#endif
+		ret = DL_send(Links[linkid]->chan, 
+			      Links[linkid]->other_side_node->address,
+			      Links[linkid]->port, 
+			      &scat);
+#ifdef SPINES_SSL
+	} else {
+		ret = DL_send_SSL(Links[linkid]->chan, 
+			  Links[linkid]->link_node_id,
 			  Links[linkid]->other_side_node->address,
 			  Links[linkid]->port, 
 			  &scat);
-	    Alarm(DEBUG, "Sent: data: %d; ack: %d; hdr: %d; total: %d\n",
-		  data_len, ack_len, sizeof(packet_header), ret);
 	}
+#endif
+
+	Alarm(DEBUG, "Sent: data: %d; ack: %d; hdr: %d; total: %d\n",
+	      data_len, ack_len, sizeof(packet_header), ret);
+	
     } 
 
     if(Link_Sessions_Blocked_On == linkid) {
@@ -583,6 +592,9 @@ void Send_Much(int16 linkid)
     }
     if(timeout_val.sec == 0 && timeout_val.usec < 2000) {
 	timeout_val.usec = 2000;
+    }
+    if(Wireless && timeout_val.sec == 0 && timeout_val.usec < 10000) {
+	timeout_val.usec = 10000;
     }
 
     timeout_val.sec  *= r_data->timeout_multiply;
@@ -637,7 +649,6 @@ void Send_Ack(int linkid, void* dummy)
     int ret;
     sp_time sum_time, tmp_time, now;
 
-
     now = E_get_time();
     /* Getting Link and protocol data from linkid */
     lk = Links[linkid];
@@ -659,10 +670,6 @@ void Send_Ack(int linkid, void* dummy)
     r_tail->seq_no = 0;
     r_tail->cummulative_ack = r_data->recv_tail;
 
-    Alarm(DEBUG, "%d -- sending ACK: %d\n", linkid, r_data->recv_tail);
-
-
-
     ack_len = sizeof(reliable_tail); 
     /* Add NACKs to the reliable tail */
     p_nack = (char*)r_tail;
@@ -678,7 +685,6 @@ void Send_Ack(int linkid, void* dummy)
 		ack_len += sizeof(int32);
 		r_data->recv_window[i%MAX_WINDOW].flag = NACK_CELL;
 		r_data->recv_window[i%MAX_WINDOW].nack_sent = now;
-		Alarm(DEBUG, "NACK sent: %d !\n", i);
 	    }
 	}
 	else if(r_data->recv_window[i%MAX_WINDOW].flag == NACK_CELL) {
@@ -698,7 +704,6 @@ void Send_Ack(int linkid, void* dummy)
 		p_nack += sizeof(int32);
 		ack_len += sizeof(int32);
 		r_data->recv_window[i%MAX_WINDOW].nack_sent = now;
-		Alarm(DEBUG, "%%% NACK sent again: %d !\n", i);
 	    }
 	}
     }
@@ -720,13 +725,24 @@ void Send_Ack(int linkid, void* dummy)
 
     /* Sending the ack*/
     if(network_flag == 1) {
-	ret = DL_send(Links[linkid]->chan, 
-		      Links[linkid]->other_side_node->address,
-		      Links[linkid]->port, 
-		      &scat);
-	
-	Alarm(DEBUG, "Sent: data: %d; ack: %d; hdr: %d; total: %d\n",
-	      data_len, ack_len, sizeof(packet_header), ret);
+#ifdef SPINES_SSL	    
+        if (!Security) {
+#endif
+	    ret = DL_send(Links[linkid]->chan, 
+			  Links[linkid]->other_side_node->address,
+			  Links[linkid]->port, 
+			  &scat);
+#ifdef SPINES_SSL
+        } else {
+	    ret = DL_send_SSL(Links[linkid]->chan, 
+			      Links[linkid]->link_node_id,
+			      Links[linkid]->other_side_node->address,
+			      Links[linkid]->port,
+			      &scat);
+        }
+#endif
+        Alarm(DEBUG, "Sent: data: %d; ack: %d; hdr: %d; total: %d\n",
+              data_len, ack_len, sizeof(packet_header), ret);
     }
 }
 
@@ -768,9 +784,7 @@ void Reliable_timeout(int linkid, void *dummy)
     int32u i, cur_seq;
     sp_time timeout_val, sum_time, tmp_time, now;
 
-	
     now = E_get_time();
-   
 
     /* Getting Link and protocol data from linkid */
     lk = Links[linkid];
@@ -826,13 +840,13 @@ void Reliable_timeout(int linkid, void *dummy)
     }
 
     /* Congestion control */
-    r_data->ssthresh = r_data->window_size - stream_window/2;
-    if(r_data->ssthresh < Minimum_Window)
+    r_data->ssthresh = (unsigned int)(r_data->window_size - stream_window/2);
+    if(r_data->ssthresh < (unsigned int)Minimum_Window)
 	r_data->ssthresh = Minimum_Window;
 
     r_data->window_size = r_data->window_size - stream_window + 1;
     if(r_data->window_size < Minimum_Window)
-	r_data->window_size = Minimum_Window;
+	r_data->window_size = (float)Minimum_Window;
    
     Alarm(DEBUG, "window adjusted: %5.3f timeout; tail: %d\n", r_data->window_size, r_data->tail);
 
@@ -868,7 +882,10 @@ void Reliable_timeout(int linkid, void *dummy)
 	pack_type = r_data->window[cur_seq%MAX_WINDOW].pack_type;
 	send_buff = r_data->window[cur_seq%MAX_WINDOW].buff;
 	seq_no    = r_data->window[cur_seq%MAX_WINDOW].seq_no;
+
 	r_data->window[cur_seq%MAX_WINDOW].resent = 1;
+
+
 	
 	if(send_buff == NULL)
 	    Alarm(DEBUG, "!!!! ");
@@ -937,15 +954,26 @@ void Reliable_timeout(int linkid, void *dummy)
 	scat->elements[1].buf = send_buff;
 	
 	/* Sending the data */
-	if(network_flag == 1) {
-	    ret = DL_send(Links[linkid]->chan, 
-			  Links[linkid]->other_side_node->address,
-			  Links[linkid]->port, 
-			  scat);
-	    
-	    Alarm(DEBUG, "Sent: data: %d; ack: %d; hdr: %d; total: %d\n",
-		  data_len, ack_len, sizeof(packet_header), ret);
-	}
+        if(network_flag == 1) {
+#ifdef SPINES_SSL
+	    if (!Security) {
+#endif
+	        ret = DL_send(Links[linkid]->chan, 
+			      Links[linkid]->other_side_node->address,
+			      Links[linkid]->port, 
+			      scat);
+#ifdef SPINES_SSL
+	    } else {
+	        ret = DL_send_SSL(Links[linkid]->chan, 
+				  Links[linkid]->link_node_id,
+				  Links[linkid]->other_side_node->address,
+				  Links[linkid]->port, 
+				  scat);
+	    }
+#endif
+            Alarm(DEBUG, "Sent: data: %d; ack: %d; hdr: %d; total: %d\n",
+                  data_len, ack_len, sizeof(packet_header), ret);
+        }
     }
 
     dispose(scat->elements[0].buf);
@@ -959,6 +987,9 @@ void Reliable_timeout(int linkid, void *dummy)
     }
     if(timeout_val.sec == 0 && timeout_val.usec < 2000) {
 	timeout_val.usec = 2000;
+    }
+    if(Wireless && timeout_val.sec == 0 && timeout_val.usec < 10000) {
+	timeout_val.usec = 10000;
     }
 
     /* Increase the timeout exponentially */
@@ -1023,7 +1054,7 @@ void Send_Nack_Retransm(int linkid, void *dummy)
     int32u i;
     sp_time sum_time, tmp_time, now;
 
-
+    
     now = E_get_time();
 
     /* Getting Link and protocol data from linkid */
@@ -1086,13 +1117,13 @@ void Send_Nack_Retransm(int linkid, void *dummy)
 
     if(r_data->cong_flag == 1) {
 	/* Congestion control */
-	r_data->ssthresh = r_data->window_size - stream_window/2;
-	if(r_data->ssthresh < Minimum_Window) {
+	r_data->ssthresh = (unsigned int)(r_data->window_size - stream_window/2);
+	if(r_data->ssthresh < (unsigned int)Minimum_Window) {
 	    r_data->ssthresh = Minimum_Window;
 	}
 	r_data->window_size = r_data->window_size - stream_window/2;
 	if(r_data->window_size < Minimum_Window) {
-	    r_data->window_size = Minimum_Window;
+	    r_data->window_size = (float)Minimum_Window;
 	}
 	Alarm(DEBUG, "window adjusted: %5.3f nack\n", r_data->window_size);
     }
@@ -1136,6 +1167,7 @@ void Send_Nack_Retransm(int linkid, void *dummy)
 	pack_type = r_data->window[nack_seq%MAX_WINDOW].pack_type;
 	send_buff = r_data->window[nack_seq%MAX_WINDOW].buff;
 	seq_no    = r_data->window[nack_seq%MAX_WINDOW].seq_no;
+
 	r_data->window[nack_seq%MAX_WINDOW].resent = 1;
 
 
@@ -1202,18 +1234,30 @@ void Send_Nack_Retransm(int linkid, void *dummy)
 	scat->elements[1].buf = send_buff;
 	
 	/* Sending the data */
-	if(network_flag == 1) {
-	    ret = DL_send(Links[linkid]->chan, 
-			  Links[linkid]->other_side_node->address,
-			  Links[linkid]->port, 
-			  scat);
-	    Alarm(DEBUG, "^^^NACK answered: %d; len: %d; j: %d\n", 
-		  nack_seq, r_data->nack_len, j);
-	    
-	    Alarm(DEBUG, "Sent: data: %d; ack: %d; hdr: %d; total: %d\n",
-		  data_len, ack_len, sizeof(packet_header), ret);
-	}
+        if(network_flag == 1) {
+#ifdef SPINES_SSL
+	    if (!Security) {
+#endif
+	        ret = DL_send(Links[linkid]->chan,
+			      Links[linkid]->other_side_node->address,
+			      Links[linkid]->port, 
+			      scat);
+#ifdef SPINES_SSL
+	    } else {
 
+	        ret = DL_send_SSL(Links[linkid]->chan, 
+				  Links[linkid]->link_node_id,
+				  Links[linkid]->other_side_node->address,
+				  Links[linkid]->port, 
+				  scat);
+	    }
+#endif
+            Alarm(DEBUG, "^^^NACK answered: %d; len: %d; j: %d\n", 
+                  nack_seq, r_data->nack_len, j);
+            
+            Alarm(DEBUG, "Sent: data: %d; ack: %d; hdr: %d; total: %d\n",
+                  data_len, ack_len, sizeof(packet_header), ret);
+        }
     }
 
     dispose(scat->elements[0].buf);
@@ -1270,11 +1314,9 @@ int Process_Ack(int16 linkid, char *buff, int16u ack_len, int32u type)
 
     r_data = lk->r_data;
 
-    now = E_get_time();
-
     if(!Same_endian(type)) {
+	/* Flip for this function only */
 	type = Flip_int32(type);
-	Flip_ack_tail(buff, ack_len);
     }
 
     if(ack_len > sizeof(reliable_tail)) {
@@ -1287,8 +1329,6 @@ int Process_Ack(int16 linkid, char *buff, int16u ack_len, int32u type)
 	    if((r_data->nack_buff = (char*) new(PACK_BODY_OBJ))==NULL) {
 		Alarm(EXIT, "Process_Ack(): Cannot allocte pack_body object\n");
 	    }	
-	    else
-		Alarm(DEBUG, "nack_buff not empty; nack_len: %d\n", r_data->nack_len);
 	}
 	if(r_data->nack_len + ack_len - sizeof(reliable_tail) <
 	   sizeof(packet_body)) {
@@ -1303,10 +1343,11 @@ int Process_Ack(int16 linkid, char *buff, int16u ack_len, int32u type)
     /* Check the cummulative acknowledgement */
     r_tail = (reliable_tail*)buff;
 
-    Alarm(DEBUG, "%d -- msg: cm_ack: %d; seq: %d; tail: %d; head: %d; recv_tail: %d; wind: %5.3f\n", 
-	  linkid, r_tail->cummulative_ack, r_tail->seq_no, r_data->tail, r_data->head,
-	  r_data->recv_tail, r_data->window_size);
-
+    /*
+     *Alarm(DEBUG, "%d -- msg: cm_ack: %d; seq: %d; tail: %d; head: %d; recv_tail: %d; wind: %5.3f\n", 
+     *	  linkid, r_tail->cummulative_ack, r_tail->seq_no, r_data->tail, r_data->head,
+     *	  r_data->recv_tail, r_data->window_size);
+     */
 
     if(r_tail->cummulative_ack > r_data->head) {
         /* This is from another movie...  got an ack for a packet
@@ -1315,23 +1356,27 @@ int Process_Ack(int16 linkid, char *buff, int16u ack_len, int32u type)
 	 * ack from the other site that doesn't even know I crashed.
 	 * Hello Protocol will take care of this. */
 
-	Alarm(PRINT, "Warning ! got pkt from another movie...\n");
         return(0);
     }
 
 
     if(r_tail->cummulative_ack > r_data->tail) {
-	if((r_data->window[(r_tail->cummulative_ack-1)%MAX_WINDOW].buff != NULL)&&
-	   (r_data->window[(r_tail->cummulative_ack-1)%MAX_WINDOW].resent == 0)) {
-	    diff = E_sub_time(now, r_data->window[(r_tail->cummulative_ack-1)%MAX_WINDOW].timestamp);
-	    rtt_estimate = diff.sec * 1000000 + diff.usec;
-	    if(r_data->rtt == 0) {
-		r_data->rtt = rtt_estimate;
-	    }
-	    else {
-		r_data->rtt = 0.2*rtt_estimate + 0.8*r_data->rtt;
+	if(r_tail->cummulative_ack%10 == 0) {
+	    /* re-compute the RTT only every 10 packets */
+	    if((r_data->window[(r_tail->cummulative_ack-1)%MAX_WINDOW].buff != NULL)&&
+	       (r_data->window[(r_tail->cummulative_ack-1)%MAX_WINDOW].resent == 0)) {
+		now = E_get_time();
+		diff = E_sub_time(now, r_data->window[(r_tail->cummulative_ack-1)%MAX_WINDOW].timestamp);
+		rtt_estimate = diff.sec * 1000000 + diff.usec;
+		if(r_data->rtt == 0) {
+		    r_data->rtt = rtt_estimate;
+		}
+		else {
+		    r_data->rtt = (int)(0.2*rtt_estimate + 0.8*r_data->rtt);
+		}
 	    }
 	}
+
 	for(i=r_data->tail; i<r_tail->cummulative_ack; i++) {
 	    if(r_data->window[i%MAX_WINDOW].buff != NULL) {
 		dec_ref_cnt(r_data->window[i%MAX_WINDOW].buff);
@@ -1384,27 +1429,23 @@ int Process_Ack(int16 linkid, char *buff, int16u ack_len, int32u type)
 		    /* Slow start */
 		    r_data->window_size += 1;
 		    if(r_data->window_size > r_data->max_window) {
-			r_data->window_size = r_data->max_window;
+			r_data->window_size = (float)r_data->max_window;
 		    }
 		}
 		else {
 		    /* Congestion avoidance */
 		    r_data->window_size += 1/stream_window;
 		    if(r_data->window_size > r_data->max_window) {
-			r_data->window_size = r_data->max_window;
+			r_data->window_size = (float)r_data->max_window;
 		    }
 		}
-		if(r_data->window_size != old_window)
-		    Alarm(DEBUG, "window adjusted: %5.3f ack\n", r_data->window_size);
 	    }	    
 	}		    
 	/* This was a fresh brand new ack. See if it freed some window slots
 	 * and we can send some more stuff */	
-	E_queue(Try_to_Send, (int)linkid, NULL, zero_timeout);
-    }
-    else if(r_tail->cummulative_ack == r_data->tail) {
-	if(r_tail->cummulative_ack != 0)
-	    Alarm(DEBUG, "Duplicate ack: %d\n", r_tail->cummulative_ack);
+	if(!stdcarr_empty(&(r_data->msg_buff))) {
+	    E_queue(Try_to_Send, (int)linkid, NULL, zero_timeout);
+	}
     }
 
     /* Reset the timeout exponential back-off */
@@ -1425,12 +1466,15 @@ int Process_Ack(int16 linkid, char *buff, int16u ack_len, int32u type)
 	timeout_val.sec = (r_data->rtt*2)/1000000;
 	timeout_val.usec = (r_data->rtt*2)%1000000;
 	
-	if(timeout_val.sec == 0 && timeout_val.usec == 0) {
-	    timeout_val.sec = 1;
-	}
-	else if(timeout_val.sec == 0 && timeout_val.usec < 2000) {
+	if(timeout_val.sec == 0 && timeout_val.usec < 2000) {
 	    timeout_val.usec = 2000;
 	}
+	else if(timeout_val.sec == 0 && timeout_val.usec == 0) {
+	    timeout_val.sec = 1;
+	}
+    if(Wireless && timeout_val.sec == 0 && timeout_val.usec < 10000) {
+	timeout_val.usec = 10000;
+    }
 
 	/* Alarm(DEBUG, "---timeout sec: %d; usec: %d\n",
 	 *     timeout_val.sec, timeout_val.usec);
@@ -1440,15 +1484,13 @@ int Process_Ack(int16 linkid, char *buff, int16u ack_len, int32u type)
 	
 	r_data->scheduled_timeout = 1;
     }
-    else {
-    	Alarm(DEBUG, "+++ No need for a timeout ! tail: %d, head: %d\n",
-	      r_data->tail, r_data->head);
-    }
 
     if(Is_link_ack(type)) {  /* There is no data in this packet */
-	Alarm(DEBUG, "%d -- ACK: cm_ack: %d; seq: %d; tail: %d; recv_tail: %d; wind: %5.3f\n", 
-	      linkid, r_tail->cummulative_ack, r_tail->seq_no, r_data->tail, 
-	      r_data->recv_tail, r_data->window_size);
+	/*
+	 *	Alarm(DEBUG, "%d -- ACK: cm_ack: %d; seq: %d; tail: %d; recv_tail: %d; wind: %5.3f\n", 
+	 *	      linkid, r_tail->cummulative_ack, r_tail->seq_no, r_data->tail, 
+	 *	      r_data->recv_tail, r_data->window_size);
+	 */
 	return(-1);    
     }
     /* Now look at the receiving window */
@@ -1456,7 +1498,6 @@ int Process_Ack(int16 linkid, char *buff, int16u ack_len, int32u type)
        (r_tail->seq_no < r_data->recv_tail))  {
 	/* We already got this message (and probably processed it also)
 	 * That's it, we already processed this message, therefore return 0 */
-	Alarm(DEBUG, "reliable_link: retransm... %d\n", r_tail->seq_no);
 	return(0);
     }
     
@@ -1472,9 +1513,11 @@ int Process_Ack(int16 linkid, char *buff, int16u ack_len, int32u type)
 	    break;
 	r_data->recv_window[r_data->recv_tail%MAX_WINDOW].flag = EMPTY_CELL;
     }
-    Alarm(DEBUG, "%d -- PKT: cm_ack: %d; seq: %d; tail: %d; recv_tail: %d; wind: %5.3f\n", 
-	  linkid, r_tail->cummulative_ack, r_tail->seq_no, r_data->tail, 
-	  r_data->recv_tail, r_data->window_size);
+    /*
+     *   Alarm(DEBUG, "%d -- PKT: cm_ack: %d; seq: %d; tail: %d; recv_tail: %d; wind: %5.3f\n", 
+     *	  linkid, r_tail->cummulative_ack, r_tail->seq_no, r_data->tail, 
+     *	  r_data->recv_tail, r_data->window_size);
+     */
 
     return(1);
 }
@@ -1511,14 +1554,14 @@ void Try_to_Send(int linkid, void* dummy)
 
 void Process_ack_packet(int32 sender, char *buf, int16u ack_len, int32u type, int mode)
 {
-    stdhash_it it;
+    stdit it;
     Node *sender_node;
     Link *lk = NULL;
     int32 sender_ip = sender;
 
     /* Check if we knew about the sender of thes message */
     stdhash_find(&All_Nodes, &it, &sender_ip);
-    if(stdhash_it_is_end(&it)) { /* I had no idea about the sender node */
+    if(stdhash_is_end(&All_Nodes, &it)) { /* I had no idea about the sender node */
 	/* This guy should first send hello messages to setup 
 	   the link, etc. The only reason for getting this ack
 	   is that I crashed, recovered, and the sender didn't even notice. 
@@ -1546,38 +1589,3 @@ void Process_ack_packet(int32 sender, char *buf, int16u ack_len, int32u type, in
     } 
 }   
 
-void Pad_Link(int linkid, void *dummy) 
-{
-    Link *lk;
-    Reliable_Data *r_data;
-    udp_header *u_hdr;
-    char *send_buff;
-
-
-    lk = Links[linkid];
-    if(lk->r_data == NULL)
-	    Alarm(EXIT, "Pad_Link: Reliable Data is not defined\n");
-
-    r_data = lk->r_data;
-
-    if(r_data->padded == 1) {
-	return;
-    }
-
-    r_data->padded = 1;
-    
-    if((send_buff = (char*) new_ref_cnt(PACK_BODY_OBJ))==NULL) {
-	Alarm(EXIT, "Pad_Link: Cannot allocte packet_body object\n");
-    }
-
-    u_hdr = (udp_header*)send_buff;
-    u_hdr->source = My_Address;
-    u_hdr->source_port = 0;
-    u_hdr->dest = lk->other_side_node->address;
-    u_hdr->dest_port = 0;
-    u_hdr->len = 0;
-
-    Reliable_Send_Msg(linkid, send_buff, sizeof(udp_header), REL_UDP_DATA_TYPE);
-    
-    dec_ref_cnt(send_buff);
-}

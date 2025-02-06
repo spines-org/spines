@@ -16,18 +16,18 @@
  * License.
  *
  * The Creators of Spread are:
- *  Yair Amir, Michal Miskin-Amir, Jonathan Stanton.
+ *  Yair Amir, Michal Miskin-Amir, Jonathan Stanton, John Schultz.
  *
- *  Copyright (C) 1993-2003 Spread Concepts LLC <spread@spreadconcepts.com>
+ *  Copyright (C) 1993-2006 Spread Concepts LLC <info@spreadconcepts.com>
  *
  *  All Rights Reserved.
  *
  * Major Contributor(s):
  * ---------------
- *    Cristina Nita-Rotaru crisn@cnds.jhu.edu - group communication security.
- *    Theo Schlossnagle    jesus@omniti.com - Perl, skiplists, autoconf.
+ *    Ryan Caudy           rcaudy@gmail.com - contributions to process groups.
+ *    Cristina Nita-Rotaru crisn@cs.purdue.edu - group communication security.
+ *    Theo Schlossnagle    jesus@omniti.com - Perl, autoconf, old skiplist.
  *    Dan Schoenblum       dansch@cnds.jhu.edu - Java interface.
- *    John Schultz         jschultz@cnds.jhu.edu - contribution to process group membership.
  *
  *
  * This file is also licensed by Spread Concepts LLC under the Spines 
@@ -39,7 +39,6 @@
  * or in the file ``LICENSE.txt'' found in this distribution.
  *
  */
-
 
 
 /* memory.c
@@ -93,7 +92,6 @@ typedef struct mem_header_d
         int32    ref_cnt;
         size_t   block_len;
 } mem_header;
-#define MEM_SIZE = sizeof(mem_header);
 
 /* NOTE: Only num_obj_inpool is updated when debugging is turned off
  * (i.e. define NDEBUG) it is NECESSARY to track buffer pool size
@@ -117,7 +115,10 @@ typedef struct mem_info_d
 
 static mem_info Mem[MAX_MEM_OBJECTS];
 
-static bool Initialized;
+#ifndef NDEBUG
+ static bool Initialized;
+#endif
+
 
 #ifdef  SPREAD_STATUS
 static bool MemStatus_initialized;
@@ -204,27 +205,8 @@ unsigned int Mem_max_bytes(int32u objtype)
 /**********************
  * Internal functions
  **********************/
-/* New comment
- * by casting to (char *) we avoid the requirement that it be called with void *. 
- */
 
-/* OBSOLETE COMMENT! Size might not be 8.
- *
- * MUST BE CALLED WITH A VOID * pointer.  OTHERWISE NASTY MEMORY CORRUPTION OCCURS!!!
- * The value 8 is used here because obj is a void * so it is assumed to point to an
- * array of chars (don't ask me why but it makes some sense)
- * thus we subtract 8 chars (8 * 1 byte chars = 8 bytes)
- * which is the size of the header
- */
-#ifdef ARCH_PC_WIN95 
-#       define mem_header_ptr(obj)      ( (mem_header *) (((char *)obj) - sizeof(mem_header) ) )
-#else
-#ifdef ARCH_SGI_IRIX 
-#       define mem_header_ptr(obj)      ( (mem_header *) (((char *)obj) - sizeof(mem_header) ) )
-#else
-#       define mem_header_ptr(obj)         ( (mem_header *) (((char *)obj) - sizeof(mem_header) ) ) 
-#endif /* ARCH_SGI_IRIX */
-#endif /* ARCH_PC_WIN95 */
+#define mem_header_ptr(obj)   ( (mem_header *) (((char *)obj) - sizeof(mem_header)) )
 
 void    Mem_init_status()
 {
@@ -340,6 +322,10 @@ int            Mem_init_object(int32u obj_type, int32u size, unsigned int thresh
         Mem[obj_type].exist = TRUE;
         Mem[obj_type].size = size;
         Mem[obj_type].threshold = threshold;
+        /* Only enabled when MEM_DISABLE_CACHE set. Disable threshold so all memory is dellocated at dispose() */
+#ifdef  MEM_DISABLE_CACHE
+        Mem[obj_type].threshold = 0;
+#endif
 #ifndef NDEBUG
         Mem[obj_type].num_obj = 0;
         Mem[obj_type].bytes_allocated = 0;
@@ -357,7 +343,7 @@ int            Mem_init_object(int32u obj_type, int32u size, unsigned int thresh
                 void  ** body_ptr;
                 for(i = initial; i > 0; i--)
                 {
-                        head_ptr = (mem_header *) calloc(1, sizeobj(obj_type) + sizeof(mem_header));
+                        head_ptr = (mem_header *) calloc(1, sizeof(mem_header) + sizeobj(obj_type) );
                         if (head_ptr == NULL) 
                         {
                                 Alarm(MEMORY, "mem_init_object: Failure to calloc an initial object. Returning with existant buffers\n");
@@ -367,8 +353,8 @@ int            Mem_init_object(int32u obj_type, int32u size, unsigned int thresh
 
 
                         head_ptr->obj_type = obj_type;
-			head_ptr->ref_cnt = NO_REF_CNT;
                         head_ptr->block_len = sizeobj(obj_type);
+			head_ptr->ref_cnt = NO_REF_CNT;
                         /* We add 1 because pointer arithm. states a pointer + 1 equals a pointer
                          * to the next element in an array where each element is of a particular size.
                          * in this case that size is 8 (or 12) 
@@ -459,17 +445,15 @@ void *          new(int32u obj_type)
         {
                 mem_header *    head_ptr;
                 
-		/* printf("calloc: %d\n", obj_type); */
-
-                head_ptr = (mem_header *) calloc(1, sizeobj(obj_type) + sizeof(mem_header));
+                head_ptr = (mem_header *) calloc(1, sizeof(mem_header) + sizeobj(obj_type) );
                 if (head_ptr == NULL) 
                 {
                         Alarm(MEMORY, "mem_alloc_object: Failure to calloc an object. Returning NULL object\n");
                         return(NULL);
                 }
                 head_ptr->obj_type = obj_type;
-		head_ptr->ref_cnt  = NO_REF_CNT;
                 head_ptr->block_len = sizeobj(obj_type);
+		head_ptr->ref_cnt  = NO_REF_CNT;
 
 #ifndef NDEBUG
                 Mem[obj_type].num_obj++;
@@ -511,6 +495,7 @@ void *          new(int32u obj_type)
         printf("alloc:objtype = %u:\n", head_ptr->obj_type);
         printf("alloc:blocklen = %u:\n", head_ptr->block_len);
 #endif
+        Alarm(MEMORY, "new: creating pointer 0x%x to object type %d named %s\n", head_ptr + 1, obj_type, Objnum_to_String(obj_type));
 
                 return((void *) (head_ptr + 1));
         } else
@@ -540,75 +525,11 @@ void *          new(int32u obj_type)
         printf("pool:objtype = %u:\n", mem_header_ptr((void *) body_ptr)->obj_type);
         printf("pool:blocklen = %u:\n", mem_header_ptr((void *) body_ptr)->block_len);
 #endif
+                Alarm(MEMORY, "new: reusing pointer 0x%x to object type %d named %s\n", body_ptr, obj_type, Objnum_to_String(obj_type));
 
                 return((void *) (body_ptr));
         }
 }
-
-
-/* Input: a valid type of object
- * Output: a pointer to memory which will hold an object
- * Effects: will only allocate an object from system if none exist in pool
- * The allocated object will have reference counter initiated with 1
- */
-void*          new_ref_cnt(int32 obj_type)
-{
-    void       *object;
-
-    if((object = new(obj_type)) != NULL) {
-	mem_header_ptr(object)->ref_cnt = 1;
-    }
-
-    return(object);
-}
-
-/* Input: a valid pointer to a reference count object
- * Output: the resulting reference count
- * Effects: Increments the reference count of an object
- */
-int             inc_ref_cnt(void *object)
-{
-    assert(object != NULL);
-    assert(mem_header_ptr(object)->ref_cnt > 0);
-    return(++mem_header_ptr(object)->ref_cnt);
-}
-
-
-/* Input: a valid pointer to a reference count object
- * Output: the resulting reference count
- * Effects: Decrements the reference count of an object. 
- * If the resulting reference count is 0, then the object is disposed
- */
-int             dec_ref_cnt(void *object) 
-{
-    int ret;
-
-    if(object == NULL) { return 0; }
-
-    assert(mem_header_ptr(object)->ref_cnt > 0);
-    ret = --mem_header_ptr(object)->ref_cnt;
-    
-    if(ret == 0) {
-	mem_header_ptr(object)->ref_cnt = NO_REF_CNT;
-	dispose(object);
-    }
-    return(ret);
-}            
-
-
-
-/* Input: a valid pointer to a reference count object
- * Output: the reference count of the object
- * Effects: Returns the reference count of an object. 
- */
-int             get_ref_cnt(void *object)
-{
-    if(object == NULL) { return 0; }
-
-    assert(mem_header_ptr(object)->ref_cnt > 0);
-    return(mem_header_ptr(object)->ref_cnt);
-}            
-
 
 
 /* Input: a size of memory block desired
@@ -620,17 +541,23 @@ void *          Mem_alloc( unsigned int length)
         mem_header * head_ptr;
 
         if (length == 0) { return(NULL); }
+        if( !Mem[BLOCK_OBJECT].exist )
+        { 
+                Mem[BLOCK_OBJECT].exist = TRUE;
+                Mem[BLOCK_OBJECT].size = 0;
+                Mem[BLOCK_OBJECT].threshold = 0;
+        }
 
         
-        head_ptr = (mem_header *) calloc(1, length + sizeof(mem_header));
+        head_ptr = (mem_header *) calloc(1, sizeof(mem_header) + length);
         if (head_ptr == NULL) 
         {
                 Alarm(MEMORY, "mem_alloc: Failure to calloc a block. Returning NULL block\n");
                 return(NULL);
         }
         head_ptr->obj_type = BLOCK_OBJECT;
-	head_ptr->ref_cnt = NO_REF_CNT;
         head_ptr->block_len = length;
+	head_ptr->ref_cnt = NO_REF_CNT;
 
 #ifndef NDEBUG
 
@@ -678,22 +605,27 @@ void *          Mem_alloc( unsigned int length)
 void            dispose(void *object)
 {
         int32u obj_type;
+	int32  ref_cnt;
 
         if (object == NULL) { return; }
 
         obj_type = mem_header_ptr(object)->obj_type;
+	ref_cnt  = mem_header_ptr(object)->ref_cnt;
+
 #ifdef TESTING
         printf("disp:object = 0x%x\n", object);
         printf("disp:mem_headerptr = 0x%x\n", mem_header_ptr(object));
         printf("disp:objtype = %u:\n", mem_header_ptr(object)->obj_type);
         printf("disp:blocklen = %u:\n", mem_header_ptr(object)->block_len);
 #endif
+
         assert(Mem_valid_objtype(obj_type));
+	assert(ref_cnt == NO_REF_CNT);
+
 #ifndef NDEBUG
         assert(Mem[obj_type].num_obj_inuse > 0);
         assert(Mem[obj_type].num_obj > 0);
         assert(Mem[obj_type].bytes_allocated >= mem_header_ptr(object)->block_len + sizeof(mem_header));
-	assert(mem_header_ptr(object)->ref_cnt == NO_REF_CNT);
 
         Alarm(MEMORY, "dispose: disposing pointer 0x%x to object type %d named %s\n", object, obj_type, Objnum_to_String(obj_type));
 
@@ -772,31 +704,167 @@ void *      Mem_copy(const void *object)
 
 }
 
+
+/* Input: a valid type of object
+ * Output: a pointer to memory which will hold an object
+ * Effects: will only allocate an object from system if none exist in pool
+ * The allocated object will have reference counter initiated with 1
+ */
+void*          new_ref_cnt(int32 obj_type)
+{
+    void       *object;
+
+    if((object = new(obj_type)) != NULL) {
+	mem_header_ptr(object)->ref_cnt = 1;
+    }
+
+    return(object);
+}
+
+/* Input: a valid pointer to a reference count object
+ * Output: the resulting reference count
+ * Effects: Increments the reference count of an object
+ */
+int             inc_ref_cnt(void *object)
+{
+    assert(object != NULL);
+    assert(mem_header_ptr(object)->ref_cnt > 0);
+    return(++mem_header_ptr(object)->ref_cnt);
+}
+
+
+/* Input: a valid pointer to a reference count object
+ * Output: the resulting reference count
+ * Effects: Decrements the reference count of an object. 
+ * If the resulting reference count is 0, then the object is disposed
+ */
+int             dec_ref_cnt(void *object) 
+{
+    int ret;
+
+    if(object == NULL) { return 0; }
+
+    assert(mem_header_ptr(object)->ref_cnt > 0);
+    ret = --mem_header_ptr(object)->ref_cnt;
+    
+    if(ret == 0) {
+	mem_header_ptr(object)->ref_cnt = NO_REF_CNT;
+	dispose(object);
+    }
+    return(ret);
+}            
+
+
+
+/* Input: a valid pointer to a reference count object
+ * Output: the reference count of the object
+ * Effects: Returns the reference count of an object. 
+ */
+int             get_ref_cnt(void *object)
+{
+    if(object == NULL) { return 0; }
+
+    assert(mem_header_ptr(object)->ref_cnt > 0);
+    return(mem_header_ptr(object)->ref_cnt);
+}            
+
+
 char    *Objnum_to_String(int32u oid)
 {
+
+#if ( SPREAD_PROTOCOL == 3 )
 
         switch(oid)
         {
         case BASE_OBJ:
                 return("base_obj");
+        case PACK_HEAD_OBJ:
+                return("pack_head_obj");
+        case MESSAGE_OBJ:
+                return("message_obj");
+        case MSG_FRAG_OBJ:
+                return("msg_frag_obj");
+        case RET_REQ_OBJ:
+                return("ret_req_obj");
+        case LINK_ACK_OBJ:
+                return("link_ack_obj");
+        case ARU_UPDATE_OBJ:
+                return("aru_update_obj");
+        case TOKEN_HEAD_OBJ:
+                return("token_head_obj");
+        case TOKEN_BODY_OBJ:
+                return("token_body_obj");
+        case JOIN_OBJ:
+                return("join_obj");
+        case REFER_OBJ:
+                return("refer_obj");
+        case ALIVE_OBJ:
+                return("alive_obj");
         case SCATTER:
                 return("scatter");
         case QUEUE_ELEMENT:
                 return("queue_element");
         case QUEUE:
                 return("queue");
+        case RETRANS_ENTRY:
+                return("retrans_entry");
+        case RING_LINK_OBJ:
+                return("ring_link_obj");
+        case HOP_LINK_OBJ:
+                return("hop_link_obj");
+        case MESSAGE_LINK:
+                return("message_link");
+        case DOWN_LINK:
+                return("down_link");
         case TREE_NODE:
                 return("tree_node");
+        case MESSAGE_FRAG_LIST:
+                return("message_frag_list");
+        case LBUCKET:
+                return("leaky_bucket");
+        case GROUP:
+                return("group");
+        case MEMBER:
+                return("member");
+        case MSG_LIST_ENTRY:
+                return("msg_list_entry");
+        case SESS_SEQ_ENTRY:
+                return("sess_seq_entry");
         case TIME_EVENT:
                 return("time_event");
+	case ROUTE_WEIGHTS:
+	        return("route_weights");
+        case PROF_FUNCT:
+                return("prof_funct");
         case QUEUE_SET:
                 return("queue_set");
         case MQUEUE_ELEMENT:
                 return("mqueue_element");
+        case TCP_LINK_OBJ:
+                return("tcp_link_object");
+        case MESSAGE_META_OBJ:
+                return("message_meta_object");
+        case PROC_RECORD:
+                return("proc_info");
         case SYS_SCATTER:
                 return("sys_scatter");
+        case STAT_RECORD:
+                return("status_record");
+        case STAT_GROUP:
+                return("status_group");
+        case STAT_REFRECORD:
+                return("status_refrecord");
+        case STATETRANS_OBJ:
+                return("statetrans_obj");
+        case PACKET_BODY:
+                return("packet_body");
+        case SESSION_AUTH_INFO:
+                return("session_auth_info");
         default:
                 return("Unknown_obj");
         }       
+#endif
+	return("Unknown_obj");
 }
+
 

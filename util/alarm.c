@@ -16,18 +16,18 @@
  * License.
  *
  * The Creators of Spread are:
- *  Yair Amir, Michal Miskin-Amir, Jonathan Stanton.
+ *  Yair Amir, Michal Miskin-Amir, Jonathan Stanton, John Schultz.
  *
- *  Copyright (C) 1993-2003 Spread Concepts LLC <spread@spreadconcepts.com>
+ *  Copyright (C) 1993-2006 Spread Concepts LLC <info@spreadconcepts.com>
  *
  *  All Rights Reserved.
  *
  * Major Contributor(s):
  * ---------------
- *    Cristina Nita-Rotaru crisn@cnds.jhu.edu - group communication security.
- *    Theo Schlossnagle    jesus@omniti.com - Perl, skiplists, autoconf.
+ *    Ryan Caudy           rcaudy@gmail.com - contributions to process groups.
+ *    Cristina Nita-Rotaru crisn@cs.purdue.edu - group communication security.
+ *    Theo Schlossnagle    jesus@omniti.com - Perl, autoconf, old skiplist.
  *    Dan Schoenblum       dansch@cnds.jhu.edu - Java interface.
- *    John Schultz         jschultz@cnds.jhu.edu - contribution to process group membership.
  *
  *
  * This file is also licensed by Spread Concepts LLC under the Spines 
@@ -40,13 +40,20 @@
  *
  */
 
-
-
 #include "arch.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+/* undef redefined variables under windows */
+#ifdef ARCH_PC_WIN95
+#undef EINTR
+#undef EAGAIN
+#undef EWOULDBLOCK
+#undef EINPROGRESS
+#endif
+#include <errno.h>
 
 #ifdef HAVE_GOOD_VARGS
 #include <stdarg.h>
@@ -54,7 +61,9 @@
 
 #include "alarm.h"
 
-static int32	Alarm_mask = PRINT | EXIT ;
+static int32	Alarm_type_mask = PRINT | EXIT  ;
+static  int16   Alarm_cur_priority = SPLOG_DEBUG ;
+
 static char     *Alarm_timestamp_format = NULL;
 
 static const char *DEFAULT_TIMESTAMP_FORMAT="[%a %d %b %Y %H:%M:%S]";
@@ -67,9 +76,47 @@ static int      AlarmInteractiveProgram = FALSE;
    developers...
 */
 
+void Alarmp( int16 priority, int32 mask, char *message, ...)
+{
+    /* log event if in mask and of higher priority, or if FATAL event, always log */
+    if ( (( Alarm_type_mask & mask ) && (Alarm_cur_priority <=  priority)) 
+         || (priority == SPLOG_FATAL) )
+        {
+	    va_list ap;
+
+	    if (  Alarm_timestamp_format && (priority != SPLOG_PRINT_NODATE) )
+            {
+	        char timestamp[42];
+		struct tm *tm_now;
+		time_t time_now;
+		size_t length;
+		
+		time_now = time(NULL);
+		tm_now = localtime(&time_now);
+		length = strftime(timestamp, 40,
+				  Alarm_timestamp_format, tm_now);
+		timestamp[length] = ' ';
+		fwrite(timestamp, length+1, sizeof(char), stdout);
+            }
+
+	    va_start(ap,message);
+	    vprintf(message, ap);
+	    va_end(ap);
+        }
+
+        if ( ( EXIT & mask ) || (priority == SPLOG_FATAL) )
+	{
+	    printf("Exit caused by Alarm(EXIT)\n");
+            exit( 0 );
+	}
+}
+
+/* For backwards compatibility while moving all Alarm calls over, this provides
+ * the old interface and logs them as WARNING events.
+ */
 void Alarm( int32 mask, char *message, ...)
 {
-	if ( Alarm_mask & mask )
+        if ( ( Alarm_type_mask & mask ) && (Alarm_cur_priority <=  SPLOG_WARNING) )
         {
 	    va_list ap;
 
@@ -95,23 +142,20 @@ void Alarm( int32 mask, char *message, ...)
 
 	if ( EXIT & mask )
 	{
-	    perror("errno say:");
-	    /* Uncoment the next line if you want to coredump on exit */
-	    /* abort(); */
+	    printf("Exit caused by Alarm(EXIT)\n");
             exit( 0 );
 	}
 }
-
 #else
 
-void Alarm( int32 mask, char *message, 
+void Alarm( int16 priority, int32 mask, char *message, 
                         void *ptr1, void *ptr2, void *ptr3, void *ptr4, 
                         void *ptr5, void *ptr6, void *ptr7, void *ptr8,
                         void *ptr9, void *ptr10, void*ptr11, void *ptr12,
                         void *ptr13, void *ptr14, void *ptr15, void *ptr16,
                         void *ptr17, void *ptr18, void *ptr19, void *ptr20)
 {
-	if ( Alarm_mask & mask )
+        if ( ( Alarm_type_mask & mask ) && (Alarm_cur_priority <  priority) )
         {
             if ( Alarm_timestamp_format )
             {
@@ -132,8 +176,7 @@ void Alarm( int32 mask, char *message,
         }
 	if ( EXIT & mask )
 	{
-	    perror("errno say:");
-	    /*abort();*/
+	    printf("Exit caused by Alarm(EXIT)\n");
 	    exit( 0 );
 	}
 }
@@ -154,11 +197,11 @@ void Alarm_set_output(char *filename) {
         FILE *newfile;
         newfile = freopen(filename, "a", stdout);
         if ( NULL == newfile ) {
-                perror("failed to open file for stdout");
+                printf("failed to open file (%s) for stdout. Error: %d\n", filename, errno);
         }
         newfile = freopen(filename, "a", stderr);
         if ( NULL == newfile ) {
-                perror("failed to open file for stderr");
+                printf("failed to open file (%s) for stderr. Error: %d\n", filename, errno);
         }
         setvbuf(stderr, (char *)0, _IONBF, 0);
         setvbuf(stdout, (char *)0, _IONBF, 0);
@@ -179,17 +222,27 @@ void Alarm_disable_timestamp(void)
         Alarm_timestamp_format = NULL;
 }
 
-void Alarm_set(int32 mask)
+void Alarm_set_types(int32 mask)
 {
-	Alarm_mask = Alarm_mask | mask;
+	Alarm_type_mask = Alarm_type_mask | mask;
 }
 
-void Alarm_clear(int32 mask)
+void Alarm_clear_types(int32 mask)
 {
-	Alarm_mask = Alarm_mask & ~mask;
+	Alarm_type_mask = Alarm_type_mask & ~mask;
 }
 
-int32 Alarm_get(void)
+int32 Alarm_get_types(void)
 {
-        return(Alarm_mask);
+        return(Alarm_type_mask);
+}
+
+void Alarm_set_priority(int16 priority)
+{
+        Alarm_cur_priority = priority;
+}
+
+int16 Alarm_get_priority(void)
+{
+        return(Alarm_cur_priority);
 }

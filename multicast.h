@@ -18,20 +18,37 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2007 The Johns Hopkins University.
  * All rights reserved.
+ *
+ * Major Contributor(s):
+ * --------------------
+ *    John Lane
+ *    Raluca Musaloiu-Elefteri
+ *    Nilo Rivera
  *
  */
 
 #ifndef MULTICAST_H
 #define MULTICAST_H
 
+
 #include "node.h"
 
-#define     JOIN_GROUP        0x0001
+#define     JOIN_GROUP        0X0001
 #define     LEAVE_GROUP       0x0010
 #define     RELIABLE_GROUP    0x0100
 #define     ACTIVE_GROUP      0x000f
+
+#define     IS_JOIN_GROUP(x)     (x & JOIN_GROUP)
+#define     IS_LEAVE_GROUP(x)    (x & LEAVE_GROUP)
+#define     IS_RELIABLE_GROUP(x) (x & RELIABLE_GROUP)
+#define     IS_ACTIVE_GROUP(x)   (x & ACTIVE_GROUP)
+
+#define     GROUP_STATUS(x)      IS_RELIABLE_GROUP(x),IS_JOIN_GROUP(x),IS_LEAVE_GROUP(x),IS_ACTIVE_GROUP(x) 
+#define     GSTAT                "R%dJ%dL%dA%d"
+
+struct Rmcast_Data_d;
 
 typedef struct Group_State_d {
     int32 source_addr;           /* Address of the node that joins / leaves*/
@@ -44,6 +61,7 @@ typedef struct Group_State_d {
     int16 age;                   /* Life of the state (in tens of seconds) */
 
     stdhash joined_sessions;     /* Local sessions that joined the group */
+    struct Rmcast_Data_d *rm_data; /* Reliable multicast specific data */
 } Group_State;
 
 
@@ -66,13 +84,17 @@ int Groups_Is_route_change(void);
 int Groups_Is_state_relevant(void *state);
 int Groups_Set_state_header(void *state, char *pos);
 int Groups_Set_state_cell(void *state, char *pos);
-int Groups_Process_state_header(char *pos);
+int Groups_Process_state_header(char *pos, int32 type);
 void* Groups_Process_state_cell(int32 source, char *pos);
 int Groups_Destroy_State_Data(void *state);
 
 int Join_Group(int32 mcast_address, Session *ses);
 int Leave_Group(int32 mcast_address, Session *ses);
 Group_State* Create_Group(int32 node_address, int32 mcast_address);
-
+stdhash* Get_Mcast_Neighbors(int32 sender, int32 mcast_address);
+void Discard_Mcast_Neighbors(int32 mcast_address);
+void Discard_All_Mcast_Neighbors(void); 
+void Print_Mcast_Groups(int dummy_int, void* dummy);
 
 #endif
+

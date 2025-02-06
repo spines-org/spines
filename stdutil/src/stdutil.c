@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, The Johns Hopkins University
+/* Copyright (c) 2000-2005, The Johns Hopkins University
  * All rights reserved.
  *
  * The contents of this file are subject to a license (the ``License'')
@@ -22,81 +22,343 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-
-#ifdef USE_DMALLOC
-#include <dmalloc.h>
-#endif
-
 #include <string.h>
 #include <stdarg.h>
-#include <errno.h>
-#include <time.h>
-#include <stdutil/stdutil.h>
+
 #include <stdutil/stderror.h>
+#include <stdutil/stdtime.h>
+#include <stdutil/stdutil.h>
 
-/* only does indention properly for single threaded programs right now */
-int std_stkfprintf(FILE *stream, int entering, const char *fmt, ...) {
-#define MAX_TAB_IN 4096
-#define INDENT 2
-  static int tab_in = 0;
-  static char tab[MAX_TAB_IN] = { 0 };
-  va_list ap;
-  int ret;
+/************************************************************************************************
+ * stdstrcpy: Like C's strcpy, but returns strlen(dst) instead.
+ ***********************************************************************************************/
 
-  if (entering < 0) {
-    if ((tab_in -= INDENT) < 0)
-      stderr_abort("popped off of top of empty trace print stack!\n");
-    memset(tab + tab_in, 0, INDENT);
-    fprintf(stream, "%sST Leave: ", tab);
-  } else if (entering > 0) {
-    fprintf(stream, "%sST Enter: ", tab);
-    if (tab_in + INDENT >= MAX_TAB_IN)
-      stderr_abort("execution stack depth exceded MAX_TAB_IN: %d\n", MAX_TAB_IN);
-    memset(tab + tab_in, ' ', INDENT);
-    tab_in += INDENT;
-  } else
-    fprintf(stream, "%s", tab);
+STDINLINE stdsize stdstrcpy(char *dst, const char *src)
+{
+  stdsize ret = strlen(src);
 
-  va_start(ap, fmt);
-  ret = vfprintf(stream, fmt, ap);
-  va_end(ap);
+  memcpy(dst, src, ret + 1);
 
   return ret;
 }
 
-inline void stdflip_endian16(void *dst) {
-  char *d = (char*) dst, t;
+/************************************************************************************************
+ * stdstrcpy_n: Like stdstrcpy, but only copies the first min('n',
+ * strlen('src')) bytes of 'src' and then adds a NUL termination
+ * (i.e. - dst must have room for n + 1 bytes).
+ ***********************************************************************************************/
 
-  STDSWAP(d[0], d[1], t);
+STDINLINE stdsize stdstrcpy_n(char *dst, const char *src, stdsize n)
+{
+  const char * bsrc = src;
+  const char * esrc = src + n;
+  stdsize      ret;
+
+  for (; src != esrc && *src != 0; ++src);
+
+  ret = (stdsize) (src - bsrc);
+  memcpy(dst, bsrc, ret);
+  dst[ret] = 0;
+
+  return ret;
 }
 
-inline void stdflip_endian32(void *dst) {
-  char *d = (char*) dst, t;
+/************************************************************************************************
+ * stdstrdup: Return a malloc'ed copy of 'dupme.'  Returns NULL on
+ * allocation failure.  If len_ptr is not NULL, then strlen(dupme)
+ * will always be placed there regardless of success or failure.
+ ***********************************************************************************************/
+
+STDINLINE char *stdstrdup(const char *dupme, stdsize *len_ptr)
+{
+  stdsize len = strlen(dupme);
+  char *  ret = (char*) malloc(len + 1);
   
-  STDSWAP(d[0], d[3], t); STDSWAP(d[1], d[2], t);
+  if (len_ptr != NULL) {
+    *len_ptr = len;
+  }
+
+  return (char*) (ret != NULL ? memcpy(ret, dupme, len + 1) : NULL);
 }
 
-inline void stdflip_endian64(void *dst) {
-  char *d = (char*) dst, t;
+/************************************************************************************************
+ * stdstrdup_n: Like stdstrdup, but only allocates and copies up
+ * through the first min('n', strlen('src')) bytes of 'src' and then
+ * adds a NUL termination.
+ ***********************************************************************************************/
 
-  STDSWAP(d[0], d[7], t); STDSWAP(d[1], d[6], t);
-  STDSWAP(d[2], d[5], t); STDSWAP(d[3], d[4], t);
+STDINLINE char *stdstrdup_n(const char *src, stdsize *len_ptr, size_t n)
+{
+  const char * bsrc = src;
+  const char * esrc = src + n;
+  stdsize      len;
+  char *       ret;
+
+  for (; src != esrc && *src != 0; ++src);     /* see if strlen(src) < n */
+
+  len = (stdsize) (src - bsrc);                /* min(n, strlen(str)) */
+  ret = (char*) malloc(len + 1);
+
+  if (len_ptr != NULL) {
+    *len_ptr = len;
+  }
+
+  if (ret != NULL) {                           /* copy on successful allocation */
+    memcpy(ret, src, len);
+    ret[len] = 0;
+  }
+
+  return ret;
 }
 
-inline void stdflip_endian_n(void *dst, size_t n) {
-  char *d = (char*) dst, t;
-  size_t nc = 0;
+/************************************************************************************************
+ * stdmemdup: Allocates and returns a new block of memory 'n' bytes
+ * long and copies the first 'n' bytes of 'src' to the new block.  If
+ * n is zero this fcn will return NULL.
+ ***********************************************************************************************/
 
-  if (!n)
-    return;
+STDINLINE void *stdmemdup(const void *src, size_t n)
+{
+  void * ret = (n != 0 ? malloc(n) : NULL);
 
-  for (--n; nc < n; --n, ++nc)
-    STDSWAP(d[nc], d[n], t);
+  if (ret != NULL) {
+    memcpy(ret, src, n);
+  }
+
+  return ret;
 }
 
-#if defined (stduint16) && defined(stduint32)
-/*
- * Copyright (c) 1993 Martin Birgmeier
+/************************************************************************************************
+ * stdhcode_oaat: Bob Jenkin's One-at-a-Time hash code function.
+ * Computes a 32 bit integer based on all 'buf_len' bytes of 'buf.'
+ * Every input bit can affect every bit of the result with about 50%
+ * probability per output bit -- has no funnels.
+ ***********************************************************************************************/
+
+STDINLINE stduint32 stdhcode_oaat(const void * buf, stdsize buf_len)
+{
+  const char * kit  = (const char*) buf;
+  const char * kend = (const char*) buf + buf_len;
+  stduint32    ret  = (stduint32) buf_len;
+
+  for (; kit != kend; ++kit) {
+    ret += *kit;
+    ret += (ret << 10);
+    ret ^= (ret >> 6);
+  }
+
+  ret += (ret << 3);
+  ret ^= (ret >> 11);
+  ret += (ret << 15);
+
+  return ret;
+}
+
+/************************************************************************************************
+ * stdhcode_oaat_start: Begin computing a One-at-a-Time hash that will
+ * span several buffers.  Preferably, but not required, tot_len would
+ * equal the total length of the buffers to be hcoded.  If the total
+ * length is unknown (or you simply don't want to compute it), then
+ * consistently use the same arbitrary constant (e.g. - 0) when
+ * computing the hcode for those objects.
+ ***********************************************************************************************/
+
+STDINLINE void stdhcode_oaat_start(stduint32 *hsh, stdsize tot_len)
+{
+  *hsh = ((stduint32) tot_len);
+}
+
+/************************************************************************************************
+ * stdhcode_oaat_churn: Mix the 'buf_len' bytes of 'buf' into 'hsh'
+ * using One-at-a-Time's mixer.
+ ***********************************************************************************************/
+
+STDINLINE void stdhcode_oaat_churn(stduint32 *hsh, const void * buf, stdsize buf_len)
+{
+  const char * kit  = (const char *) buf;
+  const char * kend = (const char *) buf + buf_len;
+  stduint32    ret  = *hsh;
+
+  for (; kit != kend; ++kit) {
+    ret += *kit;
+    ret += (ret << 10);
+    ret ^= (ret >> 6);    
+  }
+
+  *hsh = ret;
+}
+
+/************************************************************************************************
+ * stdhcode_oaat_stop: Compute the final result for a multi-buffer
+ * One-at-a-Time hash code.
+ ***********************************************************************************************/
+
+STDINLINE void stdhcode_oaat_stop(stduint32 * hsh)
+{
+  stduint32 ret = *hsh;
+
+  ret += (ret << 3);
+  ret ^= (ret >> 11);
+  ret += (ret << 15);
+
+  *hsh = ret;
+}
+
+/************************************************************************************************
+ * stdhcode_sfh: Paul Hsieh's Super Fast Hash hash code function.
+ * Computes a 32 bit integer based on all 'buf_len' bytes of 'buf.'
+ * Every input bit can affect every bit of the result with about 50%
+ * probability per output bit -- has no funnels.  Paul Hsieh claims
+ * superior speed and distribution compared to One-at-a-Time.
+ ***********************************************************************************************/
+
+#if ((defined(__GNUC__) && defined(__i386__)) || defined(__WATCOMC__) || defined(_MSC_VER) || \
+     defined (__BORLANDC__) || defined (__TURBOC__))
+#  define stdhcode_sfh_get16bits(d) ( *((const stduint16*)(d)) )
+#else
+#  define stdhcode_sfh_get16bits(d) ( ((stduint16) *((const stduint8 *)(d) + 1) << 8) + *(const stduint8 *)(d) )
+#endif
+
+STDINLINE stduint32 stdhcode_sfh(const void * buf, stdsize buf_len) 
+{
+  const stduint8 * kit  = (const stduint8*) buf;
+  const stduint8 * kend = (const stduint8*) buf + (buf_len & ~0x3);  /* leave remainder modulo 4 */
+  stduint32        ret  = (stduint32) buf_len;
+  stduint32        tmp;
+
+  /* main mixing loop */
+
+  while (kit != kend) {
+    ret += stdhcode_sfh_get16bits(kit);
+    tmp  = (stdhcode_sfh_get16bits(kit + 2) << 11) ^ ret;
+    ret  = (ret << 16) ^ tmp;
+    kit += 4;
+    ret += ret >> 11;
+  }
+
+  /* handle remainder modulo 4 not handled by loop */
+
+  switch (buf_len & 0x3) {
+  case 3: 
+    ret += stdhcode_sfh_get16bits(kit);
+    ret ^= ret << 16;
+    ret ^= kit[2] << 18;
+    ret += ret >> 11;
+    break;
+    
+  case 2: 
+    ret += stdhcode_sfh_get16bits(kit);
+    ret ^= ret << 11;
+    ret += ret >> 17;
+    break;
+		
+  case 1: 
+    ret += *kit;
+    ret ^= ret << 10;
+    ret += ret >> 1;
+    break;
+  }
+
+  /* force avalanche of final 127 bits */
+
+  ret ^= ret << 3;
+  ret += ret >> 5;
+  ret ^= ret << 2;
+  ret += ret >> 15;
+  ret ^= ret << 10;
+  
+  return ret;
+}
+
+/************************************************************************************************
+ * stdhcode_sfh_start: Begin computing a SuperFastHash hash that will
+ * span several buffers.  Preferably, but not required, tot_len would
+ * equal the total length of the buffers to be hash coded.  If the total
+ * length is unknown (or you simply don't want to compute it), then
+ * consistently use the same arbitrary constant (e.g. - 0) when
+ * computing the hcode for those objects.
+ *
+ * NOTE: The incremental versions of sfh depend on how you partition
+ * the total data set you churn through.  If you pick different
+ * partitions of the same data you will get different final results.
+ * This is not true for the One-at-a-Time Hash which does not depend
+ * on how you partition the data.
+ ***********************************************************************************************/
+
+STDINLINE void stdhcode_sfh_start(stduint32 *hsh, stdsize tot_len)
+{
+  *hsh = (stduint32) tot_len;
+}
+
+/************************************************************************************************
+ * stdhcode_sfh_churn: Mix the 'buf_len' bytes of 'buf' into 'hsh'
+ * using SuperFastHash's mixer.
+ ***********************************************************************************************/
+
+STDINLINE void stdhcode_sfh_churn(stduint32 *hsh, const void * buf, stdsize buf_len)
+{
+  const stduint8 * kit  = (const stduint8*) buf;
+  const stduint8 * kend = (const stduint8*) buf + (buf_len & ~0x3);  /* leave remainder modulo 4 */
+  stduint32        ret  = *hsh;
+  stduint32        tmp;
+
+  /* main mixing loop */
+
+  while (kit != kend) {
+    ret += stdhcode_sfh_get16bits(kit);
+    tmp  = (stdhcode_sfh_get16bits(kit + 2) << 11) ^ ret;
+    ret  = (ret << 16) ^ tmp;
+    kit += 4;
+    ret += ret >> 11;
+  }
+
+  /* handle modulo 4 remainder not handled by loop */
+
+  switch (buf_len & 3) {
+  case 3: 
+    ret += stdhcode_sfh_get16bits(kit);
+    ret ^= ret << 16;
+    ret ^= kit[2] << 18;
+    ret += ret >> 11;
+    break;
+    
+  case 2: 
+    ret += stdhcode_sfh_get16bits(kit);
+    ret ^= ret << 11;
+    ret += ret >> 17;
+    break;
+		
+  case 1: 
+    ret += *kit;
+    ret ^= ret << 10;
+    ret += ret >> 1;
+    break;
+  }
+
+  *hsh = ret;
+}
+
+/************************************************************************************************
+ * stdhcode_sfh_stop: Compute the final result of a multi-buffer
+ * SuperFastHash hash code.
+ ***********************************************************************************************/
+
+STDINLINE void stdhcode_sfh_stop(stduint32 *hsh)
+{
+  stduint32 ret = *hsh;
+
+  /* force avalanche of final 127 bits */
+
+  ret ^= ret << 3;
+  ret += ret >> 5;
+  ret ^= ret << 2;
+  ret += ret >> 15;
+  ret ^= ret << 10;
+
+  *hsh = ret;
+}
+
+/* Copyright (c) 1993 Martin Birgmeier
  * All rights reserved.
  *
  * You may redistribute unmodified or modified versions of this source
@@ -108,224 +370,680 @@ inline void stdflip_endian_n(void *dst, size_t n) {
  * to anyone/anything when using this software.
  */
 
-#define RAND48_SEED_0   (0x330e)
-#define RAND48_SEED_1   (0xabcd)
-#define RAND48_SEED_2   (0x1234)
-#define RAND48_MULT_0   (0xe66d)
-#define RAND48_MULT_1   (0xdeec)
-#define RAND48_MULT_2   (0x0005)
-#define RAND48_ADD      (0x000b)
+#define RAND48_SEED_0 0x330e
+#define RAND48_SEED_1 0xabcd
+#define RAND48_SEED_2 0x1234
+#define RAND48_MULT_0 0xe66d
+#define RAND48_MULT_1 0xdeec
+#define RAND48_MULT_2 0x0005
+#define RAND48_ADD    0x000b
 
-inline stduint32 stdrand32(stduint16 x[3]) {
+/************************************************************************************************
+ * stdrand32: Returns a pseudo-random 32b integer using a linear
+ * congruential algorithm working on integers 48 bits in size (i.e. -
+ * 'x').  The function mixes the contents of 'x' while calculating the
+ * integer to return.  I believe it has a period of 2^47.
+ ***********************************************************************************************/
+
+STDINLINE stduint32 stdrand32(stduint16 x[3]) 
+{
   stduint16 temp[2];
   stduint32 acc;
 
-  acc = (stduint32) RAND48_MULT_0 * x[0] + RAND48_ADD;
-  temp[0] = (stduint16) acc;
+  acc      = (stduint32) RAND48_MULT_0 * x[0] + RAND48_ADD;
+  temp[0]  = (stduint16) acc;
 
-  acc >>= 16;
-  acc += (stduint32) RAND48_MULT_0 * x[1] + (stduint32) RAND48_MULT_1 * x[0];
-  temp[1] = (stduint16) acc;
+  acc    >>= 16;
+  acc     += (stduint32) RAND48_MULT_0 * x[1] + (stduint32) RAND48_MULT_1 * x[0];
+  temp[1]  = (stduint16) acc;
 
-  acc >>= 16;
-  acc += (stduint32) RAND48_MULT_0 * x[2] + (stduint32) RAND48_MULT_1 * x[1] + 
-         (stduint32) RAND48_MULT_2 * x[0];
+  acc    >>= 16;
+  acc     += ((stduint32) RAND48_MULT_0 * x[2] + (stduint32) RAND48_MULT_1 * x[1] + 
+	      (stduint32) RAND48_MULT_2 * x[0]);
 
-  x[0] = temp[0];
-  x[1] = temp[1];
-  x[2] = (stduint16) acc;
+  x[0]     = temp[0];
+  x[1]     = temp[1];
+  x[2]     = (stduint16) acc;
 
-  return ((stduint32) x[2] << 16) + x[1];
+  return ((stduint32) x[2] << 16) | x[1];
 }
 
-inline void stdrand32_dseed(stduint16 x[3], stduint32 seed) {
+/************************************************************************************************
+ * stdrand32_seed: Seeds the contents of 'x' based on 'seed' and the
+ * current system time.
+ ***********************************************************************************************/
+
+STDINLINE void stdrand32_seed(stduint16 x[3], stduint32 seed) 
+{
+  stdtime64 t;
+
+  stdtime64_now(&t);  /* get time since epoch in nanoseconds */
+  t >>= 16;           /* truncate to a precision which most clocks can do */
+
+  stdrand32_dseed(x, ((stduint32) t ^ seed) * (seed | 0x1));
+}
+
+/************************************************************************************************
+ * stdrand32_dseed: Seeds the contents of 'x' based solely and
+ * deterministically (i.e. - repeatable) on 'seed.'
+ ***********************************************************************************************/
+
+STDINLINE void stdrand32_dseed(stduint16 x[3], stduint32 seed) 
+{
   x[2] = (stduint16) ((seed >> 16) ^ RAND48_SEED_0);
-  x[1] = (stduint16) (seed ^ RAND48_SEED_1);
-  x[0] = x[2] ^ RAND48_SEED_2;
+  x[1] = (stduint16) ((seed & 0xFFFF) ^ RAND48_SEED_1);
+  x[0] = x[1] ^ x[2] ^ RAND48_SEED_2;
 }
 
-inline void stdrand32_seed(stduint16 x[3], stduint32 seed) {
-  stdrand32_dseed(x, ((stduint32) time(0) ^ seed) * (seed | 0x1));
+/************************************************************************************************
+ * stdrand64: Returns a pseudo-random 64b integers using a linear
+ * congruential algorithm working on integers 48 bits in size (i.e. -
+ * 'x').  The function mixes the contents of 'x' while calculating the
+ * integer to return.  I believe it has a period of 2^47.
+ ***********************************************************************************************/
+
+STDINLINE stduint64 stdrand64(stduint32 x[3]) 
+{
+  return ((stduint64) stdrand32((stduint16*) x) << 32) | stdrand32((stduint16*) x + 3);
 }
 
-# if defined(stduint64)
-inline stduint64 stdrand64(stduint32 x[3]) {
-  return ((stduint64) stdrand32((stduint16*) x) << 32) + stdrand32((stduint16*) x + 3);
+/************************************************************************************************
+ * stdrand64_seed: Seeds the contents of 'x' based on 'seed' and the
+ * current system time.
+ ***********************************************************************************************/
+
+STDINLINE void stdrand64_seed(stduint32 x[3], stduint64 seed) 
+{
+  stdtime64 t;
+  
+  stdtime64_now(&t);  /* get time in nanoseconds since epoch */
+
+  stdrand64_dseed(x, ((stduint64) t ^ seed) * (seed | 0x1));
 }
 
-inline void stdrand64_dseed(stduint32 x[3], stduint64 seed) {
+/************************************************************************************************
+ * stdrand64_dseed: Seeds the contents of 'x' based solely and
+ * deterministically (i.e. - repeatable) on 'seed.'
+ ***********************************************************************************************/
+
+STDINLINE void stdrand64_dseed(stduint32 x[3], stduint64 seed) 
+{
   stdrand32_dseed((stduint16*) x, (stduint32) (seed >> 32));
   stdrand32_dseed((stduint16*) x + 3, (stduint32) seed);
 }
 
-inline void stdrand64_seed(stduint32 x[3], stduint64 seed) {
-  stdrand64_dseed(x, ((stduint64) time(0) ^ seed) * (seed | 0x1));
-}
-# endif /* defined(stduint64) */
+/************************************************************************************************
+ * For the following endian flipping code, I have defined in
+ * stdutil/private/stdarch.h a mapping from network byte order to host
+ * byte order and the reverse mapping for 16, 32 and 64 bit integers.
+ * This mapping is originally discovered through the configure script
+ * generated by autoconf from configure.in or is pre-defined for some
+ * fixed architecture (e.g. - 32 bit little endian).
+ *
+ * For example, in a 64b integer on little endian architectures, the
+ * most significant byte is the highest byte in memory (byte 7), while
+ * on a big endian architecture it is the lowest byte in memory (byte
+ * 0).  We represent this information in stdutil/stdutil_p.h as, on
+ * the respective architectures,
+ *
+ * (#define STDENDIAN64_NET0_FROM_HOST 7, #define STDENDIAN64_HOST7_FROM_NET 0) 
+ *
+ * and 
+ *   
+ * (#define STDENDIAN64_NET0_FROM_HOST 0, #define STDENDIAN64_HOST0_FROM_NET 0)
+ * 
+ * If you need to correct these numbers by hand (e.g. - cross
+ * compiling for a different endian architecture so configure won't
+ * work correctly), then just make sure you get both the forward and
+ * backward mappings correct.
+ ***********************************************************************************************/
 
-# if defined(stdhsize_t)
-#  if SIZEOF_SIZE_T == 4
-inline size_t stdrand(stdhsize_t x[3]) {
-  return stdrand32(x);
-}
+/************************************************************************************************
+ * stdhton16: Rearranges the two bytes at which 'io' points from host
+ * to network byte ordering.
+ ***********************************************************************************************/
 
-inline void stdrand_dseed(stdhsize_t x[3], size_t seed) {
-  stdrand32_dseed(x, seed);
-}
+STDINLINE void stdhton16(void *io)
+{
+#if (STDENDIAN16_SWAP == 1)
+  stduint8 * ptr = (stduint8*) io;
+  stduint8   t;
 
-inline void stdrand_seed(stdhsize_t x[3], size_t seed) {
-  stdrand32_seed(x, seed);
-}
-#  elif SIZOF_SIZE_T == 8 && defined(stduint64)
-inline size_t stdrand(stdhsize_t x[3]) {
-  return stdrand64(x);
-}
-
-inline void stdrand_dseed(stdhsize_t x[3], size_t seed) {
-  stdrand64_dseed(x, seed);
-}
-
-inline void stdrand_seed(stdhsize_t x[3], size_t seed) {
-  stdrand64_seed(x, seed);
-}
-#  endif /* if SIZEOF_SIZE_T == 4 else if SIZEOF_SIZE_T == 8 && defined(stduint64) */
-# endif  /* defined(stdhsize_t) */
-#endif   /* defined(stduint16) && defined(stduint32) */
-
-/* The following three functions are called when an array's size
-   changes. They decide whether the capacity thresholds have been
-   exceeded or not. If the thresholds have been exceeded, then they
-   call the auto_allocate fcn that determines new capacity thresholds
-   and allocates the necessary memory.
-
-   get_mem    - when there is an arbitrary change in size (e.g. - resize)
-   grow_mem   - when there is an increase in size
-   shrink_mem - when there is a decrease in size
-
-   Notice that we require new_size > *low_cap, this allows for
-   reallocation even when low_cap is zero, which allows the array to
-   go to zero memory usage.
-
-   These fcns return zero on success, non-zero on failure.
-*/
-inline int stdget_mem(char **mem, size_t new_size, size_t *high_cap, 
-		      size_t *low_cap, size_t vsize) {
-  return (new_size <= *high_cap && new_size > *low_cap ? STD_NO_MEM_CHANGE :
-	  stdauto_allocate(mem, new_size, high_cap, low_cap, vsize));
+  STDSWAP(ptr[0], ptr[1], t);
+#endif
 }
 
-inline int stdgrow_mem(char **mem, size_t new_size, size_t *high_cap, 
-		       size_t *low_cap, size_t vsize) {
-  return (new_size <= *high_cap ? STD_NO_MEM_CHANGE :
-	  stdauto_allocate(mem, new_size, high_cap, low_cap, vsize));
-}
+/************************************************************************************************
+ * stdhton32: Rearranges the four bytes at which 'io' points from host
+ * to network byte ordering.
+ ***********************************************************************************************/
 
-inline int stdshrink_mem(char **mem, size_t new_size, size_t *high_cap,
-			 size_t *low_cap, size_t vsize) {
-  return (new_size > *low_cap ? STD_NO_MEM_CHANGE :
-	  stdauto_allocate(mem, new_size, high_cap, low_cap, vsize));
-}
+STDINLINE void stdhton32(void *io)
+{
+#if (STDENDIAN32_NET0_FROM_HOST != 0 || STDENDIAN32_NET1_FROM_HOST != 1 || STDENDIAN32_NET2_FROM_HOST != 2 || STDENDIAN32_NET3_FROM_HOST != 3)
+  stduint8 * ptr = (stduint8*) io;
+  stduint8   buf[4];
 
-/* The brains of the auto allocation mechanism. Given a size it determines what
-   the capacity thresholds should be and calls the allocation function. */
-inline int stdauto_allocate(char **mem, size_t new_size, size_t *high_cap,
-			    size_t *low_cap, size_t vsize) {
-  size_t new_cap = new_size << 1;
+
+#  if (STDENDIAN32_NET0_FROM_HOST != 0)
+  buf[0] = ptr[0];
+  ptr[0] = ptr[STDENDIAN32_NET0_FROM_HOST];
+#  endif
   
-  if (new_cap - new_size == new_size) /* check for overflow */
-    return stdset_allocate(mem, new_cap, high_cap, low_cap, vsize);
-  else 
-    return STD_MEM_FAILURE;
+
+#  if (STDENDIAN32_NET1_FROM_HOST != 1)
+#    if (STDENDIAN32_NET0_FROM_HOST != 1)
+  buf[1] = ptr[1];                      
+#    endif
+
+#    if (STDENDIAN32_NET1_FROM_HOST > 1)
+  ptr[1] = ptr[STDENDIAN32_NET1_FROM_HOST];
+#    else
+  ptr[1] = buf[STDENDIAN32_NET1_FROM_HOST];
+#    endif
+#  endif
+  
+
+#  if (STDENDIAN32_NET2_FROM_HOST != 2)
+#    if (STDENDIAN32_NET0_FROM_HOST != 2 && STDENDIAN32_NET1_FROM_HOST != 2)
+  buf[2] = ptr[2];                           /* ptr[2] was not previously consumed, so we need to save it in buf[2] */
+#    endif
+
+#    if (STDENDIAN32_NET2_FROM_HOST > 2)
+  ptr[2] = ptr[STDENDIAN32_NET2_FROM_HOST];  /* STDENDIAN32_NET2_FROM_HOST > 2 -> we haven't yet consumed/saved ptr[STDENDIAN32_NET2_FROM_HOST] */
+#    else
+  ptr[2] = buf[STDENDIAN32_NET2_FROM_HOST];  /* STDENDIAN32_NET2_FROM_HOST < 2 -> we have consumed+saved ptr[STDENDIAN32_NET2_FROM_HOST] in buf */
+#    endif
+#  endif
+  
+
+#  if (STDENDIAN32_NET3_FROM_HOST != 3)
+  ptr[3] = buf[STDENDIAN32_NET3_FROM_HOST];  /* we have previously saved ptr[STDENDIAN32_NET3_FROM_HOST] in buf */
+#  endif
+  
+
+#endif
 }
 
-/* If new_cap is not equal to *high_cap, then this function allocates
-   an array of new_cap * vsize bytes into *mem and updates *high_cap
-   and *low_cap to be the same as new_cap and new_cap/4, respectively,
-   and returns STD_MEM_CHANGE. If in the case above, new_cap * vsize
-   is zero then *mem is set to zero (null). If new_cap * vsize
-   overflows the size_t type or malloc fails in allocating that memory
-   then the function returns STD_MEM_FAILURE, but *high_cap and
-   *low_cap are uneffected.
+/************************************************************************************************
+ * stdhton64: Rearranges the eight bytes at which 'io' points from
+ * host to network byte order.
+ ***********************************************************************************************/
 
-   If new_cap equals *high_cap, then the function returns
-   STD_NO_MEM_CHANGE and no side effects occur.  
-*/
-inline int stdset_allocate(char **mem, size_t new_cap, size_t *high_cap,
-			   size_t *low_cap, size_t vsize) {
-  size_t new_cap_bytes;
+STDINLINE void stdhton64(void *io)
+{
+#if (STDENDIAN64_NET0_FROM_HOST != 0 || STDENDIAN64_NET1_FROM_HOST != 1 || STDENDIAN64_NET2_FROM_HOST != 2 || STDENDIAN64_NET3_FROM_HOST != 3 || \
+     STDENDIAN64_NET4_FROM_HOST != 4 || STDENDIAN64_NET5_FROM_HOST != 5 || STDENDIAN64_NET6_FROM_HOST != 6 || STDENDIAN64_NET7_FROM_HOST != 7)
+  stduint8 * ptr = (stduint8*) io;
+  stduint8   buf[8];
 
-  if (new_cap == *high_cap)
-    return STD_NO_MEM_CHANGE;
 
-  if (new_cap == 0) {
-    *mem      = 0;
-    *high_cap = 0;
-    *low_cap  = 0;
-  } else if ((new_cap_bytes = new_cap * vsize) / vsize == new_cap && /* check for overflow */
-	     (*mem = (char*) malloc(new_cap_bytes)) != 0) {          /* check for success */
-    *high_cap = new_cap;
-    *low_cap  = new_cap >> 2;
-  } else
-    return STD_MEM_FAILURE;
+#  if (STDENDIAN64_NET0_FROM_HOST != 0)
+  buf[0] = ptr[0];
+  ptr[0] = ptr[STDENDIAN64_NET0_FROM_HOST];
+#  endif
+  
 
-  return STD_MEM_CHANGE;
+#  if (STDENDIAN64_NET1_FROM_HOST != 1)
+#    if (STDENDIAN64_NET0_FROM_HOST != 1)
+  buf[1] = ptr[1];
+#    endif
+
+#    if (STDENDIAN64_NET1_FROM_HOST > 1)
+  ptr[1] = ptr[STDENDIAN64_NET1_FROM_HOST];
+#    else
+  ptr[1] = buf[STDENDIAN64_NET1_FROM_HOST];
+#    endif
+#  endif
+  
+
+#  if (STDENDIAN64_NET2_FROM_HOST != 2)
+#    if (STDENDIAN64_NET0_FROM_HOST != 2 && STDENDIAN64_NET1_FROM_HOST != 2)
+  buf[2] = ptr[2];
+#    endif
+
+#    if (STDENDIAN64_NET2_FROM_HOST > 2)
+  ptr[2] = ptr[STDENDIAN64_NET2_FROM_HOST];
+#    else
+  ptr[2] = buf[STDENDIAN64_NET2_FROM_HOST];
+#    endif
+#  endif
+  
+
+#  if (STDENDIAN64_NET3_FROM_HOST != 3)
+#    if (STDENDIAN64_NET0_FROM_HOST != 3 && STDENDIAN64_NET1_FROM_HOST != 3 && STDENDIAN64_NET2_FROM_HOST != 3)
+  buf[3] = ptr[3];
+#    endif
+
+#    if (STDENDIAN64_NET3_FROM_HOST > 3)
+  ptr[3] = ptr[STDENDIAN64_NET3_FROM_HOST];
+#    else
+  ptr[3] = buf[STDENDIAN64_NET3_FROM_HOST];
+#    endif
+#  endif
+  
+
+#  if (STDENDIAN64_NET4_FROM_HOST != 4)
+#    if (STDENDIAN64_NET0_FROM_HOST != 4 && STDENDIAN64_NET1_FROM_HOST != 4 && STDENDIAN64_NET2_FROM_HOST != 4 && STDENDIAN64_NET3_FROM_HOST != 4)
+  buf[4] = ptr[4];
+#    endif
+
+#    if (STDENDIAN64_NET4_FROM_HOST > 4)
+  ptr[4] = ptr[STDENDIAN64_NET4_FROM_HOST];
+#    else
+  ptr[4] = buf[STDENDIAN64_NET4_FROM_HOST];
+#    endif
+#  endif
+  
+
+#  if (STDENDIAN64_NET5_FROM_HOST != 5)
+#    if (STDENDIAN64_NET0_FROM_HOST != 5 && STDENDIAN64_NET1_FROM_HOST != 5 && STDENDIAN64_NET2_FROM_HOST != 5 && \
+         STDENDIAN64_NET3_FROM_HOST != 5 && STDENDIAN64_NET4_FROM_HOST != 5)
+  buf[5] = ptr[5];
+#    endif
+
+#    if (STDENDIAN64_NET5_FROM_HOST > 5)
+  ptr[5] = ptr[STDENDIAN64_NET5_FROM_HOST];
+#    else
+  ptr[5] = buf[STDENDIAN64_NET5_FROM_HOST];
+#    endif
+#  endif
+  
+
+#  if (STDENDIAN64_NET6_FROM_HOST != 6)
+#    if (STDENDIAN64_NET0_FROM_HOST != 6 && STDENDIAN64_NET1_FROM_HOST != 6 && STDENDIAN64_NET2_FROM_HOST != 6 && \
+         STDENDIAN64_NET3_FROM_HOST != 6 && STDENDIAN64_NET4_FROM_HOST != 6 && STDENDIAN64_NET5_FROM_HOST != 6)
+  buf[6] = ptr[6];                           /* ptr[6] was not previously consumed, so we need to save it in buf[6] */
+#    endif
+
+#    if (STDENDIAN64_NET6_FROM_HOST > 6)
+  ptr[6] = ptr[STDENDIAN64_NET6_FROM_HOST];  /* STDENDIAN64_NET6_FROM_HOST > 6 -> we haven't yet consumed/saved ptr[STDENDIAN64_NET6_FROM_HOST] */
+#    else
+  ptr[6] = buf[STDENDIAN64_NET6_FROM_HOST];  /* STDENDIAN64_NET6_FROM_HOST < 6 -> we have consumed+saved ptr[STDENDIAN64_NET6_FROM_HOST] in buf */
+#    endif
+#  endif
+  
+
+#  if (STDENDIAN64_NET7_FROM_HOST != 7)
+  ptr[7] = buf[STDENDIAN64_NET7_FROM_HOST];  /* we have previously saved ptr[STDENDIAN64_NET7_FROM_HOST] in buf */
+#  endif
+
+
+#endif
 }
 
-/* "rounds" roundme to the closest power of 2 <= roundme, 
-   returns zero if roundme is zero */
-inline size_t stdround_down_pow2(size_t roundme) {
-  if (roundme == 0)
+/************************************************************************************************
+ * stdhton_n: Rearranges the 'n' bytes at which 'io' points from host
+ * into network byte ordering.  If n is one of (0, 1, 2, 4, 8), then
+ * the fcn succeeds.  Otherwise it fails with no side effects,
+ * returning STDEINVAL.
+ ***********************************************************************************************/
+
+STDINLINE stdcode stdhton_n(void *io, size_t n)
+{
+  switch (n) {
+  case 0:
+  case 1:
+    break;
+
+  case 2:
+    stdhton16(io);
+    break;
+
+  case 4:
+    stdhton32(io);
+    break;
+
+  case 8:
+    stdhton64(io);
+    break;
+
+  default:
+    return STDEINVAL;
+  }
+
+  return STDESUCCESS;
+}
+
+/************************************************************************************************
+ * stdntoh16: Rearranges the two bytes at which 'io' points from
+ * network to host byte ordering.
+ ***********************************************************************************************/
+
+STDINLINE void stdntoh16(void *io)
+{
+#if (STDENDIAN16_SWAP == 1)
+  stduint8 * ptr = (stduint8*) io;
+  stduint8   t;
+
+  STDSWAP(ptr[0], ptr[1], t);
+#endif
+}
+
+/************************************************************************************************
+ * stdntoh32: Rearranges the four bytes at which 'io' points from
+ * network to host byte ordering.
+ ***********************************************************************************************/
+
+STDINLINE void stdntoh32(void *io)
+{
+#if (STDENDIAN32_HOST0_FROM_NET != 0 || STDENDIAN32_HOST1_FROM_NET != 1 || STDENDIAN32_HOST2_FROM_NET != 2 || STDENDIAN32_HOST3_FROM_NET != 3)
+  stduint8 * ptr = (stduint8*) io;
+  stduint8   buf[4];
+
+
+#  if (STDENDIAN32_HOST0_FROM_NET != 0)
+  buf[0] = ptr[0];
+  ptr[0] = ptr[STDENDIAN32_HOST0_FROM_NET];
+#  endif
+  
+
+#  if (STDENDIAN32_HOST1_FROM_NET != 1)
+#    if (STDENDIAN32_HOST0_FROM_NET != 1)
+  buf[1] = ptr[1];                      
+#    endif
+
+#    if (STDENDIAN32_HOST1_FROM_NET > 1)
+  ptr[1] = ptr[STDENDIAN32_HOST1_FROM_NET];
+#    else
+  ptr[1] = buf[STDENDIAN32_HOST1_FROM_NET];
+#    endif
+#  endif
+  
+
+#  if (STDENDIAN32_HOST2_FROM_NET != 2)
+#    if (STDENDIAN32_HOST0_FROM_NET != 2 && STDENDIAN32_HOST1_FROM_NET != 2)
+  buf[2] = ptr[2];                           /* ptr[2] was not previously consumed, so we need to save it in buf[2] */
+#    endif
+
+#    if (STDENDIAN32_HOST2_FROM_NET > 2)
+  ptr[2] = ptr[STDENDIAN32_HOST2_FROM_NET];  /* STDENDIAN32_HOST2_FROM_NET > 2 -> we haven't yet consumed/saved ptr[STDENDIAN32_HOST2_FROM_NET] */
+#    else
+  ptr[2] = buf[STDENDIAN32_HOST2_FROM_NET];  /* STDENDIAN32_HOST2_FROM_NET < 2 -> we have consumed+saved ptr[STDENDIAN32_HOST2_FROM_NET] in buf */
+#    endif
+#  endif
+  
+
+#  if (STDENDIAN32_HOST3_FROM_NET != 3)
+  ptr[3] = buf[STDENDIAN32_HOST3_FROM_NET];  /* we have previously saved ptr[STDENDIAN32_HOST3_FROM_NET] in buf */
+#  endif
+  
+
+#endif
+}
+
+/************************************************************************************************
+ * stdntoh64: Rearranges the eight bytes at which 'io' points from
+ * network to host byte ordering.
+ ***********************************************************************************************/
+
+STDINLINE void stdntoh64(void *io)
+{
+#if (STDENDIAN64_HOST0_FROM_NET != 0 || STDENDIAN64_HOST1_FROM_NET != 1 || STDENDIAN64_HOST2_FROM_NET != 2 || STDENDIAN64_HOST3_FROM_NET != 3 || \
+     STDENDIAN64_HOST4_FROM_NET != 4 || STDENDIAN64_HOST5_FROM_NET != 5 || STDENDIAN64_HOST6_FROM_NET != 6 || STDENDIAN64_HOST7_FROM_NET != 7)
+  stduint8 * ptr = (stduint8*) io;
+  stduint8   buf[8];
+
+
+#  if (STDENDIAN64_HOST0_FROM_NET != 0)
+  buf[0] = ptr[0];
+  ptr[0] = ptr[STDENDIAN64_HOST0_FROM_NET];
+#  endif
+  
+
+#  if (STDENDIAN64_HOST1_FROM_NET != 1)
+#    if (STDENDIAN64_HOST0_FROM_NET != 1)
+  buf[1] = ptr[1];
+#    endif
+
+#    if (STDENDIAN64_HOST1_FROM_NET > 1)
+  ptr[1] = ptr[STDENDIAN64_HOST1_FROM_NET];
+#    else
+  ptr[1] = buf[STDENDIAN64_HOST1_FROM_NET];
+#    endif
+#  endif
+  
+
+#  if (STDENDIAN64_HOST2_FROM_NET != 2)
+#    if (STDENDIAN64_HOST0_FROM_NET != 2 && STDENDIAN64_HOST1_FROM_NET != 2)
+  buf[2] = ptr[2];
+#    endif
+
+#    if (STDENDIAN64_HOST2_FROM_NET > 2)
+  ptr[2] = ptr[STDENDIAN64_HOST2_FROM_NET];
+#    else
+  ptr[2] = buf[STDENDIAN64_HOST2_FROM_NET];
+#    endif
+#  endif
+  
+
+#  if (STDENDIAN64_HOST3_FROM_NET != 3)
+#    if (STDENDIAN64_HOST0_FROM_NET != 3 && STDENDIAN64_HOST1_FROM_NET != 3 && STDENDIAN64_HOST2_FROM_NET != 3)
+  buf[3] = ptr[3];
+#    endif
+
+#    if (STDENDIAN64_HOST3_FROM_NET > 3)
+  ptr[3] = ptr[STDENDIAN64_HOST3_FROM_NET];
+#    else
+  ptr[3] = buf[STDENDIAN64_HOST3_FROM_NET];
+#    endif
+#  endif
+  
+
+#  if (STDENDIAN64_HOST4_FROM_NET != 4)
+#    if (STDENDIAN64_HOST0_FROM_NET != 4 && STDENDIAN64_HOST1_FROM_NET != 4 && STDENDIAN64_HOST2_FROM_NET != 4 && STDENDIAN64_HOST3_FROM_NET != 4)
+  buf[4] = ptr[4];
+#    endif
+
+#    if (STDENDIAN64_HOST4_FROM_NET > 4)
+  ptr[4] = ptr[STDENDIAN64_HOST4_FROM_NET];
+#    else
+  ptr[4] = buf[STDENDIAN64_HOST4_FROM_NET];
+#    endif
+#  endif
+  
+
+#  if (STDENDIAN64_HOST5_FROM_NET != 5)
+#    if (STDENDIAN64_HOST0_FROM_NET != 5 && STDENDIAN64_HOST1_FROM_NET != 5 && STDENDIAN64_HOST2_FROM_NET != 5 && \
+         STDENDIAN64_HOST3_FROM_NET != 5 && STDENDIAN64_HOST4_FROM_NET != 5)
+  buf[5] = ptr[5];
+#    endif
+
+#    if (STDENDIAN64_HOST5_FROM_NET > 5)
+  ptr[5] = ptr[STDENDIAN64_HOST5_FROM_NET];
+#    else
+  ptr[5] = buf[STDENDIAN64_HOST5_FROM_NET];
+#    endif
+#  endif
+  
+
+#  if (STDENDIAN64_HOST6_FROM_NET != 6)
+#    if (STDENDIAN64_HOST0_FROM_NET != 6 && STDENDIAN64_HOST1_FROM_NET != 6 && STDENDIAN64_HOST2_FROM_NET != 6 && \
+         STDENDIAN64_HOST3_FROM_NET != 6 && STDENDIAN64_HOST4_FROM_NET != 6 && STDENDIAN64_HOST5_FROM_NET != 6)
+  buf[6] = ptr[6];                           /* ptr[6] was not previously consumed, so we need to save it in buf[6] */
+#    endif
+
+#    if (STDENDIAN64_HOST6_FROM_NET > 6)
+  ptr[6] = ptr[STDENDIAN64_HOST6_FROM_NET];  /* STDENDIAN64_HOST6_FROM_NET > 6 -> we haven't yet consumed/saved ptr[STDENDIAN64_HOST6_FROM_NET] */
+#    else
+  ptr[6] = buf[STDENDIAN64_HOST6_FROM_NET];  /* STDENDIAN64_HOST6_FROM_NET < 6 -> we have consumed+saved ptr[STDENDIAN64_HOST6_FROM_NET] in buf */
+#    endif
+#  endif
+  
+
+#  if (STDENDIAN64_HOST7_FROM_NET != 7)
+  ptr[7] = buf[STDENDIAN64_HOST7_FROM_NET];  /* we have previously saved ptr[STDENDIAN64_HOST7_FROM_NET] in buf */
+#  endif
+
+
+#endif
+}
+
+/************************************************************************************************
+ * stdntoh_n: Rearranges the 'n' bytes at which 'io' points from
+ * network to host byte ordering.  If n is one of (0, 1, 2, 4, 8),
+ * then the fcn succeeds.  Otherwise it fails with no side effects,
+ * returning STDEINVAL.
+ ***********************************************************************************************/
+
+STDINLINE stdcode stdntoh_n(void *io, size_t n)
+{
+  switch (n) {
+  case 0:
+  case 1:
+    break;
+
+  case 2:
+    stdntoh16(io);
+    break;
+
+  case 4:
+    stdntoh32(io);
+    break;
+
+  case 8:
+    stdntoh64(io);
+    break;
+
+  default:
+    return STDEINVAL;
+  }
+
+  return 0;
+}
+
+/************************************************************************************************
+ * stdflip16: Reverses the order of the two bytes at which 'io' points.
+ ***********************************************************************************************/
+
+STDINLINE void stdflip16(void *io) 
+{
+  stduint8 * ptr = (stduint8*) io;
+  stduint8   t;
+
+  STDSWAP(ptr[0], ptr[1], t);
+}
+
+/************************************************************************************************
+ * stdflip32: Reverses the order of the four bytes at which 'io' points.
+ ***********************************************************************************************/
+
+STDINLINE void stdflip32(void *io) 
+{
+  stduint8 * ptr = (stduint8*) io;
+  stduint8   t;
+  
+  STDSWAP(ptr[0], ptr[3], t); 
+  STDSWAP(ptr[1], ptr[2], t);
+}
+
+/************************************************************************************************
+ * stdflip64: Reverses the order of the eight bytes at which 'io'
+ * points.
+ ***********************************************************************************************/
+
+STDINLINE void stdflip64(void *io) 
+{
+  stduint8 * ptr = (stduint8*) io;
+  stduint8   t;
+
+  STDSWAP(ptr[0], ptr[7], t); 
+  STDSWAP(ptr[1], ptr[6], t);
+  STDSWAP(ptr[2], ptr[5], t); 
+  STDSWAP(ptr[3], ptr[4], t);
+}
+
+/************************************************************************************************
+ * stdflip_n: Reverses the order of the 'n' bytes at which 'io'
+ * points.
+ ***********************************************************************************************/
+
+STDINLINE void stdflip_n(void *io, size_t n) 
+{
+  stduint8 * ptr1 = (stduint8*) io;
+  stduint8 * ptr2 = (stduint8*) io + n;
+  stduint8 * pend = (stduint8*) io + (n >> 1);
+  stduint8   t;
+
+  for (--ptr2; ptr1 != pend; ++ptr1, --ptr2) {
+    STDSWAP(*ptr1, *ptr2, t);
+  }
+}
+
+/************************************************************************************************
+ * stdlg_down: Returns the log base 2 of 'x' rounded down to the
+ * closest integer (i.e. - floor(lg(x))).  Returns (stduint32) -1 if
+ * 'x' is 0.
+ ***********************************************************************************************/
+
+STDINLINE stduint32 stdlg_down(stduint64 x) 
+{
+  stduint32 ret;
+
+  if (x == 0) {
+    return (stduint32) -1;
+  }
+
+  for (ret = 0; x != 0x1; x >>= 1, ++ret);
+
+  return ret;
+}
+
+/************************************************************************************************
+ * stdlg_up: Returns the log base 2 of 'x' rounded up to the closest
+ * integer (i.e. - ceil(lg(x))).  Returns (stduint32) -1 if 'x' is 0.
+ ***********************************************************************************************/
+
+STDINLINE stduint32 stdlg_up(stduint64 x) 
+{
+  switch (x) {
+  default:
+    return stdlg_down(x - 1) + 1;
+
+  case 1:
     return 0;
 
-  return (size_t) 0x1 << stdlg_round_down_pow2(roundme);
+  case 0:
+    return (stduint32) -1;
+  }
 }
 
-/* "rounds" roundme to the closest power of 2 >= roundme,
-   returns zero if that number can't be fit in a size_t */
-inline size_t stdround_up_pow2(size_t roundme) {
-  return (size_t) 0x1 << stdlg_round_up_pow2(roundme);
+/************************************************************************************************
+ * stdpow2_down: Returns the greatest power of 2 less than or equal to
+ * 'x' (i.e. - 2^floor(lg(x))).  Returns 0 if 'x' is 0.
+ ***********************************************************************************************/
+
+STDINLINE stduint64 stdpow2_down(stduint64 x) 
+{
+  return (x != 0 ? ((stduint64) 0x1 << stdlg_down(x)) : 0);
 }
 
-/* returns the lg of round_down_pow2, returns STD_SIZE_T_MAX if
-   roundme is zero */
-inline size_t stdlg_round_down_pow2(size_t roundme) {
-  size_t shift = 0;
+/************************************************************************************************
+ * stdpow2_up: Returns the least power of 2 greater than or equal to
+ * 'x' (i.e. - 2^ceil(lg(x))).  Returns 0 if 'x' is 0.  Returns 0 on
+ * overflow.
+ ***********************************************************************************************/
 
-  if (roundme == 0)  /* should be negative infinity */
-    return STD_SIZE_T_MAX;
-
-  for (; roundme != 1; roundme >>= 1, ++shift);
-
-  return shift;
+STDINLINE stduint64 stdpow2_up(stduint64 x) 
+{
+  return (x != 0 ? ((stduint64) 0x1 << stdlg_up(x)) : 0);
 }
 
-/* returns the lg of round_up_pow2, except that it returns
-   a correct value when round_up_pow2 returns zero */
-inline size_t stdlg_round_up_pow2(size_t roundme) {
-  if (roundme == 0 || roundme == 1)
-    return 0;
+/************************************************************************************************
+ * stdpow2_cap: This fcn returns a power of 2 that is between 3/2 and
+ * 3 times of 'x' (expectation of 2.125 times 'x').  Returns 0 if 'x'
+ * is zero.  Returns 0 on overflow.  This fcn is good for calculating
+ * the size of a table that has to be a power of 2 for a random size
+ * request.
+ ***********************************************************************************************/
 
-  return stdlg_round_down_pow2(roundme - 1) + 1;
-}
+STDINLINE stduint64 stdpow2_cap(stduint64 x) 
+{
+  stduint64 up_pow2 = stdpow2_up(x);  /* up_pow2 in range [x, 2x) */
 
-/* this fcn returns a power of 2 that is between 4/3 * request_size
-   and 8/3 * request_size; often used when resizing a table that
-   has to be a power of 2 and a random request for resize comes in
-*/
-inline size_t stdgood_pow2_cap(size_t request_size) {
-  size_t shift, base_pow2, low_base_pow2;
+  if (up_pow2 < x + (x >> 1)) {       /* if (up_pow2 < 1.5x) */
+    up_pow2 <<= 1;                    /*   double -> up_pow2 in range [2x, 3x) */
+  }                                   /* else up_pow2 in range [1.5x, 2x) */
 
-  if (!request_size)
-    return 0;
-  else if (request_size == 1)
-    return 2;
-
-  shift         = stdlg_round_down_pow2(request_size);
-  base_pow2     = (size_t) 0x1 << shift;
-  low_base_pow2 = (size_t) 0x1 << (shift - 1);
-
-  if (request_size < base_pow2 + low_base_pow2)
-    return base_pow2 << 1;
-  else
-    return base_pow2 << 2;
+  return up_pow2;                     /* up_pow2 in range [1.5x, 3x) */
 }

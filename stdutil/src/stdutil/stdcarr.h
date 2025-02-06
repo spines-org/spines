@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, The Johns Hopkins University
+/* Copyright (c) 2000-2005, The Johns Hopkins University
  * All rights reserved.
  *
  * The contents of this file are subject to a license (the ``License'')
@@ -23,82 +23,111 @@
 #ifndef stdcarr_h_2000_01_30_23_42_05_jschultz_at_cnds_jhu_edu
 #define stdcarr_h_2000_01_30_23_42_05_jschultz_at_cnds_jhu_edu
 
-/* stdcarr static initializer with no safety checks */
-#define STDCARR_STATIC_CONSTRUCT(sizeof_val)
-
-#include <stdutil/stddefines.h>
-#include <stdutil/stdcarr_p.h>
+#include <stdutil/stdit.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* stdcarr_it: must first be initialized by a stdcarr iterator fcn (see below) */
-inline void       *stdcarr_it_val(const stdcarr_it *it);
-inline stdbool    stdcarr_it_equals(const stdcarr_it *it1, const stdcarr_it *it2);
-inline stdssize_t stdcarr_it_compare(const stdcarr_it *it1, const stdcarr_it *it2);
-inline stdbool    stdcarr_it_is_begin(const stdcarr_it *it);
-inline stdbool    stdcarr_it_is_end(const stdcarr_it *it);    
+#ifndef STDCARR_MIN_AUTO_ALLOC    /* minimum allocation size in # of elements */
+#  define STDCARR_MIN_AUTO_ALLOC 16
+#endif
 
-inline stdcarr_it *stdcarr_it_seek_begin(stdcarr_it *it);
-inline stdcarr_it *stdcarr_it_seek_end(stdcarr_it *it);
-inline stdcarr_it *stdcarr_it_next(stdcarr_it *it);
-inline stdcarr_it *stdcarr_it_advance(stdcarr_it *it, size_t num_advance);
-inline stdcarr_it *stdcarr_it_prev(stdcarr_it *it);
-inline stdcarr_it *stdcarr_it_retreat(stdcarr_it *it, size_t num_retreat);
-inline stdcarr_it *stdcarr_it_offset(stdcarr_it *it, stdssize_t offset);
+/* Structors */
 
-/* stdcarr */
-/* Constructors, Destructor */
-inline int  stdcarr_construct(stdcarr *carr, size_t sizeof_val);
-inline int  stdcarr_copy_construct(stdcarr *dst, const stdcarr *src);
-inline void stdcarr_destruct(stdcarr *carr);
+#define STDCARR_STATIC_CONSTRUCT(vsize, opts) { NULL, NULL, NULL, NULL, 0, 0, (vsize), (opts) }
 
-/* Iterator Interface */
-inline stdcarr_it *stdcarr_begin(const stdcarr *carr, stdcarr_it *it);
-inline stdcarr_it *stdcarr_last(const stdcarr *carr, stdcarr_it *it);
-inline stdcarr_it *stdcarr_end(const stdcarr *carr, stdcarr_it *it);
-inline stdcarr_it *stdcarr_get(const stdcarr *carr, stdcarr_it *it, size_t elem_num);
+STDINLINE stdcode  stdcarr_construct(stdcarr *carr, stdsize vsize, stduint8 opts);
+STDINLINE stdcode  stdcarr_copy_construct(stdcarr *dst, const stdcarr *src);
+STDINLINE void     stdcarr_destruct(stdcarr *carr);
+
+/* Assigners */
+
+STDINLINE stdcode  stdcarr_set_eq(stdcarr *dst, stdcarr *src);
+STDINLINE void     stdcarr_swap(stdcarr *carr1, stdcarr *carr2);
+
+/* Iterators */
+
+STDINLINE stdit *  stdcarr_begin(const stdcarr *carr, stdit *it);
+STDINLINE stdit *  stdcarr_last(const stdcarr *carr, stdit *it);
+STDINLINE stdit *  stdcarr_end(const stdcarr *carr, stdit *it);
+STDINLINE stdit *  stdcarr_get(const stdcarr *carr, stdit *it, stdsize elem_num);
+
+STDINLINE stdbool  stdcarr_is_begin(const stdcarr *carr, const stdit *it);
+STDINLINE stdbool  stdcarr_is_end(const stdcarr *carr, const stdit *it);
+STDINLINE stdsize  stdcarr_rank(const stdcarr *carr, const stdit *it);
 
 /* Size and Capacity Information */
-inline size_t  stdcarr_size(const stdcarr *carr);
-inline stdbool stdcarr_empty(const stdcarr *carr);
-inline size_t  stdcarr_high_capacity(const stdcarr *carr);
-inline size_t  stdcarr_low_capacity(const stdcarr *carr);
 
-inline size_t stdcarr_max_size(const stdcarr *carr);
-inline size_t stdcarr_val_size(const stdcarr *carr);
+STDINLINE stdsize  stdcarr_size(const stdcarr *carr);
+STDINLINE stdbool  stdcarr_empty(const stdcarr *carr);
+STDINLINE stdsize  stdcarr_high_capacity(const stdcarr *carr);
+STDINLINE stdsize  stdcarr_low_capacity(const stdcarr *carr);
+
+STDINLINE stdsize  stdcarr_max_size(const stdcarr *carr);
+STDINLINE stdsize  stdcarr_val_size(const stdcarr *carr);
 
 /* Size and Capacity Operations */
-inline int stdcarr_resize(stdcarr *carr, size_t num_elems);
-inline int stdcarr_clear(stdcarr *carr);
 
-inline int stdcarr_set_capacity(stdcarr *carr, size_t num_elems);
-inline int stdcarr_reserve(stdcarr *carr, size_t num_elems);
-inline int stdcarr_shrink_fit(stdcarr *carr);
+STDINLINE stdcode  stdcarr_resize(stdcarr *carr, stdsize num_elems);
+STDINLINE void     stdcarr_clear(stdcarr *carr);
+
+STDINLINE stdcode  stdcarr_set_capacity(stdcarr *carr, stdsize num_elems);
+STDINLINE stdcode  stdcarr_reserve(stdcarr *carr, stdsize num_elems);
+STDINLINE stdcode  stdcarr_shrink_fit(stdcarr *carr);
 
 /* Stack Operations: amoritized O(1) operations, worst case O(n) */
-inline int stdcarr_push_front(stdcarr *carr, const void *val);
-inline int stdcarr_pop_front(stdcarr *carr);
-inline int stdcarr_push_back(stdcarr *carr, const void *val);
-inline int stdcarr_pop_back(stdcarr *carr);
 
-inline int stdcarr_multi_push_front(stdcarr *carr, const void *vals, size_t num_push);
-inline int stdcarr_multi_pop_front(stdcarr *carr, size_t num_pop);
-inline int stdcarr_multi_push_back(stdcarr *carr, const void *vals, size_t num_push);
-inline int stdcarr_multi_pop_back(stdcarr *carr, size_t num_pop);
+STDINLINE stdcode  stdcarr_push_front(stdcarr *carr, const void *val);
+STDINLINE stdcode  stdcarr_push_front_n(stdcarr *carr, const void *vals, stdsize num_push);
+STDINLINE stdcode  stdcarr_push_front_seq(stdcarr *carr, const stdit *b, const stdit *e);
+STDINLINE stdcode  stdcarr_push_front_seq_n(stdcarr *carr, const stdit *b, stdsize num_push);
+STDINLINE stdcode  stdcarr_push_front_rep(stdcarr *carr, const void *val, stdsize num_times);
+
+STDINLINE void     stdcarr_pop_front(stdcarr *carr);
+STDINLINE void     stdcarr_pop_front_n(stdcarr *carr, stdsize num_pop);
+
+STDINLINE stdcode  stdcarr_push_back(stdcarr *carr, const void *val);
+STDINLINE stdcode  stdcarr_push_back_n(stdcarr *carr, const void *vals, stdsize num_push);
+STDINLINE stdcode  stdcarr_push_back_seq(stdcarr *carr, const stdit *b, const stdit *e);
+STDINLINE stdcode  stdcarr_push_back_seq_n(stdcarr *carr, const stdit *b, stdsize num_push);
+STDINLINE stdcode  stdcarr_push_back_rep(stdcarr *carr, const void *val, stdsize num_times);
+
+STDINLINE void     stdcarr_pop_back(stdcarr *carr);
+STDINLINE void     stdcarr_pop_back_n(stdcarr *carr, stdsize num_pop);
 
 /* List Operations: O(n) operations */
-inline stdcarr_it *stdcarr_insert(stdcarr_it *it, const void *val);
-inline stdcarr_it *stdcarr_erase(stdcarr_it *it);
 
-inline stdcarr_it *stdcarr_repeat_insert(stdcarr_it *it, const void *val, size_t num_times);
-inline stdcarr_it *stdcarr_multi_insert(stdcarr_it *it, const void *vals, size_t num_insert);
-inline stdcarr_it *stdcarr_multi_erase(stdcarr_it *it, size_t num_erase);
+STDINLINE stdcode  stdcarr_insert(stdcarr *carr, stdit *it, const void *val);
+STDINLINE stdcode  stdcarr_insert_n(stdcarr *carr, stdit *it, const void *vals, stdsize num_insert);
+STDINLINE stdcode  stdcarr_insert_seq(stdcarr *carr, stdit *it, const stdit *b, const stdit *e);
+STDINLINE stdcode  stdcarr_insert_seq_n(stdcarr *carr, stdit *it, const stdit *b, stdsize num_insert);
+STDINLINE stdcode  stdcarr_insert_rep(stdcarr *carr, stdit *it, const void *val, stdsize num_times);
+
+STDINLINE void     stdcarr_erase(stdcarr *carr, stdit *it);
+STDINLINE void     stdcarr_erase_n(stdcarr *carr, stdit *it, stdsize num_erase);
+STDINLINE void     stdcarr_erase_seq(stdcarr *carr, stdit *b, stdit *e);
 
 /* Data Structure Options */
-inline stdbool stdcarr_get_auto_alloc(const stdcarr *carr);
-inline void    stdcarr_set_auto_alloc(stdcarr *carr, stdbool use_auto_alloc);
+
+#define STDCARR_OPTS_NO_AUTO_GROW   0x1
+#define STDCARR_OPTS_NO_AUTO_SHRINK 0x2
+
+STDINLINE stduint8 stdcarr_get_opts(const stdcarr *carr);
+STDINLINE stdcode  stdcarr_set_opts(stdcarr *carr, stduint8 opts);
+
+/* Iterator Fcns */
+
+STDINLINE void *   stdcarr_it_val(const stdit *it);
+STDINLINE stdsize  stdcarr_it_val_size(const stdit *it);
+STDINLINE stdbool  stdcarr_it_eq(const stdit *it1, const stdit *it2);
+STDINLINE stdssize stdcarr_it_cmp(const stdit *it1, const stdit *it2);
+
+STDINLINE stdit *  stdcarr_it_next(stdit *it);
+STDINLINE stdit *  stdcarr_it_advance(stdit *it, stdsize num_advance);
+STDINLINE stdit *  stdcarr_it_prev(stdit *it);
+STDINLINE stdit *  stdcarr_it_retreat(stdit *it, stdsize num_retreat);
+STDINLINE stdit *  stdcarr_it_offset(stdit *it, stdssize offset);
 
 #ifdef __cplusplus
 }

@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, The Johns Hopkins University
+/* Copyright (c) 2000-2005, The Johns Hopkins University
  * All rights reserved.
  *
  * The contents of this file are subject to a license (the ``License'')
@@ -22,126 +22,190 @@
 
 #include <stdlib.h>
 #include <stdio.h>
-
-#ifdef USE_DMALLOC
-#include <dmalloc.h>
-#endif
-
 #include <string.h>
 #include <stdarg.h>
-#include <errno.h>
+
 #include <stdutil/stddefines.h>
 #include <stdutil/stderror.h>
 
-/* Print a message and return to caller. If errnoflag != 0, print error msg from errno. */
-inline static void stderr_doit(int errno_copy, const char *fmt, va_list ap) {
-  int ret1, ret2;
+/************************************************************************************************
+ * stderr_doit: Print a message to stderr and flush it.  If errnoflag
+ * is non-zero, also print error msg from errno.  Return # of
+ * characters written.
+ *
+ * NOTE: I'd prefer to use snprintf and vsnprintf but they aren't part of C89.
+ ***********************************************************************************************/
+
+STDINLINE static int stderr_doit(int errno_copy, const char *fmt, va_list ap) 
+{
   char buf[STDERR_MAX_ERR_MSG_LEN + 1];
+  int  ret1;
+  int  ret2 = 0;
 
-  ret1 = vsnprintf(buf, sizeof(buf), fmt, ap);
-
-  if (ret1 < 1 || ret1 > sizeof(buf)) /* couldn't fit in buffer */
-    buf[STDERR_MAX_ERR_MSG_LEN] = 0;  /* ensure null termination */
+  ret1      = vsprintf(buf, fmt, ap);  /* write the msg */
+  ret1      = STDMAX(ret1, 0);         /* zero out any error */
+  buf[ret1] = 0;                       /* ensure termination */
 
   if (errno_copy != 0) {
-    --ret1;                           /* overwrite first null termination */
-
-    ret2 = vsnprintf(buf + ret1, sizeof(buf) - ret1, ": %s", strerror(errno_copy));
-
-    if (ret2 < 1 || ret2 > sizeof(buf) - ret1) /* couldn't fit in buffer */
-      buf[STDERR_MAX_ERR_MSG_LEN] = 0;         /* ensure null termination */
+    ret2             = sprintf(buf + ret1, ": %s", strerror(errno_copy));   /* write errno msg */
+    ret2             = STDMAX(ret2, 0);                                     /* zero out any error */
+    buf[ret1 + ret2] = 0;                                                   /* ensure termination */
   }
-  fprintf(stderr, "%s\n", buf);
+
+  fprintf(stderr, "%s\r\n", buf);
   fflush(stderr);
+
+  return ret1 + ret2;
 }
 
-/* Nonfatal error unrelated to a system call. Print a message and return. */
-int stderr_msg(const char *fmt, ...) {
+/************************************************************************************************
+ * stderr_msg: Nonfatal error unrelated to a system call. Print a
+ * message and return.
+ ***********************************************************************************************/
+
+int stderr_msg(const char *fmt, ...) 
+{
+  int     ret;
+  va_list ap;
+
+  va_start(ap, fmt);
+  ret = stderr_doit(0, fmt, ap);
+  va_end(ap);
+
+  return ret;
+}
+
+/************************************************************************************************
+ * stderr_ret: Nonfatal error related to a system call. Print a
+ * message and return.
+ ***********************************************************************************************/
+
+int stderr_ret(const char *fmt, ...) 
+{
+  int     ret;
+  va_list ap;
+
+  va_start(ap, fmt);
+  ret = stderr_doit(errno, fmt, ap);
+  va_end(ap);
+
+  return ret;
+}
+
+/************************************************************************************************
+ * stderr_quit: Fatal error unrelated to a system call. Print a
+ * message and terminate.
+ ***********************************************************************************************/
+
+void stderr_quit(const char *fmt, ...) 
+{
   va_list ap;
 
   va_start(ap, fmt);
   stderr_doit(0, fmt, ap);
   va_end(ap);
-
-  return 0;
+  exit(-1);
 }
 
-/* Nonfatal error related to a system call. Print a message and return. */
-int stderr_ret(const char *fmt, ...) {
-  int errno_copy = errno;
-  va_list ap;
+/************************************************************************************************
+ * stderr_abort: Fatal error unrelated to a system call. Print a
+ * message and abort.
+ ***********************************************************************************************/
 
-  va_start(ap, fmt);
-  stderr_doit(errno_copy, fmt, ap);
-  va_end(ap);
-
-  return 0;
-}
-
-/* Fatal error unrelated to a system call. Print a message and terminate. */
-int stderr_quit(const char *fmt, ...) {
-  va_list ap;
-
-  va_start(ap, fmt);
-  stderr_doit(0, fmt, ap);
-  va_end(ap);
-  exit(1);
-
-  return 0;
-}
-
-/* Fatal error unrelated to a system call. Print a message and abort. */
-int stderr_abort(const char *fmt, ...) {
+void stderr_abort(const char *fmt, ...) 
+{
   va_list ap;
 
   va_start(ap, fmt);
   stderr_doit(0, fmt, ap);
   va_end(ap);
   abort();
-
-  return 0;
 }
 
-int stderr_pabort(const char *file_name, unsigned line_num, const char *fmt, ...) {
-  char fmt2[STDERR_MAX_ERR_MSG_LEN + 1];    /* buffer for format string to stderr_doit */
-  int errno_copy = errno, ret;
+/************************************************************************************************
+ * stderr_sys: Fatal error related to a system call. Print a message
+ * and terminate.
+ ***********************************************************************************************/
+
+void stderr_sys(const char *fmt, ...) 
+{
+  int     errno_cpy = errno;
   va_list ap;
 
-  ret = snprintf(fmt2, sizeof(fmt2), "pabort: File: %s, Line: %u, %s", file_name, line_num, fmt);
+  va_start(ap, fmt);
+  stderr_doit(errno_cpy, fmt, ap);
+  va_end(ap);
+  exit(errno_cpy != 0 ? errno_cpy : -1);
+}
 
-  if (ret < 1 || ret > sizeof(fmt2)) /* didn't fit in buffer */
-    fmt2[STDERR_MAX_ERR_MSG_LEN] = 0;       /* ensure null termination */
+/************************************************************************************************
+ * stderr_dump: Fatal error related to a system call. Print a message
+ * and abort.
+ ***********************************************************************************************/
+
+void stderr_dump(const char *fmt, ...) 
+{
+  va_list ap;
 
   va_start(ap, fmt);
-  stderr_doit(errno_copy, fmt2, ap);
+  stderr_doit(errno, fmt, ap);
   va_end(ap);
   abort();
-
-  return 0;
 }
 
-/* Fatal error related to a system call. Print a message and terminate. */
-int stderr_sys(const char *fmt, ...) {
-  int errno_copy = errno;
-  va_list ap;
+/************************************************************************************************
+ * stderr_strerr: Returns a constant string in response to a StdUtil
+ * error code.  Some StdUtil fcns can return system specific codes.
+ * In that case this fcn will return a "Unknown Error Code (system
+ * error code)" string and you should consult your system specific
+ * error lookup service.
+ ***********************************************************************************************/
 
-  va_start(ap, fmt);
-  stderr_doit(errno_copy, fmt, ap);
-  va_end(ap);
-  exit(1);
+STDINLINE const char *stderr_strerr(stdcode code)
+{
+  const char * ret;
 
-  return 0;
-}
+  switch (code) {
+  case STDESUCCESS:
+    ret = "Success";
+    break;
 
-/* Fatal error related to a system call. Print a message and abort. */
-int stderr_dump(const char *fmt, ...) {
-  int errno_copy = errno;
-  va_list ap;
+  case STDEUNKNOWN:
+    ret = "Unknown Error";
+    break;
 
-  va_start(ap, fmt);
-  stderr_doit(errno_copy, fmt, ap);
-  va_end(ap);
-  abort();
+  case STDEINVAL:
+    ret = "Invalid Argument";
+    break;
 
-  return 0;
+  case STDENOMEM:
+    ret = "Memory Allocation Failed";
+    break;
+
+  case STDEACCES:
+    ret = "Permission Denied";
+    break;
+
+  case STDEBUSY:
+    ret = "Resource Busy";
+    break;
+
+  case STDEPERM:
+    ret = "Operation Not Permitted";
+    break;
+
+  case STDENOSYS:
+    ret = "Functionality Not Implemented";
+    break;
+
+  case STDEINTR:
+    ret = "Operation Interrupted";
+    break;
+
+  default:
+    ret = "Unknown Error Code (system error code)";
+    break;
+  }
+
+  return ret;
 }

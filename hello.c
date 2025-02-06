@@ -18,8 +18,14 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2007 The Johns Hopkins University.
  * All rights reserved.
+ *
+ * Major Contributor(s):
+ * --------------------
+ *    John Lane
+ *    Raluca Musaloiu-Elefteri
+ *    Nilo Rivera
  *
  */
 
@@ -53,6 +59,7 @@
 #include "link_state.h"
 #include "protocol.h"
 #include "udp.h"
+#include "realtime_udp.h"
 #include "route.h"
 #include "state_flood.h"
 #include "stdutil/src/stdutil/stdhash.h"
@@ -63,22 +70,40 @@
 extern int32     My_Address;
 extern int16     Port;
 extern int16     Num_Neighbors;
+extern int16     Num_Discovery_Addresses;
+extern int32     Discovery_Address[MAX_DISCOVERY_ADDR];
 extern stdhash   All_Nodes;
 extern stdhash   All_Edges;
 extern Node*     Neighbor_Nodes[MAX_LINKS/MAX_LINKS_4_EDGE];
 extern Link*     Links[MAX_LINKS];
 extern int       network_flag;
-extern channel   Local_Send_Channels[MAX_LINKS_4_EDGE];
+extern int       Route_Weight;
+extern channel   Local_Recv_Channels[MAX_LINKS_4_EDGE];
 extern Prot_Def  Edge_Prot_Def;
 extern Prot_Def  Groups_Prot_Def;
+extern int       Security;
+extern int       Wireless;
 
 /* Local variables */
 
-static const sp_time zero_timeout  = {     0,    0};
-static const sp_time short_timeout = {     0,    50000};  /* 50 milliseconds */
-static const sp_time long_timeout  = {     0,    200000}; /* 200 milliseconds */
-static const sp_time cnt_timeout   = {     0,    100000}; /* 100 milliseconds */
-static       sp_time hello_timeout = {     1,    0};      /* 1 second */
+static const sp_time zero_timeout   = {     0,    0};
+static const sp_time short_timeout  = {     0,    50000};  /* 50 milliseconds */
+static const sp_time long_timeout   = {     0,    200000}; /* 200 milliseconds */
+static       sp_time cnt_timeout    = {     0,    100000}; /* 100 milliseconds */
+static       sp_time hello_timeout  = {     1,    0};      /* 1 seconds */
+static       sp_time ad_timeout     = {    60,    0};      /* 60 seconds */
+
+
+
+void Flip_hello_pkt( hello_packet *hello_pkt )
+{
+    hello_pkt->seq_no          = Flip_int32(hello_pkt->seq_no);
+    hello_pkt->my_time_sec     = Flip_int32(hello_pkt->my_time_sec);
+    hello_pkt->my_time_usec    = Flip_int32(hello_pkt->my_time_usec);
+    hello_pkt->response_seq_no = Flip_int32(hello_pkt->response_seq_no);
+    hello_pkt->diff_time       = Flip_int32(hello_pkt->diff_time);
+    hello_pkt->loss_rate       = Flip_int32(hello_pkt->loss_rate);
+}
 
 
 
@@ -97,13 +122,34 @@ static       sp_time hello_timeout = {     1,    0};      /* 1 second */
 void Init_Connections(void)
 {
     int16 linkid;
+    sp_time now, rand_hello_timeout;
+
+    now = E_get_time();
+    srand(now.usec);
 
     /* Start the hello protocol on all the known links */
-    for(linkid=0; linkid<MAX_LINKS && Links[linkid] != NULL; linkid++) 
-        Send_Hello(linkid, NULL);
+    for(linkid=0; linkid<MAX_LINKS && Links[linkid] != NULL; linkid++)  {
+        if (Wireless) {
+            /* Try to avoid synchronized hello in Wireless */
+            rand_hello_timeout.sec = (int)(4.0*rand()/(RAND_MAX+1.0));
+            rand_hello_timeout.usec = (int)(999999.0*rand()/(RAND_MAX+1.0));
+	        E_queue(Send_Hello, linkid, NULL, rand_hello_timeout);
+        } else {
+            Send_Hello(linkid, NULL);
+        }
+    }
 
     /* Start the link recover protocol (hello ping) */
-    Send_Hello_Ping(0, NULL);
+    Send_Hello_Ping(0, NULL); 
+
+    /* Start Discovery of neighbors if requested */
+    if (Num_Discovery_Addresses > 0) {
+        Send_Discovery_Hello_Ping(0, NULL);
+    }
+    if (Wireless) {
+        hello_timeout.sec = 4;
+        cnt_timeout.sec = 1;
+    } 
 }
 
 
@@ -126,7 +172,7 @@ void Send_Hello(int linkid, void* dummy)
     int cnt;
     
     if(Links[linkid] == NULL) {
-	Alarm(PRINT, "Send Hello on a non existing link !\n");
+	Alarm(DEBUG, "Send Hello on a non existing link !\n");
 	return;
     }
     cnt = Links[linkid]->other_side_node->counter++;
@@ -136,7 +182,7 @@ void Send_Hello(int linkid, void* dummy)
      */
  
     if(cnt > DEAD_LINK_CNT) {
-        Alarm(PRINT, "Disconnecting node %d.%d.%d.%d\n", 
+        Alarm(DEBUG, "Disconecting node %d.%d.%d.%d\n", 
 	      IP1(Links[linkid]->other_side_node->address),
 	      IP2(Links[linkid]->other_side_node->address),
 	      IP3(Links[linkid]->other_side_node->address),
@@ -146,11 +192,22 @@ void Send_Hello(int linkid, void* dummy)
     }
     else {
         Net_Send_Hello((int16u)linkid, 0);
+	Clean_RT_history(Links[linkid]->other_side_node);
 	E_queue(Send_Hello, linkid, NULL, hello_timeout);
 	
-	if(cnt > 0) {
-	    E_queue(Send_Hello_Request_Cnt, linkid, NULL, long_timeout);
-	}
+	if(cnt > 8 || (Wireless && cnt > 2)) {
+	    Alarm(DEBUG, "cnt: %d :: %d.%d.%d.%d\n", cnt,
+		  IP1(Links[linkid]->other_side_node->address),
+		  IP2(Links[linkid]->other_side_node->address),
+		  IP3(Links[linkid]->other_side_node->address),
+		  IP4(Links[linkid]->other_side_node->address));
+
+    	    //E_queue(Send_Hello_Request_Cnt, linkid, NULL, long_timeout);
+            if (Wireless) {
+    	        E_queue(Send_Hello_Request_Cnt, linkid, NULL, long_timeout);
+            }
+        }
+	
     }
 }
 
@@ -171,7 +228,8 @@ void Send_Hello(int linkid, void* dummy)
 /***********************************************************/
 
 void Send_Hello_Request(int linkid, void* dummy)
-{
+{ 
+    //    Alarm(PRINT, "Send_Hello_Request\n");
     Net_Send_Hello((int16u)linkid, 1);
 }
 
@@ -197,9 +255,13 @@ void Send_Hello_Request_Cnt(int linkid, void* dummy)
     int cnt;
     
     if(Links[linkid] == NULL) {
-	Alarm(PRINT, "Send Hello on a non existing link !\n");
+	Alarm(DEBUG, "Send Hello on a non existing link !\n");
 	return;
     }
+
+    //    Alarm(PRINT, "Send_Hello_Request_Cnt\n");
+
+
     cnt = Links[linkid]->other_side_node->counter++;
     
     if(cnt > DEAD_LINK_CNT) {
@@ -221,6 +283,29 @@ void Send_Hello_Request_Cnt(int linkid, void* dummy)
 
 
 /***********************************************************/
+/* Send_Discovery(int linkid, void *dummy)                 */
+/*                                                         */
+/* Called periodically by the event system.                */
+/* Sends a hello message on autodiscovery link             */
+/*                                                         */
+/* Arguments                                               */
+/*                                                         */
+/* NONE                                                    */
+/*                                                         */
+/***********************************************************/
+
+void Send_Discovery_Hello_Ping(int dummy_int, void* dummy)
+{ 
+    int i;
+    for (i=0;i<Num_Discovery_Addresses;i++) {
+        Net_Send_Hello_Ping(Discovery_Address[i]); 
+    }
+    E_queue(Send_Discovery_Hello_Ping, 0, NULL, ad_timeout);
+}
+
+
+
+/***********************************************************/
 /* Send_Hello_Ping(int linkid, void *dummy)                */
 /*                                                         */
 /* Called periodically by the event system.                */
@@ -237,15 +322,17 @@ void Send_Hello_Request_Cnt(int linkid, void* dummy)
 
 void Send_Hello_Ping(int dummy_int, void* dummy)
 {
-    stdhash_it it, src_it;
+    stdit it, src_it;
     Edge *edge;
     State_Chain *s_chain;
 
+    //    Alarm(PRINT, "Send_Hello_Ping\n");
+
     stdhash_find(&All_Edges, &src_it, &My_Address);
-    if(!stdhash_it_is_end(&src_it)) {
+    if(!stdhash_is_end(&All_Edges, &src_it)) {
 	s_chain = *((State_Chain **)stdhash_it_val(&src_it));
 	stdhash_begin(&s_chain->states, &it);
-	while(!stdhash_it_is_end(&it)) {
+	while(!stdhash_is_end(&s_chain->states, &it)) {
 	    edge = *((Edge **)stdhash_it_val(&it));
 	    if(edge->cost < 0)
 		Net_Send_Hello_Ping(edge->dest->address);       
@@ -296,8 +383,7 @@ void Net_Send_Hello(int16 linkid, int mode)
     else
 	hdr.type = HELLO_REQ_TYPE;
 	
-    hdr.type    = Set_endian(hdr.type);
-
+    hdr.type      = Set_endian(hdr.type);
     hdr.sender_id = My_Address;
     hdr.data_len  = sizeof(hello_packet);
     hdr.ack_len   = 0;
@@ -310,15 +396,27 @@ void Net_Send_Hello(int16 linkid, int mode)
     pkt.seq_no       = c_data->hello_seq++;
     pkt.my_time_sec  = (int32)now.sec;
     pkt.my_time_usec = (int32)now.usec;
+    pkt.response_seq_no = c_data->other_side_hello_seq;
     pkt.diff_time    = c_data->diff_time;
     pkt.loss_rate    = Compute_Loss_Rate(Links[linkid]->other_side_node);
     
-    
     if(network_flag == 1) {
-	ret = DL_send(Links[linkid]->chan, 
-		      Links[linkid]->other_side_node->address,
-		      Links[linkid]->port, 
-		      &scat );
+#ifdef SPINES_SSL
+        if (!Security) {
+#endif
+	    ret = DL_send(Links[linkid]->chan, 
+			  Links[linkid]->other_side_node->address,
+			  Links[linkid]->port, 
+			  &scat );
+#ifdef SPINES_SSL
+	} else {
+	    ret = DL_send_SSL(Links[linkid]->chan, 
+			      Links[linkid]->link_node_id,
+			      Links[linkid]->other_side_node->address,
+			      Links[linkid]->port, 
+			      &scat );
+	}
+#endif
     }
 }
 
@@ -345,6 +443,8 @@ void Net_Send_Hello_Ping(int32 address)
 
     now = E_get_time();
 
+    //    Alarm(PRINT, "Net_Send_Hello_Ping\n");
+
     scat.num_elements = 2;
     scat.elements[0].len = sizeof(packet_header);
     scat.elements[0].buf = (char *) &hdr;
@@ -359,16 +459,28 @@ void Net_Send_Hello_Ping(int32 address)
     hdr.ack_len   = 0;
     hdr.seq_no = 0xffff;
 
-    pkt.seq_no       = 0;
+    pkt.seq_no       = 2;
     pkt.my_time_sec  = (int32)now.sec;
     pkt.my_time_usec = (int32)now.usec;
     pkt.diff_time    = 0;
 
     if(network_flag == 1) {
-	ret = DL_send(Local_Send_Channels[CONTROL_LINK], 
-		      address,
-		      Port, 
-		      &scat );
+#ifdef SPINES_SSL
+	if (!Security) {
+#endif
+		ret = DL_send(Local_Recv_Channels[CONTROL_LINK], 
+			  address,
+                          Port+CONTROL_LINK, 
+			  &scat );
+#ifdef SPINES_SSL
+	} else {
+	    ret = DL_send_SSL(Local_Recv_Channels[CONTROL_LINK], 
+			      CONTROL_LINK,
+			      address,
+			      Port + CONTROL_LINK, 
+			      &scat );
+	}
+#endif
     }
 }
 
@@ -392,19 +504,29 @@ void Net_Send_Hello_Ping(int32 address)
 
 void Process_hello_packet(char *buf, int remaining_bytes, int32 sender, int32u type)
 {
-    sp_time now, diff, my_diff, remote, rtt;
+    sp_time now, my_diff, remote, rtt, rand_hello_timeout;
     hello_packet *pkt;
-    stdhash_it it;
+    stdit it;
     Node *nd;
     Edge *edge;
-    int16 linkid, udp_linkid, rel_udp_linkid; 
+    int16 linkid, udp_linkid, rel_udp_linkid, rt_udp_linkid; 
     int16 nodeid;
-    int32u remote_seq;
+    int32u remote_seq, tmp;
+    int32 rtt_int;
     Control_Data *c_data;
     int32 sender_id = sender;
-    float loss_rate, throughput, tmp1, tmp2;
+    int time_rnd;
+    float loss_rate;
 
     now = E_get_time();
+    srand(now.usec);
+    time_rnd = (int)(30.0*rand()/(RAND_MAX+1.0));
+
+    /* Try to avoid synchronized hello in Wireless */
+    if (Wireless) {
+        rand_hello_timeout.sec = (int)(4.0*rand()/(RAND_MAX+1.0));
+        rand_hello_timeout.usec = (int)(1000000.0*rand()/(RAND_MAX+1.0)) - 1;
+    }
 
     if(remaining_bytes != sizeof(hello_packet)) {
         Alarm(EXIT, "Process_hello_packet: Wrong no. of bytes for hello: %d\n",
@@ -412,13 +534,8 @@ void Process_hello_packet(char *buf, int remaining_bytes, int32 sender, int32u t
     }
 
     pkt = (hello_packet*) buf;
-
-    if(!Same_endian(type)) { 
-        pkt->seq_no       = Flip_int32(pkt->seq_no);	
-        pkt->my_time_sec  = Flip_int32(pkt->my_time_sec);	
-        pkt->my_time_usec = Flip_int32(pkt->my_time_usec);	
-        pkt->diff_time    = Flip_int32(pkt->diff_time);
-        pkt->loss_rate    = Flip_int32(pkt->loss_rate);
+    if(!Same_endian(type)) {
+	Flip_hello_pkt(pkt);
     }
 
 
@@ -426,17 +543,25 @@ void Process_hello_packet(char *buf, int remaining_bytes, int32 sender, int32u t
 
     remote.sec  = pkt->my_time_sec;
     remote.usec = pkt->my_time_usec;
-    diff.sec    = pkt->diff_time/1000000;
-    diff.usec   = pkt->diff_time%1000000;
     remote_seq  = pkt->seq_no;
     
     my_diff = E_sub_time(now, remote);
-    rtt     = E_add_time(my_diff, diff);
+    rtt_int = my_diff.sec*1000000 + my_diff.usec + pkt->diff_time*100;
+    if(rtt_int < 0) {
+	/*This can be because of the precisopn of 0.1ms in pkt->diff_time */
+	rtt_int = 100; /* The precision value */
+    }
+    rtt.sec  = rtt_int/1000000;
+    rtt.usec = rtt_int%1000000;
+    
+
+    Alarm(DEBUG, "REM: %d.%06d; NOW: %d.%06d; MY_DIF: %d.%06d; RTT %d.%06d\n", 
+	  remote.sec, remote.usec, now.sec, now.usec, my_diff.sec, my_diff.usec, rtt.sec, rtt.usec);
 
 
     /* See who sent the message */
     stdhash_find(&All_Nodes, &it, &sender_id);
-    if(!stdhash_it_is_end(&it)) {
+    if(!stdhash_is_end(&All_Nodes, &it)) {
       
         nd = *((Node **)stdhash_it_val(&it));
 
@@ -449,9 +574,14 @@ void Process_hello_packet(char *buf, int remaining_bytes, int32 sender, int32u t
 
 	    c_data = (Control_Data*)nd->link[CONTROL_LINK]->prot_data;
 
-	    if(pkt->seq_no < c_data->other_side_hello_seq) {
-	        Alarm(PRINT, "\n\nMy neighbor crashed and I didn't know...\n\n");
-	        Disconnect_Node(sender_id);
+	    if(pkt->seq_no + 3 < c_data->other_side_hello_seq) {
+		if(pkt->seq_no < 2) {
+		    Alarm(DEBUG, "\n\nMy neighbor crashed and I didn't know: %d :: %d; %d.%d.%d.%d\n\n",
+			  pkt->seq_no, c_data->other_side_hello_seq,
+			  IP1(sender_id), IP2(sender_id), IP3(sender_id), IP4(sender_id));
+		    Disconnect_Node(sender_id);
+		}
+		return;
 	    }
 	}
 
@@ -461,25 +591,43 @@ void Process_hello_packet(char *buf, int remaining_bytes, int32 sender, int32u t
 	        Alarm(EXIT, "Process_hello_packet(): No control link !\n");
 
 	    c_data = (Control_Data*)nd->link[CONTROL_LINK]->prot_data;
-	    c_data->diff_time = my_diff.sec*1000000 + my_diff.usec;
+	    c_data->diff_time = my_diff.sec*10000 + my_diff.usec/100;
 	    c_data->other_side_hello_seq = remote_seq;
 
 	    edge = (Edge*)Find_State(&All_Edges, My_Address, sender_id);
 	    if(edge == NULL)
 	        Alarm(EXIT, "Process_hello_packet(): No overlay edge !\n");
 
-	    /* Update round trip time */
 
-	    c_data->rtt = 0.8*c_data->rtt + 0.2*(rtt.sec*1000 + rtt.usec/1000);
-	    if(c_data->rtt < 1)
-	      c_data->rtt = 1;
-	    
-	    if((c_data->reported_rtt == UNKNOWN)||
-	       ((abs(c_data->reported_rtt - c_data->rtt) > 0.1*c_data->reported_rtt)&&
-		(abs(c_data->reported_rtt - c_data->rtt) >= 1))) {
-		if(Edge_Update_Cost(nd->link[CONTROL_LINK]->link_id, LATENCY_ROUTE) > 0) {
-		    c_data->reported_rtt = c_data->rtt;		    
+
+
+	    /* Update round trip time */
+	    if((c_data->hello_seq <= pkt->response_seq_no + 2)) {
+		tmp = rtt.sec*1000 + rtt.usec/1000;
+		if((tmp > (int32u)(c_data->rtt + 20))&&(c_data->rtt > 1)) {
+		    tmp = c_data->rtt + 20; /* RTT cannot grow by more than 20 milliseconds per second */
 		}
+		c_data->rtt = 0.99*c_data->rtt + 0.01*(((float)tmp)+0.5);
+		if(c_data->rtt < 1)
+		    c_data->rtt = 1;
+		Alarm(DEBUG, "@\trtt\t%d\t%d\t%d\n", now.sec, tmp, (int)c_data->rtt);
+	    
+	    
+		if(now.sec > edge->my_timestamp_sec + 30 + time_rnd) {
+		    if((Route_Weight == LATENCY_ROUTE)||(Route_Weight == AVERAGE_ROUTE)) {
+			if((c_data->reported_rtt == UNKNOWN)||
+			   ((abs(c_data->reported_rtt - c_data->rtt) > 0.15*c_data->reported_rtt)&&
+			    (abs(c_data->reported_rtt - c_data->rtt) >= 2))) { /* 1 ms accuracy one-way*/
+			    if(Edge_Update_Cost(nd->link[CONTROL_LINK]->link_id, Route_Weight) > 0) {
+				c_data->reported_rtt = c_data->rtt;		    
+			    }
+			}
+		    }
+		}
+	    }
+	    else {
+		Alarm(DEBUG, "My Seq_no: %d; Response Seq_no: %d\n", 
+		      c_data->hello_seq, pkt->response_seq_no);
 	    }
 
 	    if(nd->link[CONTROL_LINK]->r_data == NULL)
@@ -502,6 +650,7 @@ void Process_hello_packet(char *buf, int remaining_bytes, int32 sender, int32u t
 		nd->link[CONTROL_LINK]->r_data->flags = CONNECTED_LINK;
 
 		udp_linkid = Create_Link(sender_id, UDP_LINK);
+		rt_udp_linkid = Create_Link(sender_id, REALTIME_UDP_LINK);
 		rel_udp_linkid = Create_Link(sender_id, RELIABLE_UDP_LINK);
 		if(Links[rel_udp_linkid] == NULL)
 		    Alarm(EXIT, "Process_hello_packet: could not create rel_udp\n");
@@ -509,7 +658,17 @@ void Process_hello_packet(char *buf, int remaining_bytes, int32 sender, int32u t
 
 
 		E_queue(Send_Hello, nd->link[CONTROL_LINK]->link_id, NULL, zero_timeout);
+		E_queue(Try_to_Send, nd->link[CONTROL_LINK]->link_id, NULL, zero_timeout);
+		E_queue(Try_to_Send, nd->link[RELIABLE_UDP_LINK]->link_id, NULL, zero_timeout);
 
+
+
+		Alarm(PRINT, "Connecting node %d.%d.%d.%d\n", 
+		      IP1(nd->address),
+		      IP2(nd->address),
+		      IP3(nd->address),
+		      IP4(nd->address));
+				
 		Alarm(DEBUG, "!!! Sending all links\n");
 	        E_queue(Net_Send_State_All, nd->link[CONTROL_LINK]->link_id, 
 			&Edge_Prot_Def, short_timeout);
@@ -524,74 +683,46 @@ void Process_hello_packet(char *buf, int remaining_bytes, int32 sender, int32u t
 	    }
 	    else {
 		/* This is a connected node */
-		if(pkt->loss_rate == UNKNOWN) {
-		    Alarm(DEBUG, "Loss rate to %d.%d.%d.%d: N/A; rtt: %7d\n", 
-		    	  IP1(nd->address), IP2(nd->address),
-		    	  IP3(nd->address), IP4(nd->address), c_data->rtt);
-		    
-		    Alarm(DEBUG, "%d.%06d\t0.0\n", now.sec, now.usec);
-		}
-		else {
-		    loss_rate = pkt->loss_rate;
+		if(pkt->loss_rate != UNKNOWN) {
+		    loss_rate = (float)pkt->loss_rate;
 		    loss_rate /= LOSS_RATE_SCALE;
-		    
+		     
+		    /*c_data->est_loss_rate = (float)(0.9*c_data->est_loss_rate + 0.1*loss_rate);*/
 		    c_data->est_loss_rate = loss_rate;
 		    
-		    if(c_data->reported_loss_rate == UNKNOWN) {
-			if(Edge_Update_Cost(nd->link[CONTROL_LINK]->link_id, LOSSRATE_ROUTE) > 0) {
-			    c_data->reported_loss_rate = c_data->est_loss_rate;			
-			}
-		    }
-		    else {
-			if(c_data->reported_loss_rate > c_data->est_loss_rate) {
-			    if(c_data->reported_loss_rate - c_data->est_loss_rate >
-			       0.1*c_data->reported_loss_rate) {
-				c_data->reported_loss_rate = c_data->est_loss_rate;
-				if( Edge_Update_Cost(nd->link[CONTROL_LINK]->link_id, LOSSRATE_ROUTE) > 0) {
-				    c_data->reported_loss_rate = c_data->est_loss_rate;	    
+		    Alarm(DEBUG, "@\tloss\t%d\t%d\t%5.3f\n", 
+			  nd->link[CONTROL_LINK]->link_id, now.sec, c_data->est_loss_rate);
+
+		    if(now.sec > edge->my_timestamp_sec + 30 + time_rnd) {		    
+			if((Route_Weight == LOSSRATE_ROUTE)||(Route_Weight == AVERAGE_ROUTE)) {
+			    if(c_data->reported_loss_rate == UNKNOWN) {
+				if(Edge_Update_Cost(nd->link[CONTROL_LINK]->link_id, Route_Weight) > 0) {
+				    c_data->reported_loss_rate = c_data->est_loss_rate;			
+				}
+			    }
+			    else {
+				if(c_data->reported_loss_rate > c_data->est_loss_rate) {
+				    if(c_data->reported_loss_rate - c_data->est_loss_rate >
+				       0.15*c_data->reported_loss_rate) {
+					c_data->reported_loss_rate = c_data->est_loss_rate;
+					if( Edge_Update_Cost(nd->link[CONTROL_LINK]->link_id, Route_Weight) > 0) {
+					    c_data->reported_loss_rate = c_data->est_loss_rate;	    
+					}
+				    }
+				}
+				else if(c_data->est_loss_rate - c_data->reported_loss_rate >
+					0.15*c_data->reported_loss_rate) {
+				    if(Edge_Update_Cost(nd->link[CONTROL_LINK]->link_id, Route_Weight) > 0) {
+					c_data->reported_loss_rate = c_data->est_loss_rate;
+				    }
 				}
 			    }
 			}
-			else if(c_data->est_loss_rate - c_data->reported_loss_rate >
-			       0.1*c_data->reported_loss_rate) {
-			    if(Edge_Update_Cost(nd->link[CONTROL_LINK]->link_id, LOSSRATE_ROUTE) > 0) {
-				c_data->reported_loss_rate = c_data->est_loss_rate;
-			    }
-			}
 		    }
-
-		    Alarm(DEBUG, "Loss rate to %d.%d.%d.%d: %5.3f\%; rtt: %7d ", 
+		    Alarm(DEBUG, "Loss rate to %d.%d.%d.%d: %5.3f\%; rtt: %5.3f\n", 
 			  IP1(nd->address), IP2(nd->address),
 			  IP3(nd->address), IP4(nd->address), 
 			  c_data->est_loss_rate*100, c_data->rtt);
-		    
-		    if(c_data->rtt > 0) {
-			/*t = 1/(r*sqrt(2*p/3) + trto*3*sqrt(3*p/8)*p*(1+32*pow(p, 2)));*/ 
-			tmp1 = c_data->rtt;
-			tmp1 /= 1000000; /* tmp1 = RTT in seconds*/
-			tmp1 *= sqrt(2*loss_rate/3); /* tmp1 = r*sqrt(2*p/3) */
-			
-			tmp2 = c_data->rtt;
-			tmp2 /= 1000000; /* tmp2 = RTT in seconds*/
-			tmp2 *= 3*sqrt(3*loss_rate/8); /* tmp2 = trto*3*sqrt(3*p/8) */
-			tmp2 *= loss_rate*(1+32*loss_rate*loss_rate); /* tmp2 = trto*3*sqrt(3*p/8)*p*(1+32*pow(p, 2)) */
-			
-			throughput = 1/(tmp1+tmp2);
-			
-			if(c_data->est_tcp_rate == UNKNOWN) {
-			    c_data->est_tcp_rate = throughput;
-			}
-			else {
-			    c_data->est_tcp_rate = 
-				0.8*c_data->est_tcp_rate + 0.2*throughput;
-			}
-			Alarm(DEBUG, " TCP rate: %6.3f : %6.3f\n", c_data->est_tcp_rate, throughput);
-			Alarm(DEBUG, "%d.%06d\t%5.3f\n", now.sec, now.usec, 
-			      c_data->est_tcp_rate);
-		    }
-		    else {
-			Alarm(DEBUG, "\n");
-		    }
 		}
 	    }
 	}
@@ -615,17 +746,21 @@ void Process_hello_packet(char *buf, int remaining_bytes, int32 sender, int32u t
 	    
 	    linkid = Create_Link(sender_id, CONTROL_LINK);
 	    c_data = (Control_Data*)Links[linkid]->prot_data;
-	    c_data->diff_time = my_diff.sec*1000000 + my_diff.usec;
+	    c_data->diff_time = my_diff.sec*10000 + my_diff.usec/100;
 	    c_data->other_side_hello_seq = remote_seq;
 	    
-	    E_queue(Send_Hello, linkid, NULL, zero_timeout);
+            if (Wireless) {
+                E_queue(Send_Hello, linkid, NULL, rand_hello_timeout);
+            } else {
+                E_queue(Send_Hello, linkid, NULL, zero_timeout);
+            }
 	}
     }
     else {
         Create_Node(sender_id, NEIGHBOR_NODE | NOT_YET_CONNECTED_NODE);
 
 	stdhash_find(&All_Nodes, &it, &sender_id);
-	if(stdhash_it_is_end(&it)) 
+	if(stdhash_is_end(&All_Nodes, &it)) 
 	    Alarm(EXIT, "Process_hello_packet; could not create node\n");
         nd = *((Node **)stdhash_it_val(&it));
 	nd->last_time_heard = now;
@@ -633,10 +768,14 @@ void Process_hello_packet(char *buf, int remaining_bytes, int32 sender, int32u t
 	
 	linkid = Create_Link(sender_id, CONTROL_LINK);
 	c_data = (Control_Data*)Links[linkid]->prot_data;
-	c_data->diff_time = my_diff.sec*1000000 + my_diff.usec;
+	c_data->diff_time = my_diff.sec*10000 + my_diff.usec/100;
 	c_data->other_side_hello_seq = remote_seq;
 	
-	E_queue(Send_Hello, linkid, NULL, zero_timeout);
+        if (Wireless) {
+            E_queue(Send_Hello, linkid, NULL, rand_hello_timeout);
+        } else {
+            E_queue(Send_Hello, linkid, NULL, zero_timeout);
+        }
     }
     
 }
@@ -658,14 +797,14 @@ void Process_hello_packet(char *buf, int remaining_bytes, int32 sender, int32u t
 
 void Process_hello_ping_packet(int32 sender, int mode)
 {
-    stdhash_it it;
+    stdit it;
     int16 linkid, nodeid;
     Node *nd;
 
 
     stdhash_find(&All_Nodes, &it, &sender);
 
-    if(stdhash_it_is_end(&it)) {
+    if(stdhash_is_end(&All_Nodes, &it)) {
         Create_Node(sender, REMOTE_NODE);
 	stdhash_find(&All_Nodes, &it, &sender);
     }

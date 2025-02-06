@@ -1,3 +1,4 @@
+
 /*
  * Spines.
  *     
@@ -18,21 +19,28 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2007 The Johns Hopkins University.
  * All rights reserved.
+ *
+ * Major Contributor(s):
+ * --------------------
+ *    John Lane
+ *    Raluca Musaloiu-Elefteri
+ *    Nilo Rivera
  *
  */
 
 #include "spines_lib.h"
+#include "net_types.h"
 
 #ifndef SESSION_H
 #define SESSION_H
 
 
-#define READY_LEN           0
-#define PARTIAL_LEN         1
+#define READY_LEN           1
 #define READY_DATA          2
-#define PARTIAL_DATA        3
+#define READY_ENDIAN        3
+
 
 #define READ_DESC           1
 #define EXCEPT_DESC         2
@@ -47,7 +55,6 @@
 #define UDP_SES_TYPE        1
 #define LISTEN_SES_TYPE     2
 #define RELIABLE_SES_TYPE   3
-#define REL_MCAST_SES_TYPE  4
 
 #define BIND_TYPE_MSG       1
 #define CONNECT_TYPE_MSG    2
@@ -57,31 +64,65 @@
 #define LEAVE_TYPE_MSG      6
 #define LINKS_TYPE_MSG      7
 #define REL_JOIN_TYPE_MSG   8
-#define SETLOSS_TYPE_MSG    9
-
+#define SETLINK_TYPE_MSG    9
+#define FLOOD_SEND_TYPE_MSG 10
+#define FLOOD_RECV_TYPE_MSG 11
+#define ADD_NEIGHBOR_MSG    12
+#define TRACEROUTE_TYPE_MSG 13
+#define LOOP_TYPE_MSG       14
 
 #define SES_CLIENT_ON       1
 #define SES_CLIENT_OFF      2
 #define SES_CLIENT_ORPHAN   3
 
-#define MAX_BUFF_SESS      20
+#define MAX_BUFF_SESS      50
+#define MAX_PKT_SEQ     10000
+#define MAX_SPINES_MSG   1430
+
 
 #include "stdutil/src/stdutil/stdcarr.h"
+#include "util/scatter.h"
 #include "link.h" /* For Reliable_Data */
+
+
+typedef struct Frag_Packet_d {
+    sys_scatter scat;
+    int16u recv_elements;
+    int16u sess_id;
+    int16u seq_no;
+    int16u snd_port;
+    int32 sender;
+    int32 timestamp_sec;
+    struct Frag_Packet_d *next;
+    struct Frag_Packet_d *prev;
+} Frag_Packet;
+
 
 typedef struct Session_d {
     int32u sess_id;
     channel sk;
+    int32  endianess_type;
     int16  type;
     int32  links_used;
-    byte   client_stat;
+    int32  rnd_num;
+    int32  udp_addr;
+    int32  udp_port;
+    char   client_stat;
     int16u port;
-    int16u total_len;
-    int16u partial_len;
+    int32 total_len;
+    int32 read_len;
+    int32 received_len;
+    int32 partial_len;
+    int16u seq_no;
+    int32 frag_num;
+    int32 frag_idx;
+    udp_header save_hdr; 
     int16  state;
-    byte   fd_flags;    
+    char   fd_flags;    
     char   *data;
-    stdcarr udp_deliver_buff;  /* Sending UDP buffer to be delivered */
+    char   multicast_loopback;    
+    stdcarr rel_deliver_buff;  /* Sending buffer to be delivered for E2E reliability*/
+    Frag_Packet *frag_pkts;
     int16u sent_bytes;
     struct Reliable_Data_d *r_data;
     int32  rel_otherside_addr;
@@ -93,21 +134,39 @@ typedef struct Session_d {
     stdhash joined_groups;
     int32 rel_mcast_flags;
     int close_reason;
+
+    /* Sender Flooder */
+    int Rate;
+    sp_time Start_time;
+    int Num_packets;
+    int Sent_packets;
+    int32 Sendto_address;
+    int32 Sendto_port;
+    int Packet_size;
+
+    /*Receiver Flooder*/
+    int recv_fd_flag;
+    int fd;
 } Session;
 
+
+void Session_Flooder_Send(int sesid, void *dummy);
 
 void Init_Session(void);
 void Session_Accept(int sk_local, int dummy, void *dummy_p);
 void Session_Read(int sk, int dummy, void *dummy_p);
-void Session_Close(int sk, int reason);
+void Session_Close(int sesid, int reason);
 int  Process_Session_Packet(struct Session_d *ses);
 int  Deliver_UDP_Data(char* buff, int16u buf_len, int32u type);
 int  Session_Deliver_Data(Session *ses, char* buff, int16u buf_len, int32u type, int32 flags);
 void Session_Write(int sk, int sess_id, void *dummy_p);
+void Ses_Send_ID(struct Session_d *ses);
+void Ses_Send_ERR(int address, int port);
 void Block_Session(struct Session_d *ses);
 void Resume_Session(struct Session_d *ses);
 void Block_All_Sessions(void);
 void Resume_All_Sessions(void);
 void Try_Close_Session(int sesid, void *dummy); 
+void Session_UDP_Read(int sk, int dmy, void * dmy_p);
 
 #endif

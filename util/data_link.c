@@ -16,18 +16,18 @@
  * License.
  *
  * The Creators of Spread are:
- *  Yair Amir, Michal Miskin-Amir, Jonathan Stanton.
+ *  Yair Amir, Michal Miskin-Amir, Jonathan Stanton, John Schultz.
  *
- *  Copyright (C) 1993-2003 Spread Concepts LLC <spread@spreadconcepts.com>
+ *  Copyright (C) 1993-2006 Spread Concepts LLC <info@spreadconcepts.com>
  *
  *  All Rights Reserved.
  *
  * Major Contributor(s):
  * ---------------
- *    Cristina Nita-Rotaru crisn@cnds.jhu.edu - group communication security.
- *    Theo Schlossnagle    jesus@omniti.com - Perl, skiplists, autoconf.
+ *    Ryan Caudy           rcaudy@gmail.com - contributions to process groups.
+ *    Cristina Nita-Rotaru crisn@cs.purdue.edu - group communication security.
+ *    Theo Schlossnagle    jesus@omniti.com - Perl, autoconf, old skiplist.
  *    Dan Schoenblum       dansch@cnds.jhu.edu - Java interface.
- *    John Schultz         jschultz@cnds.jhu.edu - contribution to process group membership.
  *
  *
  * This file is also licensed by Spread Concepts LLC under the Spines 
@@ -55,26 +55,33 @@
 #include        <sys/time.h>
 #include        <unistd.h>
 
+#include        <errno.h>
 #else	/* ARCH_PC_WIN95 */
 
 #include	<winsock.h>
 
 #endif	/* ARCH_PC_WIN95 */
 
-#include <errno.h>
 #include <string.h>
 #include <assert.h>
 #include "data_link.h"
+/*#include "status.h"*/
 #include "alarm.h"
 #include "sp_events.h" /* for sp_time */
+
+#ifdef SPINES_SSL
+int Debug_SSL_datalink = 0;
+#endif
 
 channel	DL_init_channel( int32 channel_type, int16 port, int32 mcast_address, int32 interface_address )
 {
 	channel			chan;
 	struct  sockaddr_in	soc_addr;
-	int			on=1;
+	int			on=1, off=0;
         int			i1,i2,i3,i4;
+#ifdef	IP_MULTICAST_TTL
 	unsigned char		ttl_val;
+#endif
 
 	if((chan = socket(AF_INET, SOCK_DGRAM, 0)) == -1)
 		Alarm( EXIT, "DL_init_channel: socket error for port %d\n", port );
@@ -86,7 +93,7 @@ channel	DL_init_channel( int32 channel_type, int16 port, int32 mcast_address, in
             		Alarm( EXIT, "DL_init_channel: setsockopt error for port %d\n",port);
 		Alarm( DATA_LINK, "DL_init_channel: setsockopt for send and broadcast went ok\n");
 
-#ifndef	ARCH_SPARC_SUNOS	/* no support for IP multicast in old SunOS */
+#ifdef	IP_MULTICAST_TTL
 		/* ### Isn't this for sending??? */
 		ttl_val = 1;
         	if (setsockopt(chan, IPPROTO_IP, IP_MULTICAST_TTL, (void *)&ttl_val, 
@@ -95,23 +102,45 @@ channel	DL_init_channel( int32 channel_type, int16 port, int32 mcast_address, in
 			Alarm( DATA_LINK, "DL_init_channel: problem in setsockopt of multicast ttl %d - ignore in WinNT or Win95\n", ttl_val );
 		}
 		Alarm( DATA_LINK, "DL_init_channel: setting Mcast TTL to %d\n",ttl_val);
-#endif	/* ARCH_SPARC_SUNOS */
+#endif
 	}
 
 	if ( channel_type & RECV_CHANNEL )
 	{
         	soc_addr.sin_family    	= AF_INET;
         	soc_addr.sin_port	= htons(port);
+                memset(&soc_addr.sin_zero, 0, sizeof(soc_addr.sin_zero));
+
+                /* If mcast channel, the interface means the interface to
+                   receive mcast packets on, and not interface to bind.
+                   Must bind multicast address instead */
+                if (mcast_address != 0)
+                        soc_addr.sin_addr.s_addr= htonl(mcast_address);
+                else if (interface_address != 0)
+                        soc_addr.sin_addr.s_addr= htonl(interface_address);
+                else
+                        soc_addr.sin_addr.s_addr= INADDR_ANY;
+
+                /* Older Version
                 if (interface_address == 0)
                         soc_addr.sin_addr.s_addr= INADDR_ANY;
                 else 
                         soc_addr.sin_addr.s_addr= htonl(interface_address);
+                 */
+
+                if ( channel_type & REUSE_ADDR ) 
+                {
+                        if(setsockopt(chan, SOL_SOCKET, SO_REUSEADDR, (void *)&on, sizeof(on))) 
+                        {
+                            Alarm( EXIT, "Init_Session: Failed to set socket option REUSEADDR, errno: %d\n", errno);
+                        }
+                }
+
 
 	        if(bind( chan, (struct sockaddr *) &soc_addr, 
 				sizeof(soc_addr)) == -1) 
 		{
-                	Alarm( PRINT, "DL_init_channel: bind error for port %d, already running \n",port);
-			exit(0);
+                	Alarm( EXIT, "DL_init_channel: bind error (%d): %s for port %d, with sockaddr (%d.%d.%d.%d: %d) probably already running \n", sock_errno, sock_strerror(sock_errno), port, IP1(soc_addr.sin_addr.s_addr),IP2(soc_addr.sin_addr.s_addr),IP3(soc_addr.sin_addr.s_addr),IP4(soc_addr.sin_addr.s_addr), soc_addr.sin_port );
 		}
 		Alarm( DATA_LINK, "DL_init_channel: bind for recv_channel for port %d with chan %d ok\n",
 			port, chan);
@@ -122,25 +151,42 @@ channel	DL_init_channel( int32 channel_type, int16 port, int32 mcast_address, in
 		i4 =  mcast_address & 0x000000ff;
 		if( i1 >=224 && i1 < 240 )
 		{
-#ifndef ARCH_SPARC_SUNOS	/* no support for IP multicast in old SunOS */
+#ifdef IP_MULTICAST_TTL
 			struct ip_mreq	mreq;
 
 			mreq.imr_multiaddr.s_addr = htonl( mcast_address );
 
 			/* the interface could be changed to a specific interface if needed */
-			mreq.imr_interface.s_addr = INADDR_ANY;
+                        /* WAS: mreq.imr_interface.s_addr = INADDR_ANY;
+                         * If specified, then want to route through it instead of
+                         * based on routing decisions at the kernel */
+                        mreq.imr_interface.s_addr = htonl( interface_address );
 
         		if (setsockopt(chan, IPPROTO_IP, IP_ADD_MEMBERSHIP, (void *)&mreq, 
 		       		sizeof(mreq)) < 0) 
 			{
-				Alarm( EXIT, "DL_init_channel: problem in setsockopt to multicast address %d\n", mcast_address );
-			}
+				Alarm( EXIT, "DL_init_channel: problem in setsockopt to multicast address %d\n", mcast_address ); 
+                        } 
+
+                        if ( channel_type & NO_LOOP ) 
+                        { 
+                            if (setsockopt(chan, IPPROTO_IP, IP_MULTICAST_LOOP, 
+                                        (void *)&off, 1) < 0) 
+                            { 
+                                Alarm( EXIT, "DL_init_channel: problem in setsockopt loop setting %d.%d.%d.%d\n", i1,i2,i3,i4); 
+                            } 
+                        }
 
 			Alarm( DATA_LINK, "DL_init_channel: Joining multicast address %d.%d.%d.%d went ok\n",i1,i2,i3,i4);
-#else	/* ARCH_SPARC_SUNOS */
+#else	/* no multicast support */
 			Alarm( EXIT, "DL_init_channel: Old SunOS architecture does not support IP multicast: %d.%d.%d.%d\n",i1,i2,i3,i4);
-#endif	/* ARCH_SPARC_SUNOS */
-		}
+#endif
+		} else {
+                    if (setsockopt(chan, SOL_SOCKET, SO_BROADCAST, (char *)&on, 
+                                   sizeof(on)) < 0) 
+            		Alarm( EXIT, "DL_init_channel: setsockopt SO_BROADCAST error for port %d, socket %d\n",port,chan);
+                    Alarm( DATA_LINK, "DL_init_channel: setsockopt for recv and broadcast went ok\n");
+                }
 	}
 
 	Alarm( DATA_LINK, "DL_init_channel: went ok on channel %d\n",chan);
@@ -149,14 +195,12 @@ channel	DL_init_channel( int32 channel_type, int16 port, int32 mcast_address, in
 
 void    DL_close_channel(channel chan)
 {
-#ifndef ARCH_PC_WIN95
+
         if( -1 ==  close(chan))
-#else
-        if( -1 ==  closesocket(chan))
-#endif
         {
                 Alarm(EXIT, "DL_close_channel: error closing channel %d\n", chan);
         }
+
 }
 int	DL_send( channel chan, int32 address, int16 port, sys_scatter *scat )
 {
@@ -168,7 +212,7 @@ static	char	pseudo_scat[MAX_PACKET_SIZE];
 #endif	/* ARCH_SCATTER_NONE */
 	
 static	struct  sockaddr_in	soc_addr;
-static	sp_time			select_delay = { 0, 10000 };
+static	struct timeval 		select_delay = { 0, 10000 };
 	int			ret;
 	int			total_len;
 	int			i;
@@ -226,10 +270,10 @@ static	sp_time			select_delay = { 0, 10000 };
 #endif	/* ARCH_SCATTER_NONE */
 		if(ret < 0) {
 			/* delay for a short while */
-                        send_errormsg = strerror(errno);
+                        send_errormsg = sock_strerror(sock_errno);
 			Alarm( DATA_LINK, "DL_send: delaying after failure in send to %d.%d.%d.%d, ret is %d\n", 
 				IP1(address), IP2(address), IP3(address), IP4(address), ret);
-			select( 0, 0, 0, 0, (struct timeval *)&select_delay );
+			select( 0, 0, 0, 0, &select_delay );
 		}
 	}
 	if (ret < 0)
@@ -349,3 +393,116 @@ static	char		pseudo_scat[MAX_PACKET_SIZE];
 
 	return(ret);
 }
+
+#ifdef SPINES_SSL
+/* openssl */
+int	DL_recv_enh(channel chan, sys_scatter *scat, struct sockaddr_in *source_addr)
+{
+#ifndef ARCH_SCATTER_NONE
+static	struct	msghdr	msg;
+        struct  sockaddr_in     source_address;
+#else	/* ARCH_SCATTER_NONE */
+static	char		pseudo_scat[MAX_PACKET_SIZE];
+	int		bytes_to_copy;
+	int		total_len;
+	int		start;
+	int		i;
+#endif	/* ARCH_SCATTER_NONE */
+
+	int		ret;
+
+        /* check the scat is small enough to be a sys_scatter */
+        assert(scat->num_elements <= ARCH_SCATTER_SIZE);
+
+#ifndef ARCH_SCATTER_NONE
+	msg.msg_name 	= (caddr_t) &source_address;
+	msg.msg_namelen = sizeof(source_address);
+	msg.msg_iov	= (struct iovec *)scat->elements;
+	msg.msg_iovlen	= scat->num_elements;
+#endif	/* ARCH_SCATTER_NONE */
+
+#ifdef ARCH_SCATTER_CONTROL
+	msg.msg_control = (caddr_t) 0;
+	msg.msg_controllen = 0;
+#endif /* ARCH_SCATTER_CONTROL */
+#ifdef ARCH_SCATTER_ACCRIGHTS
+	msg.msg_accrights = (caddr_t) 0;
+	msg.msg_accrightslen = 0;
+#endif /* ARCH_SCATTER_ACCRIGHTS */
+
+#ifndef ARCH_SCATTER_NONE
+	ret = recvmsg( chan, &msg, 0 ); 
+#else	/* ARCH_SCATTER_NONE */
+        
+	total_len = 0;                             /*This is for TCP, to not receive*/
+	for(i=0; i<scat->num_elements; i++)     /*more than one packet.          */
+	   total_len += scat->elements[i].len;
+        
+        if(total_len>MAX_PACKET_SIZE)
+           total_len = MAX_PACKET_SIZE;
+
+	ret = recvfrom( chan, pseudo_scat, total_len, 0, 0, 0 );
+	
+	for( i=0, total_len = ret, start =0; total_len > 0; i++)
+	{
+		bytes_to_copy = scat->elements[i].len;
+		if( bytes_to_copy > total_len ) bytes_to_copy = total_len;
+		memcpy( scat->elements[i].buf, &pseudo_scat[start], 
+                        bytes_to_copy );
+		total_len-= scat->elements[i].len;
+		start    += scat->elements[i].len;
+	}
+#endif	/* ARCH_SCATTER_NONE */
+	if (ret < 0)
+	{
+		Alarm( DATA_LINK, "DL_recv_enh: error %d receiving on channel %d\n", ret, chan );
+		return( -1 );
+	} 
+#ifdef ARCH_SCATTER_CONTROL
+        else if (ret == 0)
+        {
+                char    *sptr;
+                sptr = (char *) inet_ntoa(source_address.sin_addr);
+                Alarm( DATA_LINK, "DL_recv_enh: received zero length packet on channel %d flags 0x%x\nfrom %s", chan, msg.msg_flags,sptr );
+#ifdef  MSG_BCAST
+                if ( msg.msg_flags & MSG_BCAST )
+                {
+                        Alarm( DATA_LINK, "\t(BROADCAST)");
+                }
+#endif
+#ifdef  MSG_MCAST
+                if ( msg.msg_flags & MSG_MCAST )
+                {
+                        Alarm( DATA_LINK, "\t(MULTICAST)");
+                }
+#endif
+#ifdef  MSG_TRUNC
+                if ( msg.msg_flags & MSG_TRUNC )
+                {
+                        Alarm( DATA_LINK, "\t(Data TRUNCATED)");
+                }
+#endif
+#ifdef  MSG_CTRUNC
+                if ( msg.msg_flags & MSG_CTRUNC )
+                {
+                        Alarm( DATA_LINK, "\t(Control TRUNCATED)");
+                }
+#endif
+                Alarm( DATA_LINK, "\n");
+        }
+#endif
+	Alarm( DATA_LINK, "DL_recv_enh: received %d bytes on channel %d\n",
+			ret, chan );
+
+#ifdef ARCH_SCATTER_CONTROL
+	char    *sptr;
+	sptr = (char *) inet_ntoa(source_address.sin_addr);
+
+	memcpy((void *)source_addr, (void *)&source_address, sizeof(struct sockaddr_in));
+	if (Debug_SSL_datalink)
+		printf("DL_recv_enh: %d bytes received from %s:%d\n", ret, sptr, ntohs(source_address.sin_port));
+#endif
+
+	return(ret);
+}
+#endif

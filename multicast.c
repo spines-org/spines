@@ -18,11 +18,18 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2007 The Johns Hopkins University.
  * All rights reserved.
+ *
+ * Major Contributor(s):
+ * --------------------
+ *    John Lane
+ *    Raluca Musaloiu-Elefteri
+ *    Nilo Rivera
  *
  */
 
+#include <stdlib.h>
 
 #include "util/arch.h"
 #include "util/alarm.h"
@@ -34,25 +41,25 @@
 #include "link.h"
 #include "node.h"
 #include "route.h"
-#include "multicast.h"
 #include "state_flood.h"
 #include "net_types.h"
 #include "hello.h"
 #include "session.h"
+#include "multicast.h"
 
+#define MCAST_SNAPSHOT "/tmp/mcast.snapshot"
 
 /* Global variables */
 extern int32    My_Address;
-
 extern stdhash  All_Groups_by_Node;
 extern stdhash  All_Groups_by_Name;
 extern stdhash  Changed_Group_States;
 extern Prot_Def Groups_Prot_Def;
 
+int File_Open = 0;
 
 /* Local variables */
-static const sp_time zero_timeout        = {     0,    0};
-
+static const sp_time zero_timeout        = {     0,      0};
 
 /***********************************************************/
 /* stdhash* Groups_All_States(void)                        */
@@ -298,6 +305,7 @@ int Groups_Set_state_cell(void *state, char *pos)
 }
 
 
+
 /***********************************************************/
 /* int Groups_Destroy_State_Data(void *state)              */
 /*                                                         */
@@ -331,7 +339,7 @@ int Groups_Destroy_State_Data(void* state)
 
 
 /***********************************************************/
-/* int Groups_Process_state_header(char *pos);             */
+/* int Groups_Process_state_header(char *pos, int32 type); */
 /*                                                         */
 /* Process the join/leave packet header additional fields  */
 /* (nothing for now)                                       */
@@ -340,6 +348,7 @@ int Groups_Destroy_State_Data(void* state)
 /* Arguments                                               */
 /*                                                         */
 /* pos: pointer to where to set the fields in the packet   */
+/* type: contains the endianess of the message             */
 /*                                                         */
 /* Return Value                                            */
 /*                                                         */
@@ -347,9 +356,21 @@ int Groups_Destroy_State_Data(void* state)
 /*                                                         */
 /***********************************************************/
 
-int Groups_Process_state_header(char *pos)
+int Groups_Process_state_header(char *pos, int32 type)
 {
     /* Nothing for now... */
+    /* Just flip the header endianess if necessary */
+    
+    group_state_packet *g_st_pkt;
+    
+    g_st_pkt = (group_state_packet*)pos;
+
+    if(!Same_endian(type)) {
+	g_st_pkt->source = Flip_int32(g_st_pkt->source);
+	g_st_pkt->num_cells = Flip_int16(g_st_pkt->num_cells);
+	g_st_pkt->src_data = Flip_int16(g_st_pkt->src_data);
+    }
+
     return(0);
 }
 
@@ -377,20 +398,25 @@ void* Groups_Process_state_cell(int32 source, char *pos)
 {
     Group_State *g_state;
     group_cell_packet *group_cell;
-
+    int leave_group_state = 0;
+    sp_time now;
 
     group_cell = (group_cell_packet*)pos; 
 
+    g_state = (Group_State*)Find_State(&All_Groups_by_Node, source, 
+			 group_cell->dest);
+
     if(source == My_Address) {
 	/* Somebody tells me about my groups */
-	g_state = (Group_State*)Find_State(&All_Groups_by_Node, source, 
-			 group_cell->dest);
-	return((void*)g_state);
+	Alarm(DEBUG, "Somebody tells me about my groups\n");
+	if(g_state == NULL) {
+	    Alarm(DEBUG, "g_state null\n");
+	    leave_group_state = 1;
+	}
     }
 
     /* Did I know about this group ? */
-    if((g_state = (Group_State*)Find_State(&All_Groups_by_Node, source, 
-			 group_cell->dest)) == NULL) {
+    if(g_state == NULL) {
 	/* This is about a group that I didn't know about until now... */ 
 	
 	g_state = Create_Group(source, group_cell->dest);
@@ -398,11 +424,12 @@ void* Groups_Process_state_cell(int32 source, char *pos)
 	g_state->timestamp_usec = 0;
     }
 
-    Alarm(DEBUG, "\nGot group: %d.%d.%d.%d -> %d.%d.%d.%d\n",
+    Alarm(DEBUG, "\nGot group: %d.%d.%d.%d -> %d.%d.%d.%d, flags: %d\n",
 	  IP1(source), IP2(source), 
 	  IP3(source), IP4(source), 
 	  IP1(group_cell->dest), IP2(group_cell->dest), 
-	  IP3(group_cell->dest), IP4(group_cell->dest));
+	  IP3(group_cell->dest), IP4(group_cell->dest),
+	  group_cell->flags);
     
     
     Alarm(DEBUG, "Got: %d : %d ||| mine: %d : %d\n", 
@@ -415,10 +442,24 @@ void* Groups_Process_state_cell(int32 source, char *pos)
     g_state->age = group_cell->age;
     g_state->flags = group_cell->flags;
 
-    return((void*)g_state);
+
+    if(leave_group_state == 1) {
+	now = E_get_time();
+	g_state->timestamp_sec = now.sec; 
+	g_state->timestamp_usec = now.usec; 
+	g_state->my_timestamp_sec  = now.sec;
+	g_state->my_timestamp_usec = now.usec;
+	g_state->age = 0;
+	g_state->flags = g_state->flags ^ ACTIVE_GROUP;
+
+	Add_to_changed_states(&Groups_Prot_Def, My_Address, (void*)g_state, NEW_CHANGE);	
+
+	return(NULL);
+    }
+    else {
+        return((void*)g_state);
+    }
 }
-
-
 
 /***********************************************************/
 /* int Join_Group(int32 mcast_address, Session *ses)       */
@@ -443,10 +484,10 @@ int Join_Group(int32 mcast_address, Session *ses)
 {
     sp_time now;
     Group_State *g_state;
-    stdhash_it it;
+    stdit it;
     int ret = 1;
     
-    if((mcast_address & 0xF0000000) != 0xE0000000) {
+    if(!Is_mcast_addr(mcast_address) && !Is_acast_addr(mcast_address)) {
 	Alarm(DEBUG, "Join_Group: This is not a multicast address\n");
 	return(-1);		
     }
@@ -455,9 +496,9 @@ int Join_Group(int32 mcast_address, Session *ses)
 	  IP1(mcast_address), IP2(mcast_address), IP3(mcast_address), IP4(mcast_address));
 
     stdhash_find(&ses->joined_groups, &it, &mcast_address);
-    if(!stdhash_it_is_end(&it)) {
+    if(!stdhash_is_end(&ses->joined_groups, &it)) {
 	/* The session already joined that group. Just return */
-	return(-1);
+	return(1);
     }
 
     if(ses->type != UDP_SES_TYPE) {
@@ -499,14 +540,12 @@ int Join_Group(int32 mcast_address, Session *ses)
 	Add_to_changed_states(&Groups_Prot_Def, My_Address, (void*)g_state, NEW_CHANGE);
 	ret = 2;
     }
+    Alarm(PRINT,"Insert group into &ses->joined_groups.\n");
     stdhash_insert(&ses->joined_groups, &it, &mcast_address, &g_state);
     stdhash_insert(&g_state->joined_sessions, &it, &ses->sess_id, &ses);
 
     return(ret);
 }
-
-
-
 
 /***********************************************************/
 /* int Leave_Group(int32 mcast_address, Session *ses)      */
@@ -530,32 +569,33 @@ int Leave_Group(int32 mcast_address, Session *ses)
 {
     sp_time now;
     Group_State *g_state;
-    stdhash_it it;
+    stdit it;
    
-    if((mcast_address & 0xF0000000) != 0xE0000000) {
+    if(!Is_mcast_addr(mcast_address) && !Is_acast_addr(mcast_address)) {
 	Alarm(DEBUG, "Leave_Group: This is not a multicast address\n");
 	return(-1);		
     }
 
-    Alarm(DEBUG, "Leave group: %d.%d.%d.%d\n", 
+    Alarm(PRINT, "Leave group: %d.%d.%d.%d\n", 
 	  IP1(mcast_address), IP2(mcast_address), IP3(mcast_address), IP4(mcast_address));
 
 
     now = E_get_time();
     stdhash_find(&ses->joined_groups, &it, &mcast_address);
-    if(stdhash_it_is_end(&it)) {
+    if(stdhash_is_end(&ses->joined_groups, &it)) {
 	/* The session did not join that group. Just return */
 	return(1);
     }
 
     g_state = *((Group_State **)stdhash_it_val(&it));
-    stdhash_erase(&it);
+    stdhash_erase(&ses->joined_groups, &it);
 
     stdhash_find(&g_state->joined_sessions, &it, &ses->sess_id);
-    if(stdhash_it_is_end(&it)) {
-	Alarm(EXIT, "BUG Leave_Group(): Session not in the group array\n");
-    }
-    stdhash_erase(&it);
+    if(stdhash_is_end(&g_state->joined_sessions, &it)) {
+	Alarm(PRINT, "BUG Leave_Group(): Session not in the group array\n");
+	//Alarm(EXIT, "BUG Leave_Group(): Session not in the group array\n");
+    } else 
+        stdhash_erase(&g_state->joined_sessions, &it);
     
     if(stdhash_empty(&g_state->joined_sessions)) {
 	/* There are no more local sessions joining this group */
@@ -570,12 +610,10 @@ int Leave_Group(int32 mcast_address, Session *ses)
 	g_state->flags = g_state->flags ^ ACTIVE_GROUP;
 
 	Add_to_changed_states(&Groups_Prot_Def, My_Address, (void*)g_state, NEW_CHANGE);	
+
     }
     return(1);
 }
-
-
-
 
 /***********************************************************/
 /* Group_State* Create_Group(int32 node_address,           */ 
@@ -600,7 +638,7 @@ Group_State* Create_Group(int32 node_address, int32 mcast_address)
     Group_State *g_state;
     State_Chain *s_chain_addr, *s_chain_grp;
     sp_time now;
-    stdhash_it it, st_it;
+    stdit it, st_it;
 
 
     Alarm(DEBUG, "Create group: %d.%d.%d.%d joined %d.%d.%d.%d\n", 
@@ -637,20 +675,21 @@ Group_State* Create_Group(int32 node_address, int32 mcast_address)
     g_state->flags = 0;
     if(g_state->source_addr == My_Address) {
 	stdhash_construct(&g_state->joined_sessions, sizeof(int32), sizeof(Session*), 
-			  stdhash_int_equals, stdhash_int_hashcode);
+			  NULL, NULL, 0);
     }
-
+    
     /* Insert the group in the global data structures */
 
     /* All_Groups_by_Node */
     stdhash_find(&All_Groups_by_Node, &it, &node_address);
-    if(stdhash_it_is_end(&it)) {
+    if(stdhash_is_end(&All_Groups_by_Node, &it)) {
 	if((s_chain_addr = (State_Chain*) new(STATE_CHAIN))==NULL)
 	    Alarm(EXIT, "Create_Group: Cannot allocte object\n");
 	s_chain_addr->address = node_address;
+	s_chain_addr->p_states = NULL;
 
        	stdhash_construct(&s_chain_addr->states, sizeof(int32), sizeof(Group_State*), 
-			  stdhash_int_equals, stdhash_int_hashcode);
+			  NULL, NULL, 0);
 	stdhash_insert(&All_Groups_by_Node, &it, &node_address, &s_chain_addr);
 	stdhash_find(&All_Groups_by_Node, &it, &node_address);
     }    
@@ -660,12 +699,13 @@ Group_State* Create_Group(int32 node_address, int32 mcast_address)
 
     /* All_Groups_by_Name */
     stdhash_find(&All_Groups_by_Name, &it, &mcast_address);
-    if(stdhash_it_is_end(&it)) {
+    if(stdhash_is_end(&All_Groups_by_Name, &it)) {
 	if((s_chain_grp = (State_Chain*) new(STATE_CHAIN))==NULL)
 	    Alarm(EXIT, "Create_Group: Cannot allocte object\n");
 	s_chain_grp->address = mcast_address;
+	s_chain_grp->p_states = NULL;
 	stdhash_construct(&s_chain_grp->states, sizeof(int32), sizeof(Group_State*), 
-			  stdhash_int_equals, stdhash_int_hashcode);
+			  NULL, NULL, 0);
 	stdhash_insert(&All_Groups_by_Name, &it, &mcast_address, &s_chain_grp);
 	stdhash_find(&All_Groups_by_Name, &it, &mcast_address);
     }
@@ -673,4 +713,249 @@ Group_State* Create_Group(int32 node_address, int32 mcast_address)
     stdhash_insert(&s_chain_grp->states, &st_it, &node_address, &g_state);
 
     return(g_state);
+}
+
+
+/***********************************************************/
+/* stdhash* Get_Mcast_Neighbors(int32 sender,              */
+/*                              int32 mcast_address)       */
+/*                                                         */
+/* Gets a hash with neighbors to which the mcast or acast  */
+/* packet needs to be forwarded                            */
+/*                                                         */
+/*                                                         */
+/* Arguments                                               */
+/*                                                         */
+/* sender: address of the sender node                      */
+/* mcast_address: group address                            */
+/*                                                         */
+/* Return Value                                            */
+/*                                                         */
+/* (stdhash*) pointer to the neighbors hash                */
+/*                                                         */
+/***********************************************************/
+
+stdhash* Get_Mcast_Neighbors(int32 sender, int32 mcast_address)
+{
+    stdit grp_it, nd_it, ngb_it, st_it;
+    State_Chain *s_chain_grp;
+    stdhash *nodes_list, *neighbors;
+    Node *next_hop, *best_next_hop;
+    Group_State *g_state;
+    Route *route;    
+    int16 lowest_cost = 30001; /* Max Cost is 30000 */
+
+    stdhash_find(&All_Groups_by_Name, &grp_it, &mcast_address);
+    if(stdhash_is_end(&All_Groups_by_Name, &grp_it)) {
+	return(NULL);
+    }
+    s_chain_grp = *((State_Chain **)stdhash_it_val(&grp_it));
+
+    if(s_chain_grp->p_states == NULL) {
+	if((s_chain_grp->p_states = (stdhash*) new(STDHASH_OBJ)) == NULL) {
+	    Alarm(EXIT, "Get_Mcast_Neighbors(): cannot allocate memory\n");
+	}
+	stdhash_construct(s_chain_grp->p_states, sizeof(int32), sizeof(stdhash*), 
+			  NULL, NULL, 0);
+    }
+
+    /* Look in the cache */
+    nodes_list = s_chain_grp->p_states;
+    stdhash_find(nodes_list, &nd_it, &sender);
+    if(!stdhash_is_end(nodes_list, &nd_it)) {
+	return(*((stdhash **)stdhash_it_val(&nd_it)));
+    }
+
+    if((neighbors = (stdhash*) new(STDHASH_OBJ)) == NULL) {
+	Alarm(EXIT, "Get_Mcast_Neighbors(): cannot allocate memory\n");
+    }
+    stdhash_construct(neighbors, sizeof(int32), sizeof(Node*), 
+		      NULL, NULL, 0);
+
+    best_next_hop = NULL;
+    stdhash_begin(&s_chain_grp->states, &st_it);
+    while(!stdhash_is_end(&s_chain_grp->states, &st_it)) {
+	g_state = *((Group_State **)stdhash_it_val(&st_it));
+	if(g_state->flags & ACTIVE_GROUP) {
+	    /* If I find myself, I am the acast destination */
+	    if (Is_acast_addr(mcast_address) && 
+		    g_state->source_addr == My_Address ) {
+		best_next_hop = NULL;
+		break;
+	    }
+	    next_hop = Get_Route(sender, g_state->source_addr);
+
+	    if(next_hop != NULL) {
+		stdhash_find(neighbors, &ngb_it, &next_hop->address);
+		if (Is_mcast_addr(mcast_address)) { 
+		    /* Multicast */
+		    if(stdhash_is_end(neighbors, &ngb_it)) {
+			stdhash_insert(neighbors, &ngb_it, &next_hop->address, &next_hop);
+		    }
+		} else if (Is_acast_addr(mcast_address)) {
+		    /* Anycast */
+		    route = Find_Route(sender, g_state->source_addr);
+		    /* Could add rand when found one that is equal, but
+		       will alternate routes */
+		    if ( route != NULL && route->cost < lowest_cost ) {
+			best_next_hop = next_hop;
+			lowest_cost = route->cost;
+		    }
+		}
+	    }
+	}
+	stdhash_it_next(&st_it);
+    }
+    if (Is_acast_addr(mcast_address) && best_next_hop != NULL) { 
+	stdhash_insert(neighbors, &ngb_it, &best_next_hop->address, &best_next_hop); 
+    }
+    stdhash_insert(nodes_list, &nd_it, &sender, &neighbors);
+
+    return(neighbors);
+}
+
+/***********************************************************/
+/* void Discard_Mcast_Neighbors(int32 mcast_address)       */
+/*                                                         */
+/* Discards the hash with neighbors to which the           */
+/* mcast packet are forwarded                              */
+/*                                                         */
+/*                                                         */
+/* Arguments                                               */
+/*                                                         */
+/* mcast_address: group address                            */
+/*                                                         */
+/* Return Value                                            */
+/*                                                         */
+/* NONE                                                    */
+/*                                                         */
+/***********************************************************/
+ 
+void Discard_Mcast_Neighbors(int32 mcast_address) 
+{
+    stdit grp_it, nd_it;
+    State_Chain *s_chain_grp;
+    stdhash *nodes_list, *neighbors;
+
+    stdhash_find(&All_Groups_by_Name, &grp_it, &mcast_address);
+    if(stdhash_is_end(&All_Groups_by_Name, &grp_it)) {
+	return;
+    }
+    s_chain_grp = *((State_Chain **)stdhash_it_val(&grp_it));
+
+    if(s_chain_grp->p_states == NULL) {
+	return;
+    }
+    nodes_list = s_chain_grp->p_states;
+    stdhash_begin(nodes_list, &nd_it);
+    while(!stdhash_is_end(nodes_list, &nd_it)) {
+	neighbors = *((stdhash **)stdhash_it_val(&nd_it));
+	stdhash_destruct(neighbors);
+	dispose(neighbors);
+	stdhash_it_next(&nd_it);
+    }
+    stdhash_destruct(nodes_list);
+    dispose(nodes_list);
+    s_chain_grp->p_states = NULL;
+}
+
+
+/***********************************************************/
+/* void Discard_All_Mcast_Neighbors(void)                  */
+/*                                                         */
+/* Discards all the hash with neighbors to which the       */
+/* mcast packet are forwarded                              */
+/*                                                         */
+/*                                                         */
+/* Arguments                                               */
+/*                                                         */
+/* NONE                                                    */
+/*                                                         */
+/* Return Value                                            */
+/*                                                         */
+/* NONE                                                    */
+/*                                                         */
+/***********************************************************/
+
+void Discard_All_Mcast_Neighbors(void) 
+{
+    stdit grp_it, nd_it;
+    State_Chain *s_chain_grp;
+    stdhash *nodes_list, *neighbors;
+
+    stdhash_begin(&All_Groups_by_Name, &grp_it);
+    while(!stdhash_is_end(&All_Groups_by_Name, &grp_it)) {
+	s_chain_grp = *((State_Chain **)stdhash_it_val(&grp_it));
+	
+	if(s_chain_grp->p_states != NULL) {
+	    nodes_list = s_chain_grp->p_states;
+	    stdhash_begin(nodes_list, &nd_it);
+	    while(!stdhash_is_end(nodes_list, &nd_it)) {
+		neighbors = *((stdhash **)stdhash_it_val(&nd_it));
+		stdhash_destruct(neighbors);
+		dispose(neighbors);
+		stdhash_it_next(&nd_it);
+	    }
+	    stdhash_destruct(nodes_list);
+	    dispose(nodes_list);
+	    s_chain_grp->p_states = NULL;
+	}
+	stdhash_it_next(&grp_it);
+    }
+}
+
+/***********************************************************/
+/* void Print_Mcast_Groups(void)                           */
+/*                                                         */
+/* Arguments                                               */
+/*                                                         */
+/* fp                                                      */
+/*                                                         */
+/* Return Value                                            */
+/*                                                         */
+/* NONE                                                    */
+/*                                                         */
+/***********************************************************/
+
+#define MCAST_SNAPSHOT_FILE "/tmp/spines.groups"
+
+void Print_Mcast_Groups(int dummy_int, void* dummy)
+{
+    const sp_time print_timeout = {    150,    0};
+    FILE *fp = NULL;
+    stdit grp_it, nd_it, ngb_it;
+    State_Chain *s_chain_grp;
+    Node *next_hop;
+    stdhash *nodes_list, *neighbors;
+
+    stdhash_begin(&All_Groups_by_Name, &grp_it);
+    fp = fopen(MCAST_SNAPSHOT_FILE, "w");
+    if (fp == NULL) {
+	perror("Could not open mcast snapshot file\n");
+	return;
+    }
+    while(!stdhash_is_end(&All_Groups_by_Name, &grp_it)) {
+	s_chain_grp = *((State_Chain **)stdhash_it_val(&grp_it));
+	fprintf(fp, "\n"IPF, IP(s_chain_grp->address));
+	if(s_chain_grp->p_states != NULL) {
+	    nodes_list = s_chain_grp->p_states;
+	    stdhash_begin(nodes_list, &nd_it);
+	    while(!stdhash_is_end(nodes_list, &nd_it)) {
+		neighbors = *((stdhash **)stdhash_it_val(&nd_it));
+		if (neighbors != NULL) {
+		    stdhash_begin(neighbors, &ngb_it);
+		    while (!stdhash_is_end(neighbors, &ngb_it)) {
+			next_hop = *((Node **)stdhash_it_val(&ngb_it));
+			fprintf(fp, "\n\t"IPF, IP(next_hop->address));
+			stdhash_it_next(&ngb_it);
+		    }
+		}
+		stdhash_it_next(&nd_it);
+	    }
+	}
+	fprintf(fp, "\n");
+	stdhash_it_next(&grp_it);
+    }
+    fclose(fp);
+    E_queue(Print_Mcast_Groups, 0, NULL, print_timeout);
 }

@@ -1,4 +1,3 @@
-
 /*
  * The Spread Toolkit.
  *     
@@ -17,18 +16,18 @@
  * License.
  *
  * The Creators of Spread are:
- *  Yair Amir, Michal Miskin-Amir, Jonathan Stanton.
+ *  Yair Amir, Michal Miskin-Amir, Jonathan Stanton, John Schultz.
  *
- *  Copyright (C) 1993-2003 Spread Concepts LLC <spread@spreadconcepts.com>
+ *  Copyright (C) 1993-2006 Spread Concepts LLC <info@spreadconcepts.com>
  *
  *  All Rights Reserved.
  *
  * Major Contributor(s):
  * ---------------
- *    Cristina Nita-Rotaru crisn@cnds.jhu.edu - group communication security.
- *    Theo Schlossnagle    jesus@omniti.com - Perl, skiplists, autoconf.
+ *    Ryan Caudy           rcaudy@gmail.com - contributions to process groups.
+ *    Cristina Nita-Rotaru crisn@cs.purdue.edu - group communication security.
+ *    Theo Schlossnagle    jesus@omniti.com - Perl, autoconf, old skiplist.
  *    Dan Schoenblum       dansch@cnds.jhu.edu - Java interface.
- *    John Schultz         jschultz@cnds.jhu.edu - contribution to process group membership.
  *
  *
  * This file is also licensed by Spread Concepts LLC under the Spines 
@@ -42,8 +41,15 @@
  */
 
 
-
 #include "arch.h"
+
+/* undef redefined variables under windows */
+#ifdef ARCH_PC_WIN95
+#undef EINTR
+#undef EAGAIN
+#undef EWOULDBLOCK
+#undef EINPROGRESS
+#endif
 #include <errno.h>
 
 #ifndef	ARCH_PC_WIN95
@@ -128,22 +134,20 @@ int 	E_init(void)
 
 sp_time	E_get_time(void)
 {
-
 #ifndef	ARCH_PC_WIN95
+        struct timeval  read_time;
 
-#if   defined(ARCH_PC_LINUX) || defined(ARCH_ALPHA_LINUX)
-        /* used to be 
-         * #if   defined(ARCH_PC_LINUX) || defined(ARCH_PC_BSDI)
-         * but bsdi started complaining about not finding dummy_tz type
-         */
+#if HAVE_STRUCT_TIMEZONE
         struct timezone dummy_tz;
 #else
 	sp_time		dummy_tz;
 #endif
 	int		ret;
 
-	ret = gettimeofday( (struct timeval *)&Now, (void *)&dummy_tz );
+	ret = gettimeofday( &read_time, &dummy_tz );
 	if ( ret < 0 ) Alarm( EXIT, "E_get_time: gettimeofday problems.\n" );
+        Now.sec = read_time.tv_sec;
+        Now.usec = read_time.tv_usec;
 
 #else	/* ARCH_PC_WIN95 */
 
@@ -333,23 +337,59 @@ int 	E_dequeue( void (* func)( int code, void *data ), int code,
 	return( -1 );
 }
 
+int 	E_in_queue( void (* func)( int code, void *data ), int code,
+		   void *data )
+{
+	time_event *t_pre;
+	time_event *t_ptr;
+
+	if( Time_queue == NULL )
+	{
+	    Alarm( EVENTS, "E_in_queue: no such event\n" );
+		return( 0 );
+	}
+
+	if( Time_queue->func == func && 
+            Time_queue->data == data &&
+            Time_queue->code == code )
+	{
+		Alarm( EVENTS, "E_in_queue: found event in queue func 0x%x code %d data 0x%x\n",func,code, data);
+		return( 1 );
+	}
+
+	t_pre = Time_queue;
+	while ( t_pre->next != NULL )
+	{
+		t_ptr = t_pre->next;
+		if( t_ptr->func == func && 
+                    t_ptr->data == data &&
+                    t_ptr->code == code )   
+		{
+		    Alarm( EVENTS, "E_in_queue: found event in queue func 0x%x code %d data 0x%x\n",func,code, data);
+			return(1);
+		}
+		t_pre = t_ptr;
+	}
+
+	Alarm( EVENTS, "E_in_queue: no such event\n" );
+	return( 0 );
+}
+
 void	E_delay( sp_time t )
 {
-	sp_time	tmp_t;
+	struct timeval 	tmp_t;
 
-	tmp_t = t;
-        if (select(0, NULL, NULL, NULL, (struct timeval *)&tmp_t ) < 0)
+	tmp_t.tv_sec = t.sec;
+	tmp_t.tv_usec = t.usec;
+
+#ifndef ARCH_PC_WIN95
+        if (select(0, NULL, NULL, NULL, &tmp_t ) < 0)
         {
                 Alarm( EVENTS, "E_delay: select delay returned error: %s\n", strerror(errno));
         }
-        /* I think the following special case for win95 was erroneously removed */
-#if 0
-#ifndef        ARCH_PC_WIN95
-        select(0, NULL, NULL, NULL, (struct timeval *)&tmp_t );
 #else  /* ARCH_PC_WIN95 */
-        SleepEx( tmp_t.sec*1000+tmp_t.usec/1000, 0 );
+        SleepEx( tmp_t.tv_sec*1000+tmp_t.tv_usec/1000, 0 );
 #endif /* ARCH_PC_WIN95 */   
-#endif
 
 }
 	
@@ -571,7 +611,8 @@ static	const sp_time		mili_sec 	= {     0, 1000};
 	int			fd;
 	int			fd_type;
 	int			i,j;
-	sp_time			timeout, wait_timeout;
+	sp_time			timeout;
+        struct timeval          sel_timeout, wait_timeout;
 	fd_set			current_mask[NUM_FDTYPES];
 	time_event		*temp_ptr;
         int                     first=1;
@@ -642,9 +683,10 @@ static	const sp_time		mili_sec 	= {     0, 1000};
 #ifdef TESTTIME
         req_time = zero_sec;
 #endif
-        wait_timeout = zero_sec;
+        wait_timeout.tv_sec = zero_sec.sec;
+        wait_timeout.tv_usec = zero_sec.usec;
 	num_set = select( FD_SETSIZE, &current_mask[READ_FD], &current_mask[WRITE_FD], &current_mask[EXCEPT_FD], 
-			  (struct timeval *)&wait_timeout );
+			  &wait_timeout );
 	if (num_set == 0 && !Exit_events)
 	{
 #ifdef BADCLOCK
@@ -659,8 +701,10 @@ static	const sp_time		mili_sec 	= {     0, 1000};
 #ifdef TESTTIME
                 req_time = E_add_time(req_time, timeout);
 #endif
+                sel_timeout.tv_sec = timeout.sec;
+                sel_timeout.tv_usec = timeout.usec;
 		num_set = select( FD_SETSIZE, &current_mask[READ_FD], &current_mask[WRITE_FD], 
-				  &current_mask[EXCEPT_FD], (struct timeval *)&timeout );
+				  &current_mask[EXCEPT_FD], &sel_timeout );
 	}
 #ifdef TESTTIME
         start = E_get_time();

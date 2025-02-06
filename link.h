@@ -18,8 +18,14 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2007 The Johns Hopkins University.
  * All rights reserved.
+ *
+ * Major Contributor(s):
+ * --------------------
+ *    John Lane
+ *    Raluca Musaloiu-Elefteri
+ *    Nilo Rivera
  *
  */
 
@@ -32,10 +38,6 @@
 
 #include "session.h"
 
-#define MAX_LINKS_4_EDGE 4
-#define MAX_LINKS        1024 /* this allows for 256 neighbor nodes
-			                     4 links for each node */
-
 /* Window (for reliability) */
 #define MAX_WINDOW       500
 #define MAX_CG_WINDOW    200
@@ -43,22 +45,29 @@
 #define MAX_HISTORY      1000
 
 /* Packet (unreliable) window for detecting loss rate */
-#define PACK_MAX_SEQ     10000
+#define PACK_MAX_SEQ     20000
 
 /* Loss rate calculation constants */
 #define LOSS_RATE_SCALE  1000000  /* For conversion from float to int*/
 #define UNKNOWN             (-1)
-#define LOSS_HISTORY          8
+#define LOSS_HISTORY        50
 
 /* Link types */
 #define CONTROL_LINK        0
 #define UDP_LINK            1
 #define RELIABLE_UDP_LINK   2
+#define REALTIME_UDP_LINK   3
+#define MAX_LINKS_4_EDGE    4
 
-/* Ports to listen to, in addition to ON port */
-#define CONTROL_PORT     0
-#define UDP_PORT         1
-#define SESS_PORT        MAX_LINKS_4_EDGE
+#define MAX_NEIGHBORS       256
+#define MAX_LINKS           MAX_NEIGHBORS*MAX_LINKS_4_EDGE
+
+#define MAX_DISCOVERY_ADDR  10
+
+/* Ports to listen to for sessions */
+#define SESS_PORT        ( MAX_LINKS_4_EDGE     )
+#define SESS_UDP_PORT    ( MAX_LINKS_4_EDGE + 1 )
+#define SESS_CTRL_PORT   ( MAX_LINKS_4_EDGE + 2 )
 
 
 /* Updates */
@@ -87,19 +96,23 @@
 #define RECVD_CELL       1
 #define NACK_CELL        2
 
-#define MAX_BUFF_LINK    30
+#define MAX_BUFF_LINK    50
 #define MAX_REORDER      10
 
 #define MAX_BUCKET       500
 #define RT_RETRANSM_TOK  5   /* 1/5 = 20% max retransmissions */
 
+#define BWTH_BUCKET      536064 /* 64K + 1.472K for one packet*/
 
-
-typedef struct Loss_d {
+typedef struct Lk_Param_d {
     int32 loss_rate;
     int32 burst_rate;
     int   was_loss;
-} Loss;
+    int32 bandwidth;
+    int32 bucket;
+    sp_time last_time_add;
+    sp_time delay;
+} Lk_Param;
 
 typedef struct Buffer_Cell_d {
     int32u seq_no;
@@ -152,6 +165,7 @@ typedef struct Reliable_Data_d {
     int32u recv_head;             /* 1 + highest packet received */
     int32u recv_tail;             /* 1 + highest received packet in order 
 				     (first hole)*/    
+    int32u adv_win;               /* advertised window set by the receiver */
     char *nack_buff;              /* Nacks to be parsed */
     int16u nack_len;              /* Length of the above buffer */ 
     int16 scheduled_ack;          /* Set to be 1 if I have an ack scheduled, 
@@ -192,7 +206,7 @@ typedef struct Control_Data_d {
     int32u hello_seq;             /* My hello sequence */
     int32u other_side_hello_seq;  /* Remote hello sequence */
     int32  diff_time;             /* Used for computing round trip time */
-    int32  rtt;                   /* Round trip time of the link */
+    float  rtt;                   /* Round trip time of the link */
     Loss_Data l_data;             /* For determining loss_rate */
     float  est_loss_rate;         /* Estimated loss rate */
     float  est_tcp_rate;          /* Estimated available TCP rate */
@@ -201,6 +215,22 @@ typedef struct Control_Data_d {
     float  reported_loss_rate;    /* Loss rate last reported in a link_state (if any) */
 } Control_Data;
 
+
+typedef struct Relatime_Data_d {
+    int32u    head;
+    int32u    tail;
+    struct History_Cell_d window[MAX_HISTORY]; /* Sending window history
+						(keeps actual pakets for a while) */    
+    int32u    recv_head;
+    int32u    recv_tail;
+    struct History_Recv_Cell_d recv_window[MAX_HISTORY]; /* Receiving window history    
+							    Only flags here, no packets */
+    char nack_buff[MAX_PACKET_SIZE];
+    int num_nacks;
+    char *retransm_buff;
+    int num_retransm;
+    int bucket;
+} Realtime_Data;
 
 typedef struct Link_d {
     struct Node_d *other_side_node; /* The node at the other side */

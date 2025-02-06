@@ -1,4 +1,3 @@
-
 /*
  * The Spread Toolkit.
  *     
@@ -17,18 +16,18 @@
  * License.
  *
  * The Creators of Spread are:
- *  Yair Amir, Michal Miskin-Amir, Jonathan Stanton.
+ *  Yair Amir, Michal Miskin-Amir, Jonathan Stanton, John Schultz.
  *
- *  Copyright (C) 1993-2003 Spread Concepts LLC <spread@spreadconcepts.com>
+ *  Copyright (C) 1993-2006 Spread Concepts LLC <info@spreadconcepts.com>
  *
  *  All Rights Reserved.
  *
  * Major Contributor(s):
  * ---------------
- *    Cristina Nita-Rotaru crisn@cnds.jhu.edu - group communication security.
- *    Theo Schlossnagle    jesus@omniti.com - Perl, skiplists, autoconf.
+ *    Ryan Caudy           rcaudy@gmail.com - contributions to process groups.
+ *    Cristina Nita-Rotaru crisn@cs.purdue.edu - group communication security.
+ *    Theo Schlossnagle    jesus@omniti.com - Perl, autoconf, old skiplist.
  *    Dan Schoenblum       dansch@cnds.jhu.edu - Java interface.
- *    John Schultz         jschultz@cnds.jhu.edu - contribution to process group membership.
  *
  *
  * This file is also licensed by Spread Concepts LLC under the Spines 
@@ -51,12 +50,14 @@
 #define		DEBUG		0x00000001
 #define 	EXIT  		0x00000002
 #define		PRINT		0x00000004
+/* new type to replace general prints */
+#define         SYSTEM          0x00000004
 
 #define		DATA_LINK	0x00000010
 #define		NETWORK		0x00000020
 #define		PROTOCOL	0x00000040
 #define		SESSION		0x00000080
-#define		CONF		0x00000100
+//#define		CONF		0x00000100	Clash with an OpenSSL definition
 #define		MEMB		0x00000200
 #define		FLOW_CONTROL	0x00000400
 #define		STATUS		0x00000800
@@ -74,12 +75,29 @@
 #define         SKIPLIST        0x00200000
 #define         ACM             0x00400000
 
+#define         SECURITY        0x00800000
+
 #define		ALL		0xffffffff
 #define		NONE		0x00000000
 
+/* Priority levels */   
+#define         SPLOG_DEBUG     1       /* Program information that is only useful for debugging. 
+                                           Will normally be turned off in operation. */
+#define         SPLOG_INFO      2       /* Program reports information that may be useful for 
+                                           performance tuning, analysis, or operational checks. */
+#define         SPLOG_WARNING   3       /* Program encountered a situation that is not erroneous, 
+                                           but is uncommon and may indicate an error. */
+#define         SPLOG_ERROR     4       /* Program encountered an error that can be recovered from. */
+#define         SPLOG_CRITICAL  5       /* Program will not exit, but has only temporarily recovered 
+                                           and without help may soon fail. */
+#define         SPLOG_FATAL     6       /* Program will exit() or abort(). */
+
+#define         SPLOG_PRINT     7       /* Program should always print this information */
+#define         SPLOG_PRINT_NODATE     8       /* Program should always print this information, but the datestamp should be omitted. */
 
 #ifdef  HAVE_GOOD_VARGS
-void Alarm( int32 mask, char *message, ...);
+void Alarmp( int16 priority, int32 type, char *message, ...);
+void Alarm( int32 type, char *message, ...);
 
 #else
 void Alarm();
@@ -90,9 +108,12 @@ void Alarm_set_output(char *filename);
 void Alarm_enable_timestamp(char *format);
 void Alarm_disable_timestamp(void);
 
-void Alarm_set(int32 mask);
-void Alarm_clear(int32 mask);
-int32 Alarm_get(void);
+void Alarm_set_types(int32 mask);
+void Alarm_clear_types(int32 mask);
+int32 Alarm_get_types(void);
+
+void Alarm_set_priority(int16 priority);
+int16 Alarm_get_priority(void);
 
 void Alarm_set_interactive(void);
 int  Alarm_get_interactive(void);
@@ -101,5 +122,7 @@ int  Alarm_get_interactive(void);
 #define IP2( address )  ( ( 0x00FF0000 & (address) ) >> 16 )
 #define IP3( address )  ( ( 0x0000FF00 & (address) ) >> 8 )
 #define IP4( address )  ( ( 0x000000FF & (address) ) )
+#define IP( address ) IP1(address),IP2(address),IP3(address),IP4(address)
+#define IPF "%d.%d.%d.%d"
 
 #endif	/* INC_ALARM */

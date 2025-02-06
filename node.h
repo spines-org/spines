@@ -18,8 +18,14 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2007 The Johns Hopkins University.
  * All rights reserved.
+ *
+ * Major Contributor(s):
+ * --------------------
+ *    John Lane
+ *    Raluca Musaloiu-Elefteri
+ *    Nilo Rivera
  *
  */
 
@@ -34,22 +40,44 @@
 #define NOT_YET_CONNECTED_NODE   0x0008
 #define REMOTE_NODE              0x0010
 
+#ifdef SPINES_SSL
+#include <openssl/ssl.h>
+#endif
 #include "link.h"
+
 
 typedef struct Node_d {
     int32 address;               /* IP Address */
     int16 node_id;               /* Index in the global neighbor nodes array */
+    int16 node_no;               /* Ordered id of all the nodes in the system */
     int16 flags;                 /* Connected, Neighbor, etc. */
-    sp_time last_time_heard;     /* Last time I heard from this node (not fully implemented) */
     int16 counter;               /* Number of outstanding "hello" messages */
+
+    sp_time last_time_heard;     /* Last time I heard from this node (not fully implemented) */
     struct Link_d *link[MAX_LINKS_4_EDGE]; /* Links to this node, if a neighbor */
 
     /* Routing info */
-    stdhash routes;              /* hash with routes to all the accessible nodes */
+    stdhash multicast_routes;    /* hash keyed on address of destination, and
+				    having data of address of forwarder */
+
+    /* Routing info for Dijkstra only */
+    int cost;
+    int distance;
+    struct Node_d *forwarder;
+
     struct Node_d *prev;         /* Used to build an ordered linked list */
     struct Node_d *next;         /* Used to build an ordered linked list */
+
+    char *device_name;           /* Device name to reach this node, if a neighbors */ 
 } Node;
 
+#ifdef SPINES_SSL
+struct send_item {
+    SSL *ssl;
+    char pseudo_scat[MAX_PACKET_SIZE];
+    int size;
+};
+#endif
 
 void Init_Nodes(void);
 void Create_Node(int32 address, int16 mode);

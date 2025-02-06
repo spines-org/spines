@@ -18,8 +18,14 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2005 The Johns Hopkins University.
  * All rights reserved.
+ *
+ * Major Contributor(s):
+ * --------------------
+ *    John Lane
+ *    Raluca Musaloiu-Elefteri
+ *    Nilo Rivera
  *
  */
 
@@ -44,50 +50,77 @@ static int  Num_bytes;
 static int  Rate;
 static int  Num_pkts;
 static char IP[80];
+static char MCAST_IP[80];
+static char SP_IP[80];
 static char filename[80];
 static int  fileflag;
 static int  spinesPort;
 static int  sendPort;
 static int  recvPort;
-static int  Address;
 static int  Send_Flag;
 static int  Reliable_Flag;
 static int  Sping_Flag;
 static int  Protocol;
+static int  Group_Address;
 
 static void Usage(int argc, char *argv[]);
 
-#define MAX_PACKET_SIZE  1400
+#define MAX_PKT_SIZE  100000
+
+
+void isleep(int usec)
+{
+    int diff;
+    struct timeval start, now;
+    struct timezone tz;
+
+    gettimeofday(&start, &tz);    
+    diff = 0;
+    
+    while(diff < usec) {
+	if(usec - diff > 1) {
+	    usleep(1);
+	}
+	gettimeofday(&now, &tz);
+	diff = now.tv_sec - start.tv_sec;
+	diff *= 1000000;
+	diff += now.tv_usec - start.tv_usec;
+    }
+}
+
 
 
 int main( int argc, char *argv[] )
 {
-    int  sk, sk_listen;
-    char buf[MAX_PACKET_SIZE];
-    int  i, ret;
-    int  localhost_ip;
+    int  sk;
+    char buf[MAX_PKT_SIZE];
+    int  i, j, ret;
     struct timeval *t1, *t2;
     struct timeval local_recv_time, start, now, report_time;
     struct timezone tz;
-    int  *pkt_no, *msg_size;
+    int  *pkt_no, *msg_size, last_seq, err_cnt;
     long long int duration_now, int_delay, oneway_time;
     long long int cnt;
     double rate_now;
     int sent_packets = 0;
     long elapsed_time;
-    FILE *f1;
+    struct ip_mreq mreq;
+    FILE *f1 = NULL;
 
-    int addr, sndport;
+
 
     key_t key;
     int shmid, size, opperm_flags;
-    char *mem_addr;
+    char *mem_addr = NULL;
     long long int *avg_clockdiff;
     long long int zero_diff = 0;
     long long int min_clockdiff, max_clockdiff;
 
-    struct sockaddr_in host;
+    struct sockaddr_in host, serv_addr;
+    struct sockaddr_in name;
     struct hostent     h_ent;
+    struct hostent  *host_ptr;
+    char   machine_name[256];
 
 
     Usage(argc, argv);
@@ -95,12 +128,46 @@ int main( int argc, char *argv[] )
     if(fileflag == 1)
 	f1 = fopen(filename, "wt");
 
-    localhost_ip = (127 << 24) + 1; /* 127.0.0.1 */
+    if(strcmp(SP_IP, "") != 0) {
+	memcpy(&h_ent, gethostbyname(SP_IP), sizeof(h_ent));
+	memcpy( &serv_addr.sin_addr, h_ent.h_addr, sizeof(struct in_addr) );
+    }
+    else {
+	gethostname(machine_name,sizeof(machine_name)); 
+	host_ptr = gethostbyname(machine_name);
+	
+	if(host_ptr == NULL) {
+	    printf("could not get my ip address (my name is %s)\n",
+		   machine_name );
+	    exit(1);
+	}
+	if(host_ptr->h_addrtype != AF_INET) {
+	    printf("Sorry, cannot handle addr types other than IPv4\n");
+	exit(1);
+	}
+	
+	if(host_ptr->h_length != 4) {
+	    printf("Bad IPv4 address length\n");
+	    exit(1);
+	}
+	memcpy(&serv_addr.sin_addr, host_ptr->h_addr, sizeof(struct in_addr));
+    }
+    serv_addr.sin_port = htons(spinesPort);
 
-    bcopy(gethostbyname(IP), &h_ent, sizeof(h_ent));
-    bcopy( h_ent.h_addr, &Address, sizeof(Address) );
-    Address = ntohl(Address);
-    
+    if(spines_init((struct sockaddr*)(&serv_addr)) < 0) {
+	printf("flooder_client: socket error\n");
+	exit(1);
+    }
+
+    if(strcmp(IP, "") != 0) {
+	memcpy(&h_ent, gethostbyname(IP), sizeof(h_ent));
+	memcpy( &host.sin_addr, h_ent.h_addr, sizeof(host.sin_addr) );
+    }
+    else {
+	memcpy(&host.sin_addr, &serv_addr.sin_addr, sizeof(struct in_addr));
+    }
+
+
     msg_size = (int*)buf;
     pkt_no = (int*)(buf+sizeof(int));
     t1 = (struct timeval*)(buf+2*sizeof(int));
@@ -116,7 +183,7 @@ int main( int argc, char *argv[] )
 	host.sin_family = AF_INET;
 	host.sin_port   = htons(sendPort);
 
-        sk = spines_socket(spinesPort, localhost_ip, &Protocol);
+        sk = spines_socket(PF_SPINES, SOCK_DGRAM, Protocol, NULL);
         if (sk < 0) {
 	    printf("flooder_client: socket error\n");
 	    exit(1);
@@ -149,11 +216,11 @@ int main( int argc, char *argv[] )
 
 	for(i=0; i<Num_pkts; i++)
 	{
-	    *pkt_no = i;
-	    *msg_size = Num_bytes;
+	    *pkt_no = htonl(i);
+	    *msg_size = htonl(Num_bytes);
 	    gettimeofday(t1, &tz);	
 
-	    ret = spines_sendto(sk, Address, sendPort, buf, Num_bytes);
+	    ret = spines_sendto(sk, buf, Num_bytes, 0, (struct sockaddr *)&host, sizeof(struct sockaddr));
 	    if(ret != Num_bytes) {
 		printf("error in writing: %d...\n", ret);
 		exit(0);
@@ -192,21 +259,24 @@ int main( int argc, char *argv[] )
 		    int_delay = int_delay/Rate; 
 		    int_delay = int_delay - duration_now;
 
-		    /*printf("   %d.%06d -> delay: %lld\n", 
+		    /* printf("   %d.%06d -> delay: %lld\n", 
 		     *	   (int)now.tv_sec, (int)now.tv_usec, int_delay);
-		     */
+		     */ 
 
-		    if((int_delay <= 0)||(int_delay > 10000000))
+		    if((int_delay < 0)||(int_delay > 10000000))
 			printf("!!!!!!!!!!!!!! %lld\n", int_delay);
 		    if(int_delay > 0)
-			usleep(int_delay);
+			isleep(int_delay);
 		}
 	    }
 	}
-	*pkt_no = -1;
-	*msg_size = Num_bytes;
+	*pkt_no = htonl(-1);
+	*msg_size = htonl(Num_bytes);
 	gettimeofday(t1, &tz);
-	ret = spines_sendto(sk, Address, sendPort, buf, Num_bytes);
+	for(j = 1; j<10; j++) {
+	    ret = spines_sendto(sk, buf, Num_bytes, 0, (struct sockaddr *)&host, sizeof(struct sockaddr));
+	    isleep(10000);
+	}
 
 	gettimeofday(&now, &tz);
 	duration_now  = now.tv_sec - start.tv_sec;
@@ -224,6 +294,9 @@ int main( int argc, char *argv[] )
     }
     else {
 	printf("Just answering flooder msgs on port %d\n", recvPort);
+
+	err_cnt = 0;
+	last_seq = 0;
 
 	if(Sping_Flag == 1) {
 	    key = 0x01234567;
@@ -249,34 +322,56 @@ int main( int argc, char *argv[] )
 	}
 
 
-	sk = spines_socket(spinesPort, localhost_ip, &Protocol);
-	if(sk_listen <= 0) {
+        sk = spines_socket(PF_INET, SOCK_DGRAM, Protocol, NULL);
+	if(sk <= 0) {
 	    printf("error socket...\n");
 	    exit(0);
 	}
+
+	name.sin_family = AF_INET;
+        name.sin_addr.s_addr = INADDR_ANY;
+        name.sin_port = htons(recvPort);	
 	
-	ret = spines_bind(sk, recvPort);
-	if(ret <= 0) {
-	    printf("disconnected by spines...\n");
-	    exit(0);
-	}	
+	if(spines_bind(sk, (struct sockaddr *)&name, sizeof(name) ) < 0) {
+	    perror("err: bind");
+	    exit(1);
+        }
     
+	if(Group_Address != -1) {
+	    mreq.imr_multiaddr.s_addr = htonl(Group_Address);
+	    mreq.imr_interface.s_addr = htonl(INADDR_ANY);
+	    
+	    if(spines_setsockopt(sk, IPPROTO_IP, SPINES_ADD_MEMBERSHIP, (void *)&mreq, sizeof(mreq)) < 0) {
+		printf("Mcast: problem in setsockopt to join multicast address");
+		exit(0);
+	    }	    
+	}
+
 	cnt = 0;
-	while(1) {
-	    ret = spines_recvfrom(sk, &addr, &sndport, buf, sizeof(buf));
+	while(1) {	    
+	    ret = spines_recvfrom(sk, buf, sizeof(buf), 0, NULL, 0);
 	    gettimeofday(t2, &tz);
 	    if(ret <= 0) {
 		printf("Disconnected by spines...\n");
 		exit(0);
 	    }
-	    if(ret != *msg_size) {
-		printf("corrupted packet...\n");
+	    if(ret != ntohl(*msg_size)) {
+		printf("corrupted packet... ret: %d; msg_size: %d\n",
+		       ret, ntohl(*msg_size));
 		exit(0);
 	    }
 
-	    if(*pkt_no == -1)
+	    if(ntohl(*pkt_no) == -1)
 		break;
 
+	    if(ntohl(*pkt_no) > last_seq + 1) {
+		err_cnt += ntohl(*pkt_no) - last_seq - 1;
+	    }
+	    if(ntohl(*pkt_no) > last_seq) {
+		last_seq = ntohl(*pkt_no);
+	    }
+	    
+	   
 	    oneway_time = (t2->tv_sec - t1->tv_sec);
 	    oneway_time *= 1000000; 
 	    oneway_time += t2->tv_usec - t1->tv_usec;
@@ -294,7 +389,9 @@ int main( int argc, char *argv[] )
 
 	    cnt++;
 	    if(fileflag == 1) {
-		fprintf(f1, "%d\t%lld\n", *pkt_no+1, oneway_time);
+		fprintf(f1, "%d.%06d\t%d\t%lld\n", (int)t2->tv_sec, 
+			(int)t2->tv_usec, *pkt_no+1, oneway_time);
+		fflush(f1);
 	    }
 	}
 
@@ -305,11 +402,13 @@ int main( int argc, char *argv[] )
 		exit(0);
 	    }
 	}
-	if(fileflag == 1) {
-	    fprintf(f1, "# min_clockdiff: %lld; max_clockdiff: %lld; => %lld\n",
-		    min_clockdiff, max_clockdiff, max_clockdiff - min_clockdiff);
-	}
+	/*	if(fileflag == 1) {
+	 *	    fprintf(f1, "# min_clockdiff: %lld; max_clockdiff: %lld; => %lld\n",
+	 *		    min_clockdiff, max_clockdiff, max_clockdiff - min_clockdiff);
+	 *	}
+	 */
 
+	printf("Errors: %d\n", err_cnt);
     }
     if(fileflag == 1) {
 	fclose(f1);
@@ -325,20 +424,25 @@ int main( int argc, char *argv[] )
 
 static  void    Usage(int argc, char *argv[])
 {
+    int i1, i2, i3, i4;
+
     /* Setting defaults */
     Num_bytes = 1000;
-    Rate = -1;
+    Rate = 500;
     Num_pkts = 10000;
     spinesPort = 8100;
     sendPort = 8400;
     recvPort = 8400;
-    Address = 0;
     fileflag = 0;
     Sping_Flag = 0;
     Send_Flag = 0;
     Reliable_Flag = 0;
     Protocol = 0;
-    strcpy( IP, "127.0.0.1" );
+    strcpy(IP, "");
+    strcpy(SP_IP, "");
+    strcpy(MCAST_IP, "");
+    Group_Address = -1;
+
     while( --argc > 0 ) {
 	argv++;
 	
@@ -353,6 +457,14 @@ static  void    Usage(int argc, char *argv[])
 	    argc--; argv++;
 	}else if( !strncmp( *argv, "-a", 2 ) ){
 	    sscanf(argv[1], "%s", IP );
+	    argc--; argv++;
+	}else if( !strncmp( *argv, "-j", 2 ) ){
+	    sscanf(argv[1], "%s", MCAST_IP );
+	    sscanf(MCAST_IP ,"%d.%d.%d.%d",&i1, &i2, &i3, &i4);
+	    Group_Address = ( (i1 << 24 ) | (i2 << 16) | (i3 << 8) | i4 );	    
+	    argc--; argv++;
+	}else if( !strncmp( *argv, "-o", 2 ) ){
+	    sscanf(argv[1], "%s", SP_IP );
 	    argc--; argv++;
 	}else if( !strncmp( *argv, "-b", 2 ) ){
 	    sscanf(argv[1], "%d", (int*)&Num_bytes );
@@ -375,24 +487,26 @@ static  void    Usage(int argc, char *argv[])
 	    fileflag = 1;
 	    argc--; argv++;
 	}else{
-	    printf( "Usage: sp_flooder\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n",
+	    printf( "Usage: sp_flooder\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n",
+		    "\t[-o <address>    ] : address where spines runs, default localhost",
 		    "\t[-p <port number>] : port where spines runs, default is 8100",
 		    "\t[-d <port number>] : to send packets on, default is 8400",
 		    "\t[-r <port number>] : to receive packets on, default is 8400",
 		    "\t[-a <address>    ] : address to send packets to",
+		    "\t[-j <mcast addr> ] : multicas address to join",
 		    "\t[-b <size>       ] : size of the packets (in bytes)",
 		    "\t[-R <rate>       ] : sending rate (in 1000's of bits per sec)",
 		    "\t[-n <rounds>     ] : number of packets",
 		    "\t[-f <filename>   ] : file where to save statistics",
 		    "\t[-g              ] : run with sping for clock sync",
-		    "\t[-P <0, 1 or 2>  ] : overlay links (0 : UDP; 1; Rliable)",
+		    "\t[-P <0, 1 or 2>  ] : overlay links (0 : UDP; 1; Rliable; 2: Realtime)",
 		    "\t[-s              ] : sender flooder");
 	    exit( 0 );
 	}
     }
     
-    if(Num_bytes > MAX_PACKET_SIZE)
-	Num_bytes = MAX_PACKET_SIZE;
+    if(Num_bytes > MAX_PKT_SIZE)
+	Num_bytes = MAX_PKT_SIZE;
     
     if(Num_bytes < sizeof(struct timeval) + 2*sizeof(int))
 	Num_bytes = sizeof(struct timeval) + 2*sizeof(int);

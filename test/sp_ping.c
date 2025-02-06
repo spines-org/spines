@@ -18,8 +18,14 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2005 The Johns Hopkins University.
  * All rights reserved.
+ *
+ * Major Contributor(s):
+ * --------------------
+ *    John Lane
+ *    Raluca Musaloiu-Elefteri
+ *    Nilo Rivera
  *
  */
 
@@ -29,6 +35,13 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/time.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h> 
+#include <netdb.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <errno.h>
 #include "../spines_lib.h"
 
 
@@ -40,13 +53,12 @@ static char IP[16];
 static int  spinesPort;
 static int  sendPort;
 static int  recvPort;
-static int  Address;
 static int  Send_Flag;
 
 static void Usage(int argc, char *argv[]);
 
 #define MAX_ROUNDS      10000
-#define MAX_PACKET_SIZE  1400
+#define MAX_PKT_SIZE  1400
 
 
 int main( int argc, char *argv[] )
@@ -56,40 +68,83 @@ int main( int argc, char *argv[] )
     int  clock_diffs[MAX_ROUNDS];
     int  min_diff = 100000000;
     int  max_diff = -100000000;
-    char buf[MAX_PACKET_SIZE];
+    char buf[MAX_PKT_SIZE];
     int  i, ret, num_losses, read_flag;
-    int  localhost_ip;
     struct timeval *t1, *t2, *t3, *t4;
     struct timeval timeout, temp_timeout, local_recv_time, start, now, prog_life;
     struct timezone tz;
     int  *round_no, *msg_size;
-    int  addr, port;
     struct timeval oneway_send, oneway_recv;
     int  avg_delay, avg_diff;
     fd_set mask, dummy_mask, temp_mask;
+    socklen_t recvlen;
+
+    struct sockaddr_in host, serv_addr, send_addr;
+    struct sockaddr_in name;
+    struct hostent     h_ent;
+    struct hostent  *host_ptr;
+    char   machine_name[256];
+
 
 
     Usage(argc, argv);
 
-    localhost_ip = (127 << 24) + 1; /* 127.0.0.1 */
+
+    gethostname(machine_name,sizeof(machine_name)); 
+    host_ptr = gethostbyname(machine_name);
     
+    if(host_ptr == NULL) {
+	printf("could not get my ip address (my name is %s)\n",
+	       machine_name );
+	exit(1);
+    }
+    if(host_ptr->h_addrtype != AF_INET) {
+	printf("Sorry, cannot handle addr types other than IPv4\n");
+	exit(1);
+    }
+    
+    if(host_ptr->h_length != 4) {
+	printf("Bad IPv4 address length\n");
+	exit(1);
+	}
+    memcpy(&serv_addr.sin_addr, host_ptr->h_addr, sizeof(struct in_addr));
+    serv_addr.sin_port = htons(spinesPort);
+ 
+    if(spines_init((struct sockaddr*)(&serv_addr)) < 0) {
+	printf("sp_ping: socket error\n");
+	exit(1);
+    }
+   
+    if(strcmp(IP, "") != 0) {
+	memcpy(&h_ent, gethostbyname(IP), sizeof(h_ent));
+	memcpy( &host.sin_addr, h_ent.h_addr, sizeof(host.sin_addr) );
+    }
+    else {
+	memcpy(&host.sin_addr, &serv_addr.sin_addr, sizeof(struct in_addr));
+    }
+    host.sin_port = htons(sendPort);
+
     timeout.tv_sec = 4;
     timeout.tv_usec = 0;
 
     num_losses = 0;
+    
 
-    sk = spines_socket(spinesPort, localhost_ip, NULL);
+    sk = spines_socket(PF_SPINES, SOCK_DGRAM, 0, NULL);
     if(sk <= 0) {
 	printf("disconnected by spines...\n");
 	exit(0);
     }
 
-    ret = spines_bind(sk, recvPort);
-    if(ret <= 0) {
-	printf("disconnected by spines...\n");
-	exit(0);
-    }
+    name.sin_family = AF_INET;
+    name.sin_addr.s_addr = INADDR_ANY;
+    name.sin_port = htons(recvPort);	
     
+    if(spines_bind(sk, (struct sockaddr *)&name, sizeof(name) ) < 0) {
+	perror("err: bind");
+	exit(1);
+    }
+
 
     t1 = (struct timeval*)buf;
     t2 = (struct timeval*)(buf+sizeof(struct timeval));
@@ -114,7 +169,7 @@ int main( int argc, char *argv[] )
 	    *round_no = i;
 	    gettimeofday(t1, &tz);
 	    *msg_size = Num_bytes;
-	    ret = spines_sendto(sk, Address, sendPort, buf, Num_bytes);
+	    ret = spines_sendto(sk, buf, Num_bytes, 0, (struct sockaddr *)&host, sizeof(struct sockaddr));
 	    if(ret <= 0) {
 		printf("disconnected by spines...\n");
 		exit(0);
@@ -127,7 +182,7 @@ int main( int argc, char *argv[] )
 		select( FD_SETSIZE, &temp_mask, &dummy_mask, &dummy_mask, &temp_timeout);
 		
 		if(FD_ISSET(sk, &temp_mask)) {
-		    ret = spines_recvfrom(sk, &addr, &port, buf, sizeof(buf));
+		    ret = spines_recvfrom(sk, buf, sizeof(buf), 0, NULL, 0);
 		    gettimeofday(t4, &tz);
 		    if(ret <= 0) {
 			printf("Disconnected by spines...\n");
@@ -193,15 +248,16 @@ int main( int argc, char *argv[] )
 	avg_delay = avg_delay/(Num_rounds - num_losses);
 	avg_diff = avg_diff/(Num_rounds - num_losses);
 
-	printf("\nAverage rtt: %d.%d msec; Average clock diff: %d usec\n\n",
-	       avg_delay/1000, avg_delay%1000, avg_diff);
-	printf("max diff: %d usec; min diff: %d usec\n", max_diff, min_diff);
-
+	/*printf("\nAverage rtt: %d.%d msec; Average clock diff: %d usec\n\n",
+	 *      avg_delay/1000, avg_delay%1000, avg_diff);
+	 *printf("max diff: %d usec; min diff: %d usec\n", max_diff, min_diff);
+	 */
     }
     else {
 	printf("Just answering pings on port %d\n", recvPort);
-	while(1) {
-	    ret = spines_recvfrom(sk, &addr, &port, buf, sizeof(buf));
+	while(1) {	    
+	    recvlen = sizeof(struct sockaddr);
+	    ret = spines_recvfrom(sk, buf, sizeof(buf), 0, (struct sockaddr*)(&send_addr), &recvlen);
 	    gettimeofday(t2, &tz);
 	    if(ret <= 0) {
 		printf("Disconnected by spines...\n");
@@ -212,7 +268,8 @@ int main( int argc, char *argv[] )
 		exit(0);
 	    }
 	    gettimeofday(t3, &tz);
-	    ret = spines_sendto(sk, addr, port, buf, *msg_size);
+	    ret = spines_sendto(sk, buf, *msg_size, 0, (struct sockaddr*)(&send_addr),
+				  sizeof(struct sockaddr));
 	    if(ret <= 0) {
 		printf("disconnected by spines...\n");
 		exit(0);
@@ -227,8 +284,6 @@ int main( int argc, char *argv[] )
 
 static  void    Usage(int argc, char *argv[])
 {
-    int i1, i2, i3, i4;
-    
     /* Setting defaults */
     Num_bytes = 64;
     Delay = 1000;
@@ -236,9 +291,8 @@ static  void    Usage(int argc, char *argv[])
     spinesPort = 8100;
     sendPort = 8400;
     recvPort = 8400;
-    Address = 0;
     Send_Flag = 0;
-    strcpy( IP, "127.0.0.1" );
+    strcpy( IP, "" );
     while( --argc > 0 ) {
 	argv++;
 	
@@ -246,17 +300,13 @@ static  void    Usage(int argc, char *argv[])
 	    sscanf(argv[1], "%d", (int*)&spinesPort );
 	    argc--; argv++;
 	}else if( !strncmp( *argv, "-d", 2 ) ){
-	    sscanf(argv[1], "%d", (int*)&recvPort );
+	    sscanf(argv[1], "%d", (int*)&sendPort );
 	    argc--; argv++;
 	}else if( !strncmp( *argv, "-r", 2 ) ){
 	    sscanf(argv[1], "%d", (int*)&recvPort );
 	    argc--; argv++;
 	}else if( !strncmp( *argv, "-a", 2 ) ){
 	    sscanf(argv[1], "%s", IP );
-
-	    sscanf( IP ,"%d.%d.%d.%d",&i1, &i2, &i3, &i4);
-	    Address = ( (i1 << 24 ) | (i2 << 16) | (i3 << 8) | i4 );
-	    
 	    argc--; argv++;
 	}else if( !strncmp( *argv, "-b", 2 ) ){
 	    sscanf(argv[1], "%d", (int*)&Num_bytes );
@@ -282,11 +332,9 @@ static  void    Usage(int argc, char *argv[])
 	    exit( 0 );
 	}
     }
-    sscanf( IP ,"%d.%d.%d.%d",&i1, &i2, &i3, &i4);
-    Address = ( (i1 << 24 ) | (i2 << 16) | (i3 << 8) | i4 );
     
-    if(Num_bytes > MAX_PACKET_SIZE)
-	Num_bytes = MAX_PACKET_SIZE;
+    if(Num_bytes > MAX_PKT_SIZE)
+	Num_bytes = MAX_PKT_SIZE;
     
     if(Num_bytes < 3*sizeof(struct timeval) + 2*sizeof(int))
 	Num_bytes = 3*sizeof(struct timeval) + 2*sizeof(int);

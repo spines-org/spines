@@ -18,8 +18,14 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2007 The Johns Hopkins University.
  * All rights reserved.
+ *
+ * Major Contributor(s):
+ * --------------------
+ *    John Lane
+ *    Raluca Musaloiu-Elefteri
+ *    Nilo Rivera
  *
  */
 
@@ -40,7 +46,7 @@ typedef struct Prot_Def_d {
     int (*Is_state_relevant)(void *state);
     int (*Set_state_header)(void *state, char *pos);
     int (*Set_state_cell)(void *state, char *pos);
-    int (*Process_state_header)(char *pos);
+    int (*Process_state_header)(char *pos, int32 type);
     void* (*Process_state_cell)(int32 source, char *pos);
     int (*Destroy_State_Data)(void *state);
 } Prot_Def;
@@ -72,6 +78,7 @@ typedef struct State_Data_d {
 typedef struct State_Chain_d {
     int32 address;
     stdhash states;
+    stdhash *p_states;
 } State_Chain;
 
 

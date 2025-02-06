@@ -1,4 +1,3 @@
-
 /*
  * The Spread Toolkit.
  *     
@@ -17,18 +16,18 @@
  * License.
  *
  * The Creators of Spread are:
- *  Yair Amir, Michal Miskin-Amir, Jonathan Stanton.
+ *  Yair Amir, Michal Miskin-Amir, Jonathan Stanton, John Schultz.
  *
- *  Copyright (C) 1993-2003 Spread Concepts LLC <spread@spreadconcepts.com>
+ *  Copyright (C) 1993-2006 Spread Concepts LLC <info@spreadconcepts.com>
  *
  *  All Rights Reserved.
  *
  * Major Contributor(s):
  * ---------------
- *    Cristina Nita-Rotaru crisn@cnds.jhu.edu - group communication security.
- *    Theo Schlossnagle    jesus@omniti.com - Perl, skiplists, autoconf.
+ *    Ryan Caudy           rcaudy@gmail.com - contributions to process groups.
+ *    Cristina Nita-Rotaru crisn@cs.purdue.edu - group communication security.
+ *    Theo Schlossnagle    jesus@omniti.com - Perl, autoconf, old skiplist.
  *    Dan Schoenblum       dansch@cnds.jhu.edu - Java interface.
- *    John Schultz         jschultz@cnds.jhu.edu - contribution to process group membership.
  *
  *
  * This file is also licensed by Spread Concepts LLC under the Spines 
@@ -47,7 +46,7 @@
 #define	INC_SP_EVENTS
 
 /*
-  User level code shoud NOT include this file directly. 
+  User level code should NOT include this file directly. 
   Include sp.h instead.
   Spread daemon level code should include this file directly and NOT include sp.h
 */ 
@@ -112,9 +111,3 @@ void 	E_handle_events(void);
 void 	E_exit_events(void);
 
 #endif	/* INC_SP_EVENTS */
-
-
-
-
-
-

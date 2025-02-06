@@ -1,0 +1,133 @@
+SUBDIRS=stdutil/src
+
+CC=@CC@
+LD=@LD@
+AR=@AR@
+RANLIB=@RANLIB@
+LIBS=@LIBS@ 
+
+#--- CD: TODO: These lines need to be done with autoconf ---#
+ARCH := $(shell uname -s)
+SUNOS = SunOS
+LINUX = Linux
+DARWIN = Darwin
+CYGWIN = CYGWIN_NT-5.1
+
+SSL_INCLUDE=/usr/include
+SSL_LIB=/usr/lib
+SSL_BIN_PATH=/usr/bin
+SSL_SUPPORT = 0
+#------------------------ UP TO HERE -----------------------#
+
+
+
+OBJECTS = util/alarm.o util/events.o util/memory.o util/data_link.o \
+	  node.o link.o network.o reliable_datagram.o state_flood.o \
+          link_state.o protocol.o hello.o kernel_routing.o route.o udp.o \
+	  reliable_udp.o realtime_udp.o session.o reliable_session.o \
+	  multicast.o dijkstra.o spines.o
+
+
+# ARCH_DEFINE is taken from the enviroment and specifies
+# an architecture if any. For example: -DARCH_MIPS_LINUX
+
+ifeq (1,$(SSL_SUPPORT))
+	CFLAGS = -g -DSPINES_SSL -Wall -O3 -I stdutil/src -I$(SSL_INCLUDE) -L$(SSL_LIB) $(ARCH_DEFINE)
+else
+	CFLAGS = -g -Wall -O3 -I stdutil/src $(ARCH_DEFINE)
+endif
+
+STDLIB = stdutil/lib/libstdutil.a
+
+ifeq ($(ARCH),$(CYGWIN))
+EXTRALIBS = -lwsock32
+endif
+
+all: subdirs spines spines_lib.a spines_tlib.a test/sp_tflooder test/sp_uflooder test/sp_xcast test/sp_ping test/sping test/t_flooder test/u_flooder test/setlink
+
+
+subdirs: 
+	for dir in $(SUBDIRS); do \
+                ( $(MAKE) -C $$dir); \
+        done
+
+
+
+spines: $(OBJECTS)
+ifeq (1,$(SSL_SUPPORT))
+	echo "with OPENSSL version $(SSL_VERSION)"
+	$(CC) -I$(SSL_INCLUDE) -o spines $(OBJECTS) $(STDLIB) $(LIBS) $(EXTRALIBS) -L$(SSL_LIB) -lssl -lcrypto -ldl
+else
+	echo "without OPENSSL (version $(SSL_VERSION) is too old)"
+	$(CC) -o spines $(OBJECTS) $(LIBS) $(STDLIB) $(EXTRALIBS) -ldl
+endif
+
+
+spines_lib.a: util/alarm.o util/events.o util/data_link.o util/memory.o mutex.o spines_lib.o
+	$(AR) r spines_lib.a spines_lib.o util/alarm.o util/events.o util/data_link.o util/memory.o mutex.o; $(RANLIB) spines_lib.a
+
+spines_tlib.a: util/alarm.to util/events.to util/data_link.to util/memory.to mutex.to spines_lib.to
+	$(AR) r spines_tlib.a spines_lib.to util/alarm.to util/events.to util/data_link.to util/memory.to mutex.to; $(RANLIB) spines_tlib.a
+
+
+%.o:	%.c
+	$(CC) $(CFLAGS) -c -o $*.o $*.c
+
+%.to:	%.c
+	$(CC) $(CFLAGS) -D_REENTRANT -c -o $*.to $*.c
+
+
+test/sp_ping: test/sp_ping.o spines_lib.a
+	$(CC) -o test/sp_ping test/sp_ping.o spines_lib.a $(LIBS)
+
+test/sp_tflooder: test/sp_tflooder.o spines_lib.a
+	$(CC) -o test/sp_tflooder test/sp_tflooder.o spines_lib.a  $(LIBS) 
+
+test/sp_uflooder: test/sp_uflooder.o spines_lib.a
+	$(CC) -o test/sp_uflooder test/sp_uflooder.o spines_lib.a  $(LIBS)
+
+test/sp_xcast: test/sp_xcast.o spines_lib.a
+	$(CC) -o test/sp_xcast test/sp_xcast.o spines_lib.a  $(LIBS)
+
+test/sping: test/sping.o
+	$(CC) -o test/sping test/sping.o  $(LIBS)
+
+test/t_flooder: test/t_flooder.o
+	$(CC) -o test/t_flooder test/t_flooder.o  $(LIBS)
+
+test/u_flooder: test/u_flooder.o
+	$(CC) -o test/u_flooder test/u_flooder.o  $(LIBS)
+
+test/setlink: test/setlink.o spines_lib.a
+	$(CC) -o test/setlink test/setlink.o spines_lib.a  $(LIBS) 
+
+
+clean:
+	rm -f *~
+	rm -f *.o
+	rm -f *.to
+	rm -f util/*.o
+	rm -f util/*.to
+	rm -f test/*.o
+	rm -f util/*~
+	rm -f test/*~
+	rm -f core
+	rm -rf autom4te.cache
+	for dir in $(SUBDIRS); do \
+		( $(MAKE) -C $$dir clean); \
+	done
+
+
+distclean: clean
+	rm -f spines
+	rm -f spines.exe
+	cd test; rm -f setlink sping sp_ping sp_r sp_s sp_tflooder sp_uflooder sp_xcast t_flooder u_flooder
+	cd test; rm -f setlink.exe sping.exe sp_ping.exe sp_r.exe sp_s.exe sp_tflooder.exe sp_uflooder.exe sp_xcast.exe t_flooder.exe u_flooder.exe
+	rm -f config.cache config.log core
+	rm -rf autom4te.cache
+	rm -f Makefile util/config.h config.status *~
+	for dir in $(SUBDIRS); do \
+		( $(MAKE) -C $$dir distclean); \
+	done
+
+

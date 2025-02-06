@@ -1,78 +1,135 @@
+.SUFFIXES: .do .to .tdo .lo .ldo .lto .ltdo
+.PHONY: all standard libdir clean distclean uberclean
+
+LIBVERSION=1.0
+
+############################################ PROGRAMS #########################################
+
 CC=@CC@
-RANLIB=@RANLIB@
+LD=@LD@
+SHCC=@SHCC@
+SHLD=@SHLD@
+
 AR=@AR@
+SOFTLINK=@LN_S@
+INSTALL=@INSTALL@
 
-# use thread safe libs and enable std locking mechanisms
-THREAD_SAFE = -D_REENTRANT 
+srcdir=@srcdir@
+top_srcdir=@top_srcdir@
+VPATH=@srcdir@
+buildtoolsdir=$(top_srcdir)/buildtools
 
-# USE_EXCEPTIONS - abort program on unexpected errors (e.g. malloc fails)
-USE_EXCEPTIONS = # -DSTD_USE_EXCEPTIONS
+############################################# FLAGS ###########################################
 
-# STD_CONSTRUCT_CHECKS - check if std DS's are constructed before usage, abort if not
-CONSTRUCT_CHECKS = # -DSTD_CONSTRUCT_CHECKS 
+CFLAGS=@CFLAGS@
+CPPFLAGS=@CPPFLAGS@ -I./ -I$(srcdir)
+LDFLAGS=@LDFLAGS@
+LIBS=@LIBS@
 
-# BOUNDS_CHECKS - check that the user is using the DS's properly (doesn't check all uses)
-BOUNDS_CHECKS = # -DSTD_BOUNDS_CHECKS 
+SHCFLAGS=@SHCFLAGS@
+SHCPPFLAGS=@SHCPPFLAGS@ -I./ -I$(srcdir)
+SHLDFLAGS=@SHLDFLAGS@
+SHLIBS=@SHLIBS@
 
-# SAFE_CHECKS - check and be sure some condition that should be true is true (sanity checks)
-SAFE_CHECKS = # -DSTD_SAFE_CHECKS
+THLIBS=@THLIBS@
+THLDFLAGS=@THLDFLAGS@
 
-# DMALLOC_USE - use the dmalloc lib to check for memory leaks?
-DMALLOC_USE     = # -DUSE_DMALLOC
-DMALLOC_LIB     = # -ldmalloc
-DMALLOC_INC_DIR = # -I dmalloc_include_dir (dmalloc.h)
-DMALLOC_LIB_DIR = # -L dmalloc_lib_dir (libdmalloc.a)
+RELEASEFLAGS=-DNDEBUG -O2
+DEBUGFLAGS=-g -DSTDSAFETY_CHECKS -DSTDBOUNDS_CHECKS
+THREADFLAGS=-D_REENTRANT
 
-# adds pthreads library if available and dmalloc lib if we're using it
-LIBS = @LIBS@ $(DMALLOC_LIB)
+############################################# OBJECTS #########################################
 
-# where to put libraries and test/example programs
-TARGET_DIR = ../lib
-APP_DIR = ../bin
+STATIC_NOTHREAD_RELEASE_OBJS=stdutil.o stderror.o stdthread.o stdtime.o stdfd.o stdit.o stdarr.o stdcarr.o stddll.o stdhash.o stdskl.o
+STATIC_NOTHREAD_DEBUG_OBJS=stdutil.do stderror.do stdthread.do stdtime.do stdfd.do stdit.do stdarr.do stdcarr.do stddll.do stdhash.do stdskl.do
+STATIC_THREADED_RELEASE_OBJS=stdutil.to stderror.to stdthread.to stdtime.to stdfd.to stdit.to stdarr.to stdcarr.to stddll.to stdhash.to stdskl.to
+STATIC_THREADED_DEBUG_OBJS=stdutil.tdo stderror.tdo stdthread.tdo stdtime.tdo stdfd.tdo stdit.tdo stdarr.tdo stdcarr.tdo stddll.tdo stdhash.tdo stdskl.tdo
+SHARED_NOTHREAD_RELEASE_OBJS=stdutil.lo stderror.lo stdthread.lo stdtime.lo stdfd.lo stdit.lo stdarr.lo stdcarr.lo stddll.lo stdhash.lo stdskl.lo
+SHARED_NOTHREAD_DEBUG_OBJS=stdutil.ldo stderror.ldo stdthread.ldo stdtime.ldo stdfd.ldo stdit.ldo stdarr.ldo stdcarr.ldo stddll.ldo stdhash.ldo stdskl.ldo
+SHARED_THREADED_RELEASE_OBJS=stdutil.lto stderror.lto stdthread.lto stdtime.lto stdfd.lto stdit.lto stdarr.lto stdcarr.lto stddll.lto stdhash.lto stdskl.lto
+SHARED_THREADED_DEBUG_OBJS=stdutil.ltdo stderror.ltdo stdthread.ltdo stdtime.ltdo stdfd.ltdo stdit.ltdo stdarr.ltdo stdcarr.ltdo stddll.ltdo stdhash.ltdo stdskl.ltdo
 
-# all the defines for the compilations
-DEFINES = $(THREAD_SAFE) $(USE_EXCEPTIONS) $(CONSTRUCT_CHECKS) $(BOUNDS_CHECKS) $(SAFE_CHECKS) $(DMALLOC_USE)
+############################################# TARGETS #########################################
 
-# all the include directories for the compilations
-INCLUDES = $(DMALLOC_INC_DIR)
+BINDIR=../bin
+LIBDIR=../lib
 
-# all the library linkage directories
-LDFLAGS = $(DMALLOC_LIB_DIR)
+STATIC_NOTHREAD_RELEASE_LIB=$(LIBDIR)/libstdutil-nothread-release.a
+STATIC_NOTHREAD_DEBUG_LIB=$(LIBDIR)/libstdutil-nothread-debug.a
+STATIC_THREADED_RELEASE_LIB=$(LIBDIR)/libstdutil-threaded-release.a
+STATIC_THREADED_DEBUG_LIB=$(LIBDIR)/libstdutil-threaded-debug.a
+SHARED_NOTHREAD_RELEASE_LIB=$(LIBDIR)/libstdutil-nothread-release.$(LIBVERSION).@DYNLIBEXT@
+SHARED_NOTHREAD_DEBUG_LIB=$(LIBDIR)/libstdutil-nothread-debug.$(LIBVERSION).@DYNLIBEXT@
+SHARED_THREADED_RELEASE_LIB=$(LIBDIR)/libstdutil-threaded-release.$(LIBVERSION).@DYNLIBEXT@
+SHARED_THREADED_DEBUG_LIB=$(LIBDIR)/libstdutil-threaded-debug.$(LIBVERSION).@DYNLIBEXT@
 
-# gcc specific compiler flags
-CFLAGS = -Wall -O -I ./ $(DEFINES)
+STATIC_LIBS=$(STATIC_NOTHREAD_RELEASE_LIB) $(STATIC_NOTHREAD_DEBUG_LIB) $(STATIC_THREADED_RELEASE_LIB) $(STATIC_THREADED_DEBUG_LIB)
+SHARED_LIBS=$(SHARED_NOTHREAD_RELEASE_LIB) $(SHARED_NOTHREAD_DEBUG_LIB) $(SHARED_THREADED_RELEASE_LIB) $(SHARED_THREADED_DEBUG_LIB)
 
-LIBSTDUTIL = $(TARGET_DIR)/libstdutil.a
-TARGETS = $(LIBSTDUTIL) $(APP_DIR)/stdarch_test $(APP_DIR)/stddll_test $(APP_DIR)/stdarr_test $(APP_DIR)/stdcarr_test $(APP_DIR)/stdhash_test
+ALLTARGETS=$(STATIC_LIBS) @SHARED_LIBS@
 
-OBJS = stdutil.o stderror.o stdthread.o stdarr.o stdcarr.o stddll.o stdhash.o
+########################################### BUILD RULES ########################################
+standard: libdir @STANDARD_LIBS@
 
-all: $(TARGETS)
+all: libdir $(ALLTARGETS)
 
-$(LIBSTDUTIL): $(APP_DIR)/stdarch_test $(OBJS)
-	$(AR) r $(LIBSTDUTIL) $(OBJS); $(RANLIB) $(LIBSTDUTIL)
+libdir:
+	$(buildtoolsdir)/mkinstalldirs $(LIBDIR)
 
-$(APP_DIR)/stdarch_test: $(OBJS) stdtest/stdarch_test.c
-	$(CC) $(CFLAGS) -o $(APP_DIR)/stdarch_test stdtest/stdarch_test.c $(OBJS) $(LIBS); sleep 2; $(APP_DIR)/stdarch_test
+$(STATIC_NOTHREAD_RELEASE_LIB): $(STATIC_NOTHREAD_RELEASE_OBJS)
+	$(AR) rvs $@ $(STATIC_NOTHREAD_RELEASE_OBJS)
 
-$(APP_DIR)/stdarr_test: $(APP_DIR)/stddll_test stdtest/stdarr_test.c
-	$(CC) $(CFLAGS) -o $(APP_DIR)/stdarr_test stdtest/stdarr_test.c $(OBJS) $(LIBS)
-#	$(APP_DIR)/stdarr_test
+$(STATIC_NOTHREAD_DEBUG_LIB): $(STATIC_NOTHREAD_DEBUG_OBJS)
+	$(AR) rvs $@ $(STATIC_NOTHREAD_DEBUG_OBJS)
 
-$(APP_DIR)/stdcarr_test: $(APP_DIR)/stddll_test stdtest/stdcarr_test.c
-	$(CC) $(CFLAGS) -o $(APP_DIR)/stdcarr_test stdtest/stdcarr_test.c $(OBJS) $(LIBS) 
-#	$(APP_DIR)/stdcarr_test 
+$(STATIC_THREADED_RELEASE_LIB): $(STATIC_THREADED_RELEASE_OBJS)
+	$(AR) rvs $@ $(STATIC_THREADED_RELEASE_OBJS)
+	$(SOFTLINK) -f $@ $(LIBDIR)/libstdutil.a
 
-$(APP_DIR)/stddll_test: $(APP_DIR)/stdarch_test stdtest/stddll_test.c
-	$(CC) $(CFLAGS) -o $(APP_DIR)/stddll_test stdtest/stddll_test.c $(OBJS) $(LIBS)
-#	$(APP_DIR)/stddll_test
+$(STATIC_THREADED_DEBUG_LIB): $(STATIC_THREADED_DEBUG_OBJS)
+	$(AR) rvs $@ $(STATIC_THREADED_DEBUG_OBJS)
 
-$(APP_DIR)/stdhash_test: $(APP_DIR)/stdarch_test stdtest/stdhash_test.c
-	$(CC) $(CFLAGS) -o $(APP_DIR)/stdhash_test stdtest/stdhash_test.c $(OBJS) $(LIBS)
-#	$(APP_DIR)/stdhash_test
+$(SHARED_NOTHREAD_RELEASE_LIB): $(SHARED_NOTHREAD_RELEASE_OBJS)
+	$(SHLD) $(SHLDFLAGS) -o $@ $(SHARED_NOTHREAD_RELEASE_OBJS) $(SHLIBS)
+
+$(SHARED_NOTHREAD_DEBUG_LIB): $(SHARED_NOTHREAD_DEBUG_OBJS)
+	$(SHLD) $(SHLDFLAGS) -o $@ $(SHARED_NOTHREAD_DEBUG_OBJS) $(SHLIBS)
+
+$(SHARED_THREADED_RELEASE_LIB): $(SHARED_THREADED_RELEASE_OBJS) 
+	$(SHLD) $(SHLDFLAGS) -o $@ $(SHARED_THREADED_RELEASE_OBJS) $(SHLIBS) $(THLIBS)
+	$(SOFTLINK) -f $@ $(LIBDIR)/libstdutil.@DYNLIBEXT@
+
+$(SHARED_THREADED_DEBUG_LIB): $(SHARED_THREADED_DEBUG_OBJS)
+	$(SHLD) $(SHLDFLAGS) -o $@ $(SHARED_THREADED_DEBUG_OBJS) $(SHLIBS) $(THLIBS)
 
 clean:
-	rm -f *~ stdutil/*~ stdtest/*~ *.o *.bak stdutil/*.bak stdtest/*.bak core $(TARGETS)
+	rm -f *.o *.do *.to *.tdo *.lo *.ldo *.lto *.ltdo core* *~ $(ALLTARGETS) $(LIBDIR)/stdutil.a $(LIBDIR)/stdutil.@DYNLIBEXT@
 
 distclean: clean
-	rm -f config.* stdutil/stddefines.h Makefile
+	rm -f Makefile
+
+uberclean: distclean
+
+.c.o:
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(RELEASEFLAGS) -c $<
+
+.c.do:
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(DEBUGFLAGS) -c $< -o $*.do
+
+.c.to:
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(RELEASEFLAGS) $(THREADFLAGS) -c $< -o $*.to
+
+.c.tdo:
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(DEBUGFLAGS) $(THREADFLAGS) -c $< -o $*.tdo
+
+.c.lo:
+	$(SHCC) $(SHCFLAGS) $(SHCPPFLAGS) $(RELEASEFLAGS) -c $< -o $*.lo
+
+.c.ldo:
+	$(SHCC) $(SHCFLAGS) $(SHCPPFLAGS) $(DEBUGFLAGS) -c $< -o $*.ldo
+
+.c.lto:
+	$(SHCC) $(SHCFLAGS) $(SHCPPFLAGS) $(RELEASEFLAGS) $(THREADFLAGS) -c $< -o $*.lto
+
+.c.ltdo:
+	$(SHCC) $(SHCFLAGS) $(SHCPPFLAGS) $(DEBUGFLAGS) $(THREADFLAGS) -c $< -o $*.ltdo

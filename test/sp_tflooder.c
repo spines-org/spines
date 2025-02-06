@@ -18,8 +18,14 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2005 The Johns Hopkins University.
  * All rights reserved.
+ *
+ * Major Contributor(s):
+ * --------------------
+ *    John Lane
+ *    Raluca Musaloiu-Elefteri
+ *    Nilo Rivera
  *
  */
 
@@ -44,47 +50,70 @@ static int  Num_bytes;
 static int  Rate;
 static int  Num_pkts;
 static char IP[80];
+static char SP_IP[80];
 static char filename[80];
 static int  fileflag;
 static int  spinesPort;
 static int  sendPort;
 static int  recvPort;
-static int  Address;
 static int  Send_Flag;
 static int  Sping_Flag;
 static int  Protocol;
 
 static void Usage(int argc, char *argv[]);
 
-#define MAX_PACKET_SIZE  1400
+#define MAX_PKT_SIZE  1000000
+
+
+void isleep(int usec)
+{
+    int diff;
+    struct timeval start, now;
+    struct timezone tz;
+
+    gettimeofday(&start, &tz);    
+    diff = 0;
+    
+    while(diff < usec) {
+	if(usec - diff > 11000) {
+	    usleep(1);
+	}
+	gettimeofday(&now, &tz);
+	diff = now.tv_sec - start.tv_sec;
+	diff *= 1000000;
+	diff += now.tv_usec - start.tv_usec;
+    }
+}
+
 
 
 int main( int argc, char *argv[] )
 {
     int  sk, sk_listen;
-    char buf[MAX_PACKET_SIZE];
+    char buf[MAX_PKT_SIZE];
     int  i, ret;
-    int  localhost_ip;
     struct timeval *t1, *t2;
     struct timeval local_recv_time, start, now, report_time;
     struct timezone tz;
-    int  *pkt_no, *msg_size;
+    int  *pkt_no, *msg_size, total_read;
     long long int duration_now, int_delay, oneway_time;
     long long int cnt;
     double rate_now;
     int sent_packets = 0;
     long elapsed_time;
-    FILE *f1;
+    FILE *f1 = NULL;
 
     key_t key;
     int shmid, size, opperm_flags;
-    char *mem_addr;
+    char *mem_addr = NULL;
     long long int *avg_clockdiff;
     long long int zero_diff = 0;
     long long int min_clockdiff, max_clockdiff;
 
-    struct sockaddr_in host;
+    struct sockaddr_in host, serv_addr, name;
     struct hostent     h_ent;
+    struct hostent  *host_ptr;
+    char   machine_name[256];
 
 
     Usage(argc, argv);
@@ -92,11 +121,44 @@ int main( int argc, char *argv[] )
     if(fileflag == 1)
 	f1 = fopen(filename, "wt");
 
-    localhost_ip = (127 << 24) + 1; /* 127.0.0.1 */
+    if(strcmp(SP_IP, "") != 0) {
+	memcpy(&h_ent, gethostbyname(SP_IP), sizeof(h_ent));
+	memcpy( &serv_addr.sin_addr, h_ent.h_addr, sizeof(struct in_addr) );
+    }
+    else {
+	gethostname(machine_name,sizeof(machine_name)); 
+	host_ptr = gethostbyname(machine_name);
+	
+	if(host_ptr == NULL) {
+	    printf("Init_My_Node: could not get my ip address (my name is %s)\n",
+		   machine_name );
+	    exit(1);
+	}
+	if(host_ptr->h_addrtype != AF_INET) {
+	    printf("Init_My_Node: Sorry, cannot handle addr types other than IPv4\n");
+	exit(1);
+	}
+	
+	if(host_ptr->h_length != 4) {
+	    printf("Conf_init: Bad IPv4 address length\n");
+	    exit(1);
+	}
+	memcpy(&serv_addr.sin_addr, host_ptr->h_addr, sizeof(struct in_addr));
+    }
+    serv_addr.sin_port = htons(spinesPort);
+    
+    if(spines_init((struct sockaddr*)(&serv_addr)) < 0) {
+	printf("flooder_client: socket error\n");
+	exit(1);
+    }
 
-    bcopy(gethostbyname(IP), &h_ent, sizeof(h_ent));
-    bcopy( h_ent.h_addr, &Address, sizeof(Address) );
-    Address = ntohl(Address);
+    if(strcmp(IP, "") != 0) {
+	memcpy(&h_ent, gethostbyname(IP), sizeof(h_ent));
+	memcpy( &host.sin_addr, h_ent.h_addr, sizeof(host.sin_addr) );
+    }
+    else {
+	memcpy(&host.sin_addr, &serv_addr.sin_addr, sizeof(struct in_addr));
+    }
     
     msg_size = (int*)buf;
     pkt_no = (int*)(buf+sizeof(int));
@@ -113,13 +175,13 @@ int main( int argc, char *argv[] )
 	host.sin_family = AF_INET;
 	host.sin_port   = htons(sendPort);
 
-        sk = spines_socket(spinesPort, localhost_ip, &Protocol);
+        sk = spines_socket(PF_SPINES, SOCK_STREAM, Protocol, NULL);
         if (sk < 0) {
 	    printf("flooder_client: socket error\n");
 	    exit(1);
         }
 
-        ret = spines_connect(sk, Address, sendPort);
+        ret = spines_connect(sk, (struct sockaddr *)&host, sizeof(host));
         if( ret < 0)
         {
                 printf( "sp_flooder: could not connect to server\n"); 
@@ -153,11 +215,11 @@ int main( int argc, char *argv[] )
 
 	for(i=0; i<Num_pkts; i++)
 	{
-	    *pkt_no = i;
-	    *msg_size = Num_bytes;
+	    *pkt_no = htonl(i);
+	    *msg_size = htonl(Num_bytes);
 	    gettimeofday(t1, &tz);	
 
-	    ret = spines_send(sk, buf, Num_bytes);
+	    ret = spines_send(sk, buf, Num_bytes, 0);
 	    if(ret != Num_bytes) {
 		printf("error in writing: %d...\n", ret);
 		exit(0);
@@ -203,14 +265,19 @@ int main( int argc, char *argv[] )
 		    if((int_delay <= 0)||(int_delay > 10000000))
 			printf("!!!!!!!!!!!!!! %lld\n", int_delay);
 		    if(int_delay > 0)
-			usleep(int_delay);
+			isleep(int_delay);
 		}
 	    }
 	}
-	*pkt_no = -1;
-	*msg_size = Num_bytes;
+	*pkt_no = htonl(-1);
+	*msg_size = htonl(Num_bytes);
 	gettimeofday(t1, &tz);
-	ret = spines_send(sk, buf, Num_bytes);
+	ret = spines_send(sk, buf, Num_bytes, 0);
+	if(ret != Num_bytes) {
+	    printf("error in writing: %d...\n", ret);
+	    exit(0);
+	}
+
 
 	gettimeofday(&now, &tz);
 	duration_now  = now.tv_sec - start.tv_sec;
@@ -253,34 +320,74 @@ int main( int argc, char *argv[] )
 	}
 
 
-	sk_listen = spines_socket(spinesPort, localhost_ip, &Protocol);
+	sk_listen = spines_socket(PF_SPINES, SOCK_STREAM, Protocol, NULL);
 	if(sk_listen <= 0) {
 	    printf("error socket...\n");
 	    exit(0);
 	}
-	
-	ret = spines_bind(sk_listen, recvPort);
-	if(ret <= 0) {
+
+        name.sin_family = AF_INET;
+        name.sin_addr.s_addr = INADDR_ANY;
+        name.sin_port = htons(recvPort);
+
+
+	ret = spines_bind(sk_listen, (struct sockaddr *)&name, sizeof(name));
+	if(ret < 0) {
 	    printf("disconnected by spines...\n");
 	    exit(0);
 	}	
     
-	spines_listen(sk_listen);
-	sk = spines_accept(sk_listen, spinesPort, localhost_ip, &Protocol);
+        if(spines_listen(sk_listen, 0) < 0) {
+	    perror("err: listen");
+	    exit(1);
+        }
+
+	sk = spines_accept(sk_listen, 0, 0);
+	if(sk < 0) {
+	    perror("err: accept");
+	    exit(1);	
+	}
+
+	printf("accept\n");
+
+	gettimeofday(&start, &tz);
+
+	Num_pkts = 0;
 
 	cnt = 0;
 	while(1) {
-	    ret = spines_recv(sk, buf, sizeof(buf));
-	    gettimeofday(t2, &tz);
-	    if(ret <= 0) {
-		printf("Disconnected by spines...\n");
-		exit(0);
+	    total_read = 0;
+	    while(total_read < sizeof(int)) {
+	        /*printf("receiving\n");*/
+		ret = spines_recv(sk, buf+total_read, sizeof(int) - total_read, 0);
+		if(ret <= 0) {
+		    printf("err reading... read until now: %d; ret: %d\n", total_read, ret);
+		    exit(0);
+		}
+		total_read += ret;		
 	    }
-	    if(ret != *msg_size) {
-		printf("corrupted packet...\n");
-		exit(0);
+
+	    *msg_size = ntohl(*msg_size);
+
+	    while(total_read < *msg_size) {
+		ret = spines_recv(sk, buf+total_read, *msg_size - total_read, 0);
+		if(ret <= 0) {
+		    printf("err reading... read until now:  %d\n", total_read);
+		    exit(0);
+		}
+		total_read += ret;
 	    }
+
+	    *pkt_no = ntohl(*pkt_no);
 	    
+
+	    gettimeofday(t2, &tz);
+	    if(total_read != *msg_size) {
+		printf("corrupted packet...total_read: %d; msg_size: %d\n",
+		       total_read, *msg_size);
+		exit(0);
+	    }
+
 	    if(*pkt_no == -1)
 		break;
 
@@ -301,8 +408,15 @@ int main( int argc, char *argv[] )
 
 	    cnt++;
 	    if(fileflag == 1) {
-		fprintf(f1, "%d\t%lld\n", *pkt_no+1, oneway_time);
+		fprintf(f1, "%d.%06d\t%d\t%lld\n", (int)t2->tv_sec, 
+			(int)t2->tv_usec, *pkt_no+1, oneway_time);
+
+		printf("%d.%06d\t%d\t%lld\n", (int)t2->tv_sec, 
+		       (int)t2->tv_usec, *pkt_no+1, oneway_time);
+		fflush(f1);
 	    }
+
+	    Num_pkts++;
 	}
 
 	if(Sping_Flag == 1) {
@@ -316,6 +430,16 @@ int main( int argc, char *argv[] )
 	    fprintf(f1, "# min_clockdiff: %lld; max_clockdiff: %lld; => %lld\n",
 		    min_clockdiff, max_clockdiff, max_clockdiff - min_clockdiff);
 	}
+
+	gettimeofday(&now, &tz);
+	duration_now  = now.tv_sec - start.tv_sec;
+	duration_now *= 1000000; 
+	duration_now += now.tv_usec - start.tv_usec;
+	
+	rate_now = *msg_size;
+	rate_now = rate_now * Num_pkts * 8 * 1000;
+	rate_now = rate_now/duration_now;
+	printf("Avg. rate: %8.3f Kbps\n", rate_now);
 
     }
     if(fileflag == 1) {
@@ -339,12 +463,12 @@ static  void    Usage(int argc, char *argv[])
     spinesPort = 8100;
     sendPort = 8400;
     recvPort = 8400;
-    Address = 0;
     fileflag = 0;
     Sping_Flag = 0;
     Send_Flag = 0;
     Protocol = 0;
-    strcpy( IP, "127.0.0.1" );
+    strcpy(IP, "");
+    strcpy(SP_IP, "");
     while( --argc > 0 ) {
 	argv++;
 	
@@ -359,6 +483,9 @@ static  void    Usage(int argc, char *argv[])
 	    argc--; argv++;
 	}else if( !strncmp( *argv, "-a", 2 ) ){
 	    sscanf(argv[1], "%s", IP );
+	    argc--; argv++;
+	}else if( !strncmp( *argv, "-o", 2 ) ){
+	    sscanf(argv[1], "%s", SP_IP );
 	    argc--; argv++;
 	}else if( !strncmp( *argv, "-b", 2 ) ){
 	    sscanf(argv[1], "%d", (int*)&Num_bytes );
@@ -381,7 +508,8 @@ static  void    Usage(int argc, char *argv[])
 	    fileflag = 1;
 	    argc--; argv++;
 	}else{
-	    printf( "Usage: sp_flooder\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n",
+	    printf( "Usage: sp_flooder\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n",
+		    "\t[-o <address>    ] : address where spines runs, default localhost",
 		    "\t[-p <port number>] : port where spines runs, default is 8100",
 		    "\t[-d <port number>] : to send packets on, default is 8400",
 		    "\t[-r <port number>] : to receive packets on, default is 8400",
@@ -391,14 +519,14 @@ static  void    Usage(int argc, char *argv[])
 		    "\t[-n <rounds>     ] : number of packets",
 		    "\t[-f <filename>   ] : file where to save statistics",
 		    "\t[-g              ] : run with sping for clock sync",
-		    "\t[-P <0, 1 or 2>  ] : overlay links (0 : UDP; 1; Rliable)",
+		    "\t[-P <0, 1 or 2>  ] : overlay links (0 : UDP; 1; Rliable; 2: Soft Realtime)",
 		    "\t[-s              ] : sender flooder");
 	    exit( 0 );
 	}
     }
     
-    if(Num_bytes > MAX_PACKET_SIZE)
-	Num_bytes = MAX_PACKET_SIZE;
+    if(Num_bytes > MAX_PKT_SIZE)
+	Num_bytes = MAX_PKT_SIZE;
     
     if(Num_bytes < sizeof(struct timeval) + 2*sizeof(int))
 	Num_bytes = sizeof(struct timeval) + 2*sizeof(int);

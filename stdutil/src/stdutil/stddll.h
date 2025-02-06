@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, The Johns Hopkins University
+/* Copyright (c) 2000-2005, The Johns Hopkins University
  * All rights reserved.
  *
  * The contents of this file are subject to a license (the ``License'')
@@ -23,67 +23,88 @@
 #ifndef stddll_h_2000_02_14_16_22_38_jschultz_at_cnds_jhu_edu
 #define stddll_h_2000_02_14_16_22_38_jschultz_at_cnds_jhu_edu
 
-#include <stdutil/stddefines.h>
-#include <stdutil/stddll_p.h>
+#include <stdutil/stdit.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* stddll_it: must first be initialized by a stddll iterator fcn (see below) */
-inline void    *stddll_it_val(const stddll_it *it);
-inline stdbool stddll_it_equals(const stddll_it *it1, const stddll_it *it2);
-inline stdbool stddll_it_is_begin(const stddll_it *it);
-inline stdbool stddll_it_is_end(const stddll_it *it);  
+/* Structors */
 
-inline stddll_it *stddll_it_seek_begin(stddll_it *it);
-inline stddll_it *stddll_it_seek_end(stddll_it *it);
-inline stddll_it *stddll_it_next(stddll_it *it);
-inline stddll_it *stddll_it_advance(stddll_it *it, size_t num_advance);
-inline stddll_it *stddll_it_prev(stddll_it *it);
-inline stddll_it *stddll_it_retreat(stddll_it *it, size_t num_retreat);
+STDINLINE stdcode stddll_construct(stddll *l, stdsize vsize);
+STDINLINE stdcode stddll_copy_construct(stddll *dst, const stddll *src);
+STDINLINE void    stddll_destruct(stddll *l);
 
-/* stddll */
-/* Constructors, Destructor */
-inline int  stddll_construct(stddll *l, size_t sizeof_val);
-inline int  stddll_copy_construct(stddll *dst, const stddll *src);
-inline void stddll_destruct(stddll *l);
+/* Assigners */
 
-/* Iterator Interface */
-inline stddll_it *stddll_begin(const stddll *l, stddll_it *it);
-inline stddll_it *stddll_last(const stddll *l, stddll_it *it);
-inline stddll_it *stddll_end(const stddll *l, stddll_it *it);
-inline stddll_it *stddll_get(const stddll *l, stddll_it *it, size_t index);
+STDINLINE stdcode stddll_set_eq(stddll *dst, const stddll *src);
+STDINLINE void    stddll_swap(stddll *l1, stddll *l2);
+
+/* Iterators */
+
+STDINLINE stdit * stddll_begin(const stddll *l, stdit *it);
+STDINLINE stdit * stddll_last(const stddll *l, stdit *it);
+STDINLINE stdit * stddll_end(const stddll *l, stdit *it);
+STDINLINE stdit * stddll_get(const stddll *l, stdit *it, stdsize elem_num);  /* O(n) */
+
+STDINLINE stdbool stddll_is_begin(const stddll *l, const stdit *it);
+STDINLINE stdbool stddll_is_end(const stddll *l, const stdit *it);  
 
 /* Size Information */
-inline size_t  stddll_size(const stddll *l);
-inline stdbool stddll_empty(const stddll *l);
 
-inline size_t stddll_max_size(const stddll *l);
-inline size_t stddll_val_size(const stddll *l);
+STDINLINE stdsize stddll_size(const stddll *l);
+STDINLINE stdbool stddll_empty(const stddll *l);
+
+STDINLINE stdsize stddll_max_size(const stddll *l);
+STDINLINE stdsize stddll_val_size(const stddll *l);
 
 /* Size Operations */
-inline int stddll_resize(stddll *l, size_t num_elems);
-inline int stddll_clear(stddll *l);
+
+STDINLINE stdcode stddll_resize(stddll *l, stdsize num_elems);
+STDINLINE void    stddll_clear(stddll *l);
 
 /* Stack Operations: O(1) operations */
-inline int stddll_push_front(stddll *l, const void *val);
-inline int stddll_pop_front(stddll *l);
-inline int stddll_push_back(stddll *l, const void *val);
-inline int stddll_pop_back(stddll *l);
 
-inline int stddll_multi_push_front(stddll *l, const void *vals, size_t num_push);
-inline int stddll_multi_pop_front(stddll *l, size_t num_pop);
-inline int stddll_multi_push_back(stddll *l, const void *vals, size_t num_push);
-inline int stddll_multi_pop_back(stddll *l, size_t num_pop);
+STDINLINE stdcode stddll_push_front(stddll *l, const void *val);
+STDINLINE stdcode stddll_push_front_n(stddll *l, const void *vals, stdsize num_push);
+STDINLINE stdcode stddll_push_front_seq(stddll *l, const stdit *b, const stdit *e);
+STDINLINE stdcode stddll_push_front_seq_n(stddll *l, const stdit *b, stdsize num_push);
+STDINLINE stdcode stddll_push_front_rep(stddll *l, const void *val, stdsize num_times);
+
+STDINLINE void    stddll_pop_front(stddll *l);
+STDINLINE void    stddll_pop_front_n(stddll *l, stdsize num_pop);
+
+STDINLINE stdcode stddll_push_back(stddll *l, const void *val);
+STDINLINE stdcode stddll_push_back_n(stddll *l, const void *vals, stdsize num_push);
+STDINLINE stdcode stddll_push_back_seq(stddll *l, const stdit *b, const stdit *e);
+STDINLINE stdcode stddll_push_back_seq_n(stddll *l, const stdit *b, stdsize num_push);
+STDINLINE stdcode stddll_push_back_rep(stddll *l, const void *val, stdsize num_times);
+
+STDINLINE void    stddll_pop_back(stddll *l);
+STDINLINE void    stddll_pop_back_n(stddll *l, stdsize num_pop);
 
 /* List Operations: O(1) operations */
-inline stddll_it *stddll_insert(stddll_it *it, const void *val);
-inline stddll_it *stddll_erase(stddll_it *it);
 
-inline stddll_it *stddll_repeat_insert(stddll_it *it, const void *val, size_t num_times);
-inline stddll_it *stddll_multi_insert(stddll_it *it, const void *vals, size_t num_insert);
-inline stddll_it *stddll_multi_erase(stddll_it *it, size_t num_erase);
+STDINLINE stdcode stddll_insert(stddll *l, stdit *it, const void *val);
+STDINLINE stdcode stddll_insert_n(stddll *l, stdit *it, const void *vals, stdsize num_insert);
+STDINLINE stdcode stddll_insert_seq(stddll *l, stdit *it, const stdit *b, const stdit *e);
+STDINLINE stdcode stddll_insert_seq_n(stddll *l, stdit *it, const stdit *b, stdsize num_insert);
+STDINLINE stdcode stddll_insert_rep(stddll *l, stdit *it, const void *val, stdsize num_times);
+
+STDINLINE void    stddll_erase(stddll *l, stdit *it);
+STDINLINE void    stddll_erase_n(stddll *l, stdit *it, stdsize num_erase);
+STDINLINE void    stddll_erase_seq(stddll *l, stdit *b, stdit *e);
+
+/* Iterator Fcns */
+
+STDINLINE void *  stddll_it_val(const stdit *it);
+STDINLINE stdsize stddll_it_val_size(const stdit *it);
+STDINLINE stdbool stddll_it_eq(const stdit *it1, const stdit *it2);
+
+STDINLINE stdit * stddll_it_next(stdit *it);
+STDINLINE stdit * stddll_it_advance(stdit *it, stdsize num_advance);
+STDINLINE stdit * stddll_it_prev(stdit *it);
+STDINLINE stdit * stddll_it_retreat(stdit *it, stdsize num_retreat);
 
 #ifdef __cplusplus
 }

@@ -18,8 +18,14 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2007 The Johns Hopkins University.
  * All rights reserved.
+ *
+ * Major Contributor(s):
+ * --------------------
+ *    John Lane
+ *    Raluca Musaloiu-Elefteri
+ *    Nilo Rivera
  *
  */
 
@@ -42,23 +48,24 @@
 #include "hello.h"
 #include "route.h"
 #include "udp.h"
+#include "realtime_udp.h"
 #include "session.h"
 #include "state_flood.h"
 #include "link_state.h"
 
-/* Extern variables, as defined in on.c */
+/* Extern variables, as defined in spines.c */
 extern stdhash   All_Nodes;
 extern stdhash   All_Edges;
 extern stdhash   Changed_Edges;
 extern Link*     Links[MAX_LINKS];
-extern channel   Local_Send_Channels[MAX_LINKS_4_EDGE];
+extern channel   Local_Recv_Channels[MAX_LINKS_4_EDGE];
 extern int32     My_Address;
 extern int16     Port;
 extern int16     Link_Sessions_Blocked_On;
 extern Prot_Def  Edge_Prot_Def;
 extern Prot_Def  Groups_Prot_Def;
 extern int       Minimum_Window;
-
+extern int       Route_Weight;
 
 
 /***********************************************************/
@@ -79,12 +86,13 @@ extern int       Minimum_Window;
 /***********************************************************/
 
 int16 Create_Link(int32 address, int16 mode) {
-    stdhash_it it;
+    stdit it;
     Node       *nd;
     Link       *lk;
     Edge       *edge; 
     Control_Data  *c_data;
     Reliable_Data *r_data;
+    Realtime_Data *rt_data;
     int32      ip_address = address;
     int        i; 
     int16      linkid;
@@ -97,7 +105,7 @@ int16 Create_Link(int32 address, int16 mode) {
 
     /* Find the neighbor node structure */
     stdhash_find(&All_Nodes, &it, &ip_address);
-    if(!stdhash_it_is_end(&it)) {
+    if(!stdhash_is_end(&All_Nodes, &it)) {
         nd = *((Node **)stdhash_it_val(&it));
 	if(!(nd->flags & NEIGHBOR_NODE))
 	    Alarm(EXIT, "Create_Link: Non neighbor node: %X; %d\n", 
@@ -111,7 +119,7 @@ int16 Create_Link(int32 address, int16 mode) {
 	lk->other_side_node = nd;
 	lk->link_node_id = mode;
 	lk->link_id = linkid;
-	lk->chan = Local_Send_Channels[mode];
+	lk->chan = Local_Recv_Channels[mode];
 	lk->port = Port + mode;
 	lk->r_data = NULL;
 	lk->prot_data = NULL;
@@ -129,7 +137,7 @@ int16 Create_Link(int32 address, int16 mode) {
 	        Alarm(EXIT, "Create_Link: Cannot allocte reliable_data object\n");
 	    r_data->flags = UNAVAILABLE_LINK;
 	    r_data->seq_no = 0;
-	    stdcarr_construct(&(r_data->msg_buff), sizeof(Buffer_Cell*));
+	    stdcarr_construct(&(r_data->msg_buff), sizeof(Buffer_Cell*), 0);
 	    for(i=0;i<MAX_WINDOW;i++) {
 	        r_data->window[i].buff = NULL;
 	        r_data->window[i].data_len = 0;
@@ -152,7 +160,7 @@ int16 Create_Link(int32 address, int16 mode) {
 	    r_data->padded = 1;
 
 	    /* Congestion control */
-	    r_data->window_size = Minimum_Window; 
+	    r_data->window_size = (float)Minimum_Window; 
 	    r_data->max_window = MAX_CG_WINDOW;
 	    r_data->ssthresh = MAX_CG_WINDOW;
 	    
@@ -200,7 +208,14 @@ int16 Create_Link(int32 address, int16 mode) {
 	        edge = Create_Overlay_Edge(My_Address, nd->address);
 	    }
 	    else if(edge->cost < 0){
-		edge->cost = 1;
+		if((Route_Weight == LATENCY_ROUTE)||
+		   (Route_Weight == AVERAGE_ROUTE)) {
+		    edge->cost = 4;
+		}
+		else {
+		    edge->cost = 1;
+		}
+		
 		edge->timestamp_usec++;
 		if(edge->timestamp_usec >= 1000000) {
 		    edge->timestamp_usec = 0;
@@ -210,7 +225,31 @@ int16 Create_Link(int32 address, int16 mode) {
 	    }
 	    edge->flags = CONNECTED_EDGE;
 	    Add_to_changed_states(&Edge_Prot_Def, My_Address, (State_Data*)edge, NEW_CHANGE);
-	    Set_Routes();
+	    Set_Routes(0, NULL);
+	}
+
+	/* Create the realtime_udp_data structure */
+	if(mode == REALTIME_UDP_LINK) {
+	    if((rt_data = (Realtime_Data*) new(REALTIME_DATA))==NULL)
+	        Alarm(EXIT, "Create_Link: Cannot allocte realtime_udp_data object\n");
+	    rt_data->head = 0;
+	    rt_data->tail = 0;
+	    rt_data->recv_head = 0;
+	    rt_data->recv_tail = 0;
+	    
+	    for(i=0; i<MAX_HISTORY; i++) {
+		rt_data->recv_window[i].flags = EMPTY_CELL;
+	    }
+	    
+	    rt_data->num_nacks = 0;
+	    rt_data->retransm_buff = NULL;
+	    rt_data->num_retransm = 0;
+
+	    rt_data->bucket = 0;
+	    
+	    lk->prot_data = rt_data;
+
+	    Alarm(DEBUG, "Created Realtime UDP link\n");
 	}
     }
     else
@@ -245,7 +284,8 @@ void Destroy_Link(int16 linkid)
     int32u i;
     Control_Data  *c_data;
     Reliable_Data *r_data;
-    stdcarr_it it;
+    Realtime_Data *rt_data;
+    stdit it;
     Buffer_Cell *buf_cell;
     char* msg;
 
@@ -300,8 +340,6 @@ void Destroy_Link(int16 linkid)
 
 	E_dequeue(Try_to_Send, (int)linkid, NULL);
 
-	E_dequeue(Pad_Link, (int)linkid, NULL);
-
 	if(link_obj->link_node_id == CONTROL_LINK) {
 	    E_dequeue(Send_Hello, (int)linkid, NULL);
 	    E_dequeue(Net_Send_State_All, (int)linkid, &Edge_Prot_Def);
@@ -321,6 +359,25 @@ void Destroy_Link(int16 linkid)
         if(link_obj->link_node_id == CONTROL_LINK) {
 	    c_data = (Control_Data*)link_obj->prot_data;
 	    dispose(c_data);
+	}
+        else if(link_obj->link_node_id == REALTIME_UDP_LINK) {
+	    rt_data = (Realtime_Data*)link_obj->prot_data;
+	    for(i=rt_data->tail; i<rt_data->head; i++) {
+		if(rt_data->window[i%MAX_HISTORY].buff != NULL) {
+		    dec_ref_cnt(rt_data->window[i%MAX_HISTORY].buff);
+		    rt_data->window[i%MAX_HISTORY].buff = NULL;
+		}
+	    }	
+	    E_dequeue(Send_RT_Nack, (int)linkid, NULL);
+	    E_dequeue(Send_RT_Retransm, (int)linkid, NULL);
+
+	    if(rt_data->retransm_buff != NULL) {
+		dec_ref_cnt(rt_data->retransm_buff);
+		rt_data->retransm_buff = NULL;
+	    }
+
+	    dispose(rt_data);
+	    Alarm(DEBUG, "Destroyed Realtime UDP link\n");
 	}
     }
 
@@ -358,19 +415,25 @@ void Destroy_Link(int16 linkid)
 
 void Check_Link_Loss(int32 sender, int16u seq_no) {
     Link *lk;
-    stdhash_it it;
+    stdit it;
     Node *sender_node;
     Control_Data *c_data;
     Loss_Data *l_data;
+    int32 head, tail, i, sum;
     
+
+    if((Route_Weight == DISTANCE_ROUTE)||(Route_Weight == LATENCY_ROUTE)) {
+        /* We don't care. Routing is based on distance or latency */
+        return;
+    }
 
     if(seq_no != 0xffff) {
 	/* Get the link to the sender */
 	stdhash_find(&All_Nodes, &it, &sender);
-	if(stdhash_it_is_end(&it)) { /* I had no idea about the sender node */
+	if(stdhash_is_end(&All_Nodes, &it))  /* I had no idea about the sender node */
 	    return;
-	}
-	sender_node = *((Node **)stdhash_it_val(&it));
+	
+        sender_node = *((Node **)stdhash_it_val(&it));
 	lk = sender_node->link[CONTROL_LINK];
 	if(lk == NULL)
 	    return;
@@ -378,44 +441,44 @@ void Check_Link_Loss(int32 sender, int16u seq_no) {
 	    return;
 	c_data = (Control_Data*)lk->prot_data;
 	l_data = &(c_data->l_data);
+        tail = l_data->other_side_tail;
+        head = l_data->other_side_head;
 
-	Alarm(DEBUG, "seq: %d; tail: %d; head: %d\n",
-	      seq_no,  l_data->other_side_tail,  l_data->other_side_head);
 
-	if(Relative_Position(l_data->other_side_tail, seq_no) <= 0) {
-	    /* this is an old packet */
-	    return;
-	}
-	else if(Relative_Position(l_data->other_side_head, seq_no) >= 0) {
+	if(Relative_Position(head, seq_no%PACK_MAX_SEQ) >= 0) {
 	    l_data->other_side_head = (seq_no + 1)%PACK_MAX_SEQ;
 	}
-	if(Relative_Position(l_data->other_side_tail, l_data->other_side_head) > 2+MAX_REORDER/2) {
+        else if(Relative_Position(tail, seq_no%PACK_MAX_SEQ) <= 0) {
+            /* this is an old packet */
+            return;
+        }
+ 
+	if(Relative_Position(tail, seq_no%PACK_MAX_SEQ) > 4) {
 	    /* LOSS !!!! */
-	    while((l_data->other_side_tail+1)%PACK_MAX_SEQ != l_data->other_side_head) {
-		if(l_data->recv_flags[l_data->other_side_tail%MAX_REORDER] == 0) {
-		    l_data->lost_packets++;
-		}
-		l_data->recv_flags[l_data->other_side_tail%MAX_REORDER] = 0;
-		l_data->other_side_tail = (l_data->other_side_tail+1)%PACK_MAX_SEQ;
-	    }
-	    l_data->received_packets++;
-	    l_data->recv_flags[seq_no%MAX_REORDER] = 1;
-
-	    Alarm(DEBUG, "Update loss rate: seq: %d; recv: %d; lost: %d; sum: %d\n",
-		  seq_no, l_data->received_packets, l_data->lost_packets,
-		  l_data->received_packets + l_data->lost_packets);
-
-	    /* Do smthg w/ lost_packets and received_packets*/
-	    l_data->loss_event_idx++;
 	    l_data->loss_interval[l_data->loss_event_idx%LOSS_HISTORY].received_packets = 
 		l_data->received_packets;
-	    l_data->loss_interval[l_data->loss_event_idx%LOSS_HISTORY].lost_packets = 
-		l_data->lost_packets;
-	    
-	    l_data->received_packets = 0;
-	    l_data->lost_packets = 0;
 
-	    return;
+	    sum = 0;
+	    for(i=l_data->other_side_tail+1; i!=seq_no%PACK_MAX_SEQ; i=(i+1)%PACK_MAX_SEQ) {
+		if(l_data->recv_flags[i%MAX_REORDER] == 0) {
+		    sum++;
+		}
+	    }
+	    
+	    l_data->loss_interval[l_data->loss_event_idx%LOSS_HISTORY].lost_packets = sum;
+	    //	Relative_Position(l_data->other_side_head, l_data->other_side_tail) - l_data->received_packets;
+	    
+	    
+	    Alarm(DEBUG, "LOSS!!! event: %d; received: %d; lost: %d\n", l_data->loss_event_idx,
+		  l_data->loss_interval[l_data->loss_event_idx%LOSS_HISTORY].received_packets,
+		  l_data->loss_interval[l_data->loss_event_idx%LOSS_HISTORY].lost_packets);
+		
+	    l_data->other_side_tail = l_data->other_side_head;
+	    l_data->loss_event_idx++;
+	    l_data->received_packets = 0;
+	    for(i=0; i<MAX_REORDER; i++) {
+		l_data->recv_flags[i%MAX_REORDER] = 0;	    
+	    }
 	}
 	if(l_data->recv_flags[seq_no%MAX_REORDER] == 0) {
 	    l_data->received_packets++;
@@ -426,9 +489,6 @@ void Check_Link_Loss(int32 sender, int16u seq_no) {
 	    l_data->recv_flags[l_data->other_side_tail%MAX_REORDER] = 0;
 	    l_data->other_side_tail = (l_data->other_side_tail+1)%PACK_MAX_SEQ;
 	}
-    }
-    else {
-	Alarm(DEBUG, "seq_no IGNORE\n");
     }
 }
 
@@ -452,21 +512,21 @@ void Check_Link_Loss(int32 sender, int16u seq_no) {
 
 int32 Relative_Position(int32 base, int32 seq) {
     if(seq >= base) {
-	if(seq - base > PACK_MAX_SEQ/2) {
-	    /* this is an old packet */
-	    return(seq - base - PACK_MAX_SEQ);
+	if(seq - base < PACK_MAX_SEQ/2) {
+            return(seq - base);
 	}
 	else {
-	    return(seq - base);
+            /* this is an old packet */
+            return(seq - base - PACK_MAX_SEQ);
 	}
     }
     else {
-	if(base - seq < PACK_MAX_SEQ/2) {
-	    /* this is an old packet */
-	    return(seq - base);
+	if(base - seq > PACK_MAX_SEQ/2) {
+            return(seq + PACK_MAX_SEQ - base);
 	}
 	else {
-	    return(seq + PACK_MAX_SEQ - base);
+            /* this is an old packet */
+            return(seq - base);
 	}
     }
 }
@@ -493,7 +553,8 @@ int32 Compute_Loss_Rate(Node* nd) {
     Control_Data *c_data;
     Loss_Data *l_data;
     int i;
-    float avg_interval, weighted_interval, weighted_loss, loss_rate, loss_report, total_weight, weight;
+    float loss_rate, loss_report;
+    int total_recvd, total_lost;
 
     /* get the Control_Data */        
     lk = nd->link[CONTROL_LINK];
@@ -506,71 +567,38 @@ int32 Compute_Loss_Rate(Node* nd) {
     } else {
 	c_data = (Control_Data*)lk->prot_data;
 	l_data = &(c_data->l_data);
+	if(l_data->loss_event_idx <= LOSS_HISTORY) {
+	    return(UNKNOWN);
+	}
 
 	/* get the loss rate */
-	weighted_interval = 0.0;
-	weighted_loss = 0.0;
-	total_weight = 0.0;
+	total_recvd = 0;
+	total_lost = 0;
 	for(i=0; i<LOSS_HISTORY; i++) {
-	    if(l_data->loss_event_idx > i) {
-		if(i < LOSS_HISTORY/2) {
-		    weight = 1;
-		}
-		else {
-		    /* weight = 1 - (i+1-n/2)/(n/2+1); */
-		    weight = i + 1 - LOSS_HISTORY/2;
-		    weight = weight/(LOSS_HISTORY/2+1);
-		    weight = 1 - weight;
-		}
-		weighted_interval += weight*l_data->loss_interval[(l_data->loss_event_idx-i)%LOSS_HISTORY].received_packets;
-		weighted_loss += weight*l_data->loss_interval[(l_data->loss_event_idx-i)%LOSS_HISTORY].lost_packets;
-
-		total_weight += weight;
-		
-		Alarm(DEBUG, "loss: %5.3f; interval: %5.3f\n", weighted_loss, weighted_interval);
-	    }
-	    else {
-		return(UNKNOWN);
-	    }
+	    total_recvd += l_data->loss_interval[(l_data->loss_event_idx-i)%LOSS_HISTORY].received_packets;
+	    total_lost += l_data->loss_interval[(l_data->loss_event_idx-i)%LOSS_HISTORY].lost_packets;
 	}
-	loss_rate = weighted_loss/(weighted_interval + weighted_loss);
-	avg_interval = weighted_interval/total_weight;
-	Alarm(DEBUG, "Compute_Loss_Rate(): loss: %5.3f\%; interval: %d\n", 
-	      loss_rate*100, (int)avg_interval);
-
+#if 0
+	avg_interval = ((float)total_recvd+1.0)/((float)LOSS_HISTORY);
 	if(l_data->received_packets > avg_interval) {
-	    weighted_interval = l_data->received_packets;
-	    weighted_loss = 1.0;
-	    total_weight = 1.0;
+	    total_recvd = 0;
 	    for(i=0; i<LOSS_HISTORY-1; i++) {
-		if(l_data->loss_event_idx >= i) {
-		    if(i < LOSS_HISTORY/2 - 1) {
-			weight = 1;
-		    }
-		    else {
-			/* weight = 1 - (i+2-n/2)/(n/2+1); */
-			weight = i + 2 - LOSS_HISTORY/2;
-			weight = weight/(LOSS_HISTORY/2+1);
-			weight = 1 - weight;
-		    }
-		    weighted_interval += weight*l_data->loss_interval[(l_data->loss_event_idx-i)%LOSS_HISTORY].received_packets;
-		    weighted_loss += weight*l_data->loss_interval[(l_data->loss_event_idx-i)%LOSS_HISTORY].lost_packets;
-
-		    total_weight += weight;		
-		}
-		else {
-		    return(UNKNOWN);
-		}
+		total_recvd += l_data->loss_interval[(l_data->loss_event_idx-i)%LOSS_HISTORY].received_packets;
 	    }
-	    loss_rate = weighted_loss/(weighted_interval + weighted_loss);
-	    avg_interval = weighted_interval/total_weight;
-	    
-	    Alarm(DEBUG, "\t\tchanged to: loss: %5.3f\%; interval: %d\n", 
-		  loss_rate*100, (int)avg_interval);	
+	    total_recvd += l_data->received_packets;
+	    avg_interval = ((float)total_recvd+1.0)/((float)LOSS_HISTORY);
 	}
+	loss_rate = 1.0/avg_interval;
+	l_data->loss_rate = loss_rate;
+#endif
+
+	if(total_recvd == 0) {
+	    return(UNKNOWN);
+	}
+	loss_rate = total_lost;
+	loss_rate = loss_rate/(total_recvd+total_lost);
 	l_data->loss_rate = loss_rate;
 
-	/*loss_report = LOSS_RATE_SCALE/avg_interval;*/ 
 	loss_report = LOSS_RATE_SCALE*l_data->loss_rate;
 	return((int32)loss_report);
     }
@@ -613,7 +641,6 @@ int16 Set_Loss_SeqNo(Node* nd)
 	if(l_data->my_seq_no >= PACK_MAX_SEQ)
 	    l_data->my_seq_no = 0;
 	
-	Alarm(DEBUG, "SET LOSS SEQ: %d\n", l_data->my_seq_no);
 	return(l_data->my_seq_no);
     }
 }

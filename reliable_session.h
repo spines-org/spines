@@ -18,8 +18,14 @@
  * The Creators of Spines are:
  *  Yair Amir and Claudiu Danilov.
  *
- * Copyright (c) 2003 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2007 The Johns Hopkins University.
  * All rights reserved.
+ *
+ * Major Contributor(s):
+ * --------------------
+ *    John Lane
+ *    Raluca Musaloiu-Elefteri
+ *    Nilo Rivera
  *
  */
 
@@ -35,7 +41,7 @@ void Close_Reliable_Session(Session* ses);
 int Process_Reliable_Session_Packet(Session *ses);
 int Deliver_Rel_UDP_Data(char *buf, int16u len, int32u type);
 int Net_Rel_Sess_Send(Session *ses, char *buf, int16u len);
-int Process_Sess_Ack(Session *ses, char* buf, int16u ack_len, int32u ses_type, int32u net_type);
+int Process_Sess_Ack(Session *ses, char* buf, int16u ack_len, int32u ses_type, int32u net_type, int32 orig_type);
 int Reliable_Ses_Send(Session *ses); 
 void Ses_Send_Much(Session *ses); 
 void Ses_Send_Ack(int sesid, void* dummy);
@@ -44,9 +50,11 @@ void Ses_Reliable_Timeout(int sesid, void *dummy);
 void Ses_Try_to_Send(int sesid, void* dummy);
 void Ses_Send_Rel_Hello(int sesid, void* dummy); 
 int Accept_Rel_Session(Session *ses, udp_header *cmd, char *buf);
-void Process_Rel_Ses_Hello(Session *ses, char *buff, int len);
+void Process_Rel_Ses_Hello(Session *ses, char *buff, int len, int32 orig_type);
 int Check_Double_Connect(char *buff, int16u len, int32u type);
 void Disconnect_Reliable_Session(Session* ses);
 void Ses_Delay_Close(int sesid, void* dummy);
- 
+void Ses_Send_One(int sesid, void* dummy);
+
+
 #endif
