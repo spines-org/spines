@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2015 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -65,6 +65,10 @@
 #include "session.h"
 #include "multicast.h"
 #include "route.h"
+#include "intrusion_tol_udp.h"
+#include "priority_flood.h"
+#include "reliable_flood.h"
+#include "multipath.h"
 
 #ifndef ARCH_PC_WIN95
 #  include "kernel_routing.h"
@@ -72,6 +76,8 @@
 #endif
 
 #include "spines.h"
+
+extern char Config_File_Found;
 
 /* Message delay */
 
@@ -124,6 +130,10 @@ void Flip_rel_tail(char *buff, int ack_len)
 
 void Init_Network(void) 
 {
+  /* int i, k; */ /* Added for testing purposes */
+  stdit it;
+  Network_Leg *leg;
+
   network_flag = 1;
   total_received_bytes = 0;
   total_received_pkts = 0;
@@ -133,6 +143,12 @@ void Init_Network(void)
   total_rel_udp_bytes = 0;
   total_link_ack_pkts = 0;
   total_link_ack_bytes = 0;
+  total_intru_tol_pkts = 0;
+  total_intru_tol_bytes = 0;
+  total_intru_tol_ack_pkts = 0;
+  total_intru_tol_ack_bytes = 0;
+  total_intru_tol_ping_pkts = 0;
+  total_intru_tol_ping_bytes = 0;
   total_hello_pkts = 0;
   total_hello_bytes = 0;
   total_link_state_pkts = 0;
@@ -140,26 +156,57 @@ void Init_Network(void)
   total_group_state_pkts = 0;
   total_group_state_bytes = 0;
 
-  Num_Nodes = 0;
+  /* Num_Nodes = 0; */
   All_Routes = NULL;
 
 #ifndef ARCH_PC_WIN95
   KR_Init();
 #endif
 
-  Init_My_Node();
+  /* Init_My_Node(); */
   Init_Nodes();
-  Init_Connections();
+  /* ISOLATING FROM HELLO:
+   *   Don't call Init_Connections, which starts hello pings */
+  if (Conf_IT_Link.Intrusion_Tolerance_Mode == 0)
+    Init_Connections();
+  else { /* Intrusion_Tolerance_Mode == 1 */
+    for (stdhash_begin(&Network_Legs, &it); !stdhash_is_end(&Network_Legs, &it); stdhash_it_next(&it)) {
+      leg = *(Network_Leg**) stdhash_it_val(&it);
+      if (Config_File_Found == 1) {
+        leg->status = CONNECTED_LEG;
+        Create_Link(leg, INTRUSION_TOL_LINK);
+      }
+      /* Update_Leg_Cost ?? */
+    }
+    /* Schedule_Routes ?? */
+  }
   Init_Session();
+  Init_MultiPath();
+  Init_Priority_Flooding();
+  Init_Reliable_Flooding();
 
-  Resend_States(0, &Edge_Prot_Def);
-  /*State_Garbage_Collect(0, &Edge_Prot_Def); JLS: potential reconnection bug; fix: don't forget about edges + nodes */
-  Resend_States(0, &Groups_Prot_Def);
-  /*State_Garbage_Collect(0, &Groups_Prot_Def); JLS: need to examine groups garbage collection */
+    /* ADDED FOR TESTING PURPOSES - REMOVE LATER ~DANO */
+    /* for (i=1; i<=11; i++)
+    {
+        if (i != My_ID)
+        {
+            printf("%d\t%d\t\n", My_ID, i);
+            for (k=1; k<=3; k++)
+                MultiPath_Compute(i, k);
+            printf("\n");
+        }
+    } */
+
+  if (Conf_IT_Link.Intrusion_Tolerance_Mode == 0) {
+    Resend_States(0, &Edge_Prot_Def);
+    /*State_Garbage_Collect(0, &Edge_Prot_Def); JLS: potential reconnection bug; fix: don't forget about edges + nodes */
+    Resend_States(0, &Groups_Prot_Def);
+    /*State_Garbage_Collect(0, &Groups_Prot_Def); JLS: need to examine groups garbage collection */
+  }
 
   /* Uncomment next line to print periodical route updates */
-  Print_Edges(0, NULL); 
-  Print_Mcast_Groups(0, NULL); 
+  /* Print_Edges(0, NULL); 
+  Print_Mcast_Groups(0, NULL); */
 
 #ifdef SPINES_WIRELESS
   Wireless_Init();
@@ -195,7 +242,7 @@ Interface *Create_Interface(Node_ID         nid,
   Interface *interf;
   Link_Type  link_type;
   stdit      tit;
-  int        j;
+  int        j, priority;
 
   if ((node = Get_Node(nid)) == NULL) {
     Alarm(EXIT, "Create_Interface: Unknown node " IPF "!\r\n", IP(nid));
@@ -239,16 +286,22 @@ Interface *Create_Interface(Node_ID         nid,
 
     for (link_type = (Link_Type) 0; link_type != MAX_LINKS_4_EDGE; ++link_type) {
 
-      int priority = MEDIUM_PRIORITY;
+      priority = MEDIUM_PRIORITY;
 
       switch (link_type) {
       case CONTROL_LINK:
-	priority = HIGH_PRIORITY;
-	/* NOTE: break missing -> intentional fall through */
+	    priority = HIGH_PRIORITY;
+	    /* NOTE: break missing -> intentional fall through */
 
       case UDP_LINK:
       case RELIABLE_UDP_LINK:
       case REALTIME_UDP_LINK:
+        /* ISOLATING FROM HELLO:  
+         *      If Intrusion Tolerance mode is on, only create socket, bind, and attach listening event
+         *      to the Intrusion_Tolerant_Link, skip all others */
+        if (Conf_IT_Link.Intrusion_Tolerance_Mode == 1)
+            break;
+      case INTRUSION_TOL_LINK:
 	
 	if ((interf->channels[link_type] = DL_init_channel(RECV_CHANNEL, (int16) (Port + link_type), 0, interf_addr)) < 0) {
 	  Alarm(EXIT, "Init_Recv_Channel: DL_init_channel failed with %d; errno %d says %s\r\n", interf->channels[link_type], errno, strerror(errno));
@@ -373,7 +426,7 @@ Network_Leg *Create_Network_Leg(Interface_ID local_interf_id,
   }
 
   if ((edge = Get_Edge(local_interf->owner->nid, remote_interf->owner->nid)) == NULL) {
-    edge = Create_Edge(local_interf->owner->nid, remote_interf->owner->nid);
+    edge = Create_Edge(local_interf->owner->nid, remote_interf->owner->nid, -1);
   } 
 
   if (edge->leg != NULL) {
@@ -528,6 +581,9 @@ void Network_Leg_Set_Cost(Network_Leg *leg, int16 new_leg_cost)
 	(int) old_leg_cost, (int) new_leg_cost);
 
   edge->cost = new_leg_cost;
+
+  /* Clear the cache used for K-Paths routing */
+  MultiPath_Clear_Cache();
 
   if (++edge->timestamp_usec >= 1000000) {
     edge->timestamp_usec = 0;
@@ -684,7 +740,7 @@ void Init_My_Node(void)
   struct hostent * host_ptr;
   char             machine_name[256] = { 0 };
 
-  if (My_Address == -1) { /* No local id was given in the command line */
+  if (My_Address == 0) { /* No local id was given in the command line */
 
     gethostname(machine_name, sizeof(machine_name)); 
     host_ptr = gethostbyname(machine_name);
@@ -706,6 +762,7 @@ void Init_My_Node(void)
   }
 
   Alarm(PRINT, "Init_My_Node: Local identifier = " IPF "\r\n", IP(My_Address));
+  assert(My_Address != 0);
 }
 
 /***********************************************************/
@@ -765,8 +822,15 @@ int Read_UDP(Interface *local_interf, channel sk, int mode, sys_scatter *scat)
   if(!Same_endian(type)) {
     Flip_pack_hdr(pack_hdr);
     if(pack_hdr->ack_len >= sizeof(reliable_tail)) {
-      /* The packet has a relieble tail */
+      /* The packet has a reliable tail */
       Flip_rel_tail(scat->elements[1].buf + pack_hdr->data_len, pack_hdr->ack_len);
+    }
+  }
+
+  if (Conf_IT_Link.Intrusion_Tolerance_Mode == 1) {
+    if ( !(Is_intru_tol_data(type) || Is_intru_tol_ack(type) || Is_intru_tol_ping(type) || Is_diffie_hellman(type)) ) {
+        Alarm(PRINT, "Invalid type 0x%x for Intrusion Tolerance Mode\r\n", type);
+        return -1;
     }
   }
 
@@ -787,6 +851,13 @@ int Read_UDP(Interface *local_interf, channel sk, int mode, sys_scatter *scat)
     if (!stdhash_is_end(&Monitor_Params, stdhash_find(&Monitor_Params, &it, &lid))) {
 	    
       lkp = (Lk_Param*)stdhash_it_val(&it);
+	   
+       /*dt debugging */
+      /* Alarm(PRINT, "mode = %d   UDP_LINK = %d\r\n", mode, UDP_LINK);
+
+      if (mode == UDP_LINK) 
+      Alarm(PRINT, "loss: %d; burst: %d; was_loss %d; test: %5.3f; chance: %5.3f\n",
+	    lkp->loss_rate, lkp->burst_rate, lkp->was_loss, test, chance); */
 	    
       Alarm(DEBUG, "loss: %d; burst: %d; was_loss %d; test: %5.3f; chance: %5.3f\n",
 	    lkp->loss_rate, lkp->burst_rate, lkp->was_loss, test, chance);

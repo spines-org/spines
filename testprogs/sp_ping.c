@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2015 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -218,8 +218,9 @@ int main( int argc, char *argv[] )
 			prog_life.tv_usec += 1000000;
 		    }
 
-		    printf("%4ld.%06ld - rtt: %d usec; clock diff: %d usec\n", 
-			   prog_life.tv_sec, prog_life.tv_usec, delays[i],
+		    printf("%4lu.%06lu - rtt: %d usec; clock diff: %d usec\n", 
+			   (unsigned long int)prog_life.tv_sec,
+               (unsigned long int)prog_life.tv_usec, delays[i],
 			   clock_diffs[i]);
 
 		    if(max_diff < clock_diffs[i])

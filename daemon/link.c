@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2015 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -54,11 +54,19 @@
 #include "route.h"
 #include "udp.h"
 #include "realtime_udp.h"
+#include "intrusion_tol_udp.h"
 #include "session.h"
 #include "state_flood.h"
 #include "link_state.h"
 
 #include "spines.h"
+
+extern char Config_File_Found;
+
+/* SUICIDE VARIABLES */
+/* static int Suicide_Count = 0;
+static sp_time Suicide_Timer = {0, 0}; */
+static sp_time zero_timeout = {0, 0};
 
 /***********************************************************/
 /* Creates a link between the current node and some        */
@@ -85,7 +93,10 @@ int16 Create_Link(Network_Leg *leg,
   Reliable_Data  *r_data;
   Control_Data   *c_data;
   Realtime_Data  *rt_data;
+  Int_Tol_Data   *it_data;
+  sp_time         now;
   int             i;
+  double          rolling_decay = 1;
 
   /* validation */
 
@@ -97,11 +108,30 @@ int16 Create_Link(Network_Leg *leg,
   nd   = leg->remote_interf->owner;
 
   if (leg->links[mode] != NULL) {
-    Alarm(EXIT, "Create_Link: This type of link already exists on this leg?!\r\n");
+    switch(mode) {
+        case INTRUSION_TOL_LINK:
+            Alarm(DEBUG, "Create_Link: Int_Tol_Link already exists\r\n");
+            return leg->links[mode]->link_id;
+            break;
+        case CONTROL_LINK: 
+        case RELIABLE_UDP_LINK:
+        case REALTIME_UDP_LINK:
+        default:
+            Alarm(EXIT, "Create_Link: This type of link already exists on this leg?!\r\n");
+    }
   }
 
-  if (mode != CONTROL_LINK && (leg->links[CONTROL_LINK] == NULL || leg->status != CONNECTED_LEG || leg->cost == -1)) {
+  /* ISOLATING FROM HELLO:
+   *    Don't check this condition if we are in intrusion tolerance mode */
+  if (Conf_IT_Link.Intrusion_Tolerance_Mode == 0 && 
+        mode != CONTROL_LINK && (leg->links[CONTROL_LINK] == NULL || leg->status != CONNECTED_LEG || leg->cost == -1)) {
     Alarm(EXIT, "Create_Link: Creating a non-control link on a leg before connected?!\r\n");
+  }
+
+  /* Only create INTRUSION_TOL_LINK if a configuration file exists */
+  if (mode == INTRUSION_TOL_LINK && Config_File_Found == 0) {
+    Alarm(PRINT, "Create_Link: Cannot create INTRUSION_TOL_LINK without configuration file\r\n");
+    return 0;
   }
 
   /* Find an empty spot in the Links array */
@@ -287,6 +317,153 @@ int16 Create_Link(Network_Leg *leg,
     lk->prot_data = rt_data;
   }
 
+  /* Create the intrusion_tol_udp_data structure */
+  /* NOTE: This gets created once (first time) and never gets destroyed */
+  if (mode == INTRUSION_TOL_LINK) {
+        if ((it_data = (Int_Tol_Data*) new(INTRUSION_TOL_DATA)) == NULL) {
+            Alarm(EXIT, "Create_Link: Cannot allocate int_tol_udp_data object\n");
+        }
+        
+        memset(it_data, 0, sizeof(*it_data));
+
+        it_data->out_head_seq     = LINK_START_SEQ;
+        it_data->out_tail_seq     = LINK_START_SEQ;
+        it_data->in_head_seq      = LINK_START_SEQ;
+        it_data->in_tail_seq      = LINK_START_SEQ;
+        it_data->aru_nonce_digest = 0;
+
+        it_data->out_message = NULL;
+        it_data->out_frag_idx = 0;
+        it_data->out_frag_total = 0;
+
+        /* we create an empty sys_scatter to receive messages */
+        if ( (it_data->in_message = (sys_scatter*) new_ref_cnt (SYS_SCATTER)) == NULL)
+            Alarm(EXIT, "Create_Link: Cannot allocate sys_scatter object\r\n");
+        it_data->in_message->num_elements = 0;
+        it_data->in_frag_idx = 1;
+        it_data->in_frag_total = 0;
+
+        /* should be figured out w/ config file? loading? reading
+         * from some global state? */
+        it_data->incoming_msg_count = Conf_IT_Link.Msg_Per_SAA - 1; 
+        
+        for (i = 0; i < MAX_SEND_ON_LINK; i++) {
+            it_data->outgoing[i].pkt = NULL;
+            it_data->outgoing[i].resent = 0;
+            it_data->outgoing[i].nacked = 0;
+            it_data->out_nonce[i] = 0;
+            it_data->out_nonce_digest[i] = 0;
+            it_data->incoming[i].flags = EMPTY_CELL;
+            it_data->incoming[i].pkt = NULL; 
+            it_data->incoming[i].pkt_len = 0;
+            it_data->in_nonce[i] = 0;
+        }
+
+        now = E_get_time();
+        it_data->my_incarnation         = now.sec;
+        it_data->ngbr_incarnation       = 0;
+        it_data->incarnation_response   = E_sub_time(now,it_incarnation_timeout);
+
+        it_data->tcp_head_seq      = LINK_START_SEQ;
+        it_data->ssthresh          = MAX_SEND_ON_LINK;
+        if (Conf_IT_Link.TCP_Fairness == 1)
+            it_data->cwnd          = (float)Minimum_Window;
+        else
+            it_data->cwnd          = MAX_SEND_ON_LINK;
+        it_data->loss_detected     = 0;
+        it_data->loss_detected_aru = 0;
+
+        it_data->rtt                      = Conf_IT_Link.Default_RTT;
+        it_data->next_ping_seq            = 1;
+        it_data->last_pong_seq_recv       = 0;
+
+        it_data->pong_freq.sec = 0;
+        it_data->pong_freq.usec = 0;
+        
+        it_data->it_reliable_timeout.sec  = Conf_IT_Link.Reliable_Timeout_Factor *
+                                            Conf_IT_Link.Default_RTT / 1000;
+        it_data->it_reliable_timeout.usec = (Conf_IT_Link.Reliable_Timeout_Factor *
+                                            Conf_IT_Link.Default_RTT * 1000) % 1000000;
+        
+        it_data->it_nack_timeout.sec      = Conf_IT_Link.NACK_Timeout_Factor *
+                                            Conf_IT_Link.Default_RTT / 1000;
+        it_data->it_nack_timeout.usec     = (Conf_IT_Link.NACK_Timeout_Factor *
+                                             Conf_IT_Link.Default_RTT * 1000) % 1000000;
+        
+        it_data->it_initial_nack_timeout.sec = Conf_IT_Link.Init_NACK_Timeout_Factor *
+                                                Conf_IT_Link.Default_RTT / 1000;
+        it_data->it_initial_nack_timeout.usec = ((int)(Conf_IT_Link.Init_NACK_Timeout_Factor *
+                                                Conf_IT_Link.Default_RTT * 1000)) % 1000000;
+
+
+        /* Setup the link loss calculation variables */
+        it_data->link_status = LINK_DEAD;
+        for (i = 0; i <= HISTORY_SIZE; i++) {
+            it_data->loss_history_retransmissions[i] = 0;
+            it_data->loss_history_unique_packets[i] = 0;
+        }
+        /* We calculate the specific decay value for each bucket */
+        for (i = 1; i <= HISTORY_SIZE; i++) {
+            rolling_decay *= Conf_IT_Link.Loss_Calc_Decay;
+            it_data->loss_history_decay[i] = rolling_decay;
+        }
+        
+        for (i = 0; i < MAX_PING_HIST; i++) {
+            it_data->ping_history[i].ping_seq       = 0;
+            it_data->ping_history[i].ping_nonce     = 0;
+            it_data->ping_history[i].ping_sent.sec  = 0;
+            it_data->ping_history[i].ping_sent.usec = 0;
+            it_data->ping_history[i].answered       = 1;
+        }
+
+        it_data->last_filled = E_get_time();
+        it_data->bucket = 0;
+        it_data->needed_tokens = 0;
+
+        E_queue(Fill_Bucket_IT, lk->link_id, 0, it_bucket_to);
+
+        it_data->dh_key = (unsigned char*) Mem_alloc(DH_Key_Len);
+        it_data->dh_local = NULL;
+        it_data->dh_established = 0;
+        it_data->dh_key_computed = 0;
+        
+        it_data->dh_pkt.num_elements = 2;
+        it_data->dh_pkt.elements[0].buf = NULL;
+        it_data->dh_pkt.elements[0].len = 0;
+        it_data->dh_pkt.elements[1].buf = NULL;
+        it_data->dh_pkt.elements[1].len = 0;
+        
+        /* it_data->dh_pkt.frag = NULL;
+        it_data->dh_pkt.resent = 0;
+        it_data->dh_pkt.nacked = 0; */
+
+        /* If crypto is on, pings will be queued once a DH key can be computed */
+        if (Conf_IT_Link.Crypto == 0) { 
+            E_queue(Ping_IT_Timeout, (int)lk->link_id, NULL, zero_timeout );
+            E_queue(Loss_Calculation_Event, (int)lk->link_id, NULL, loss_calc_timeout);
+        }
+        else { /* (Conf_IT_Link.Crypto == 1) { */
+            E_queue(Key_Exchange_IT, (int)lk->link_id, NULL, zero_timeout);
+            it_data->dh_local = PEM_read_DHparams(fopen("keys/dhparam.pem", "r"), NULL, NULL, NULL);
+            HMAC_CTX_init(&(it_data->hmac_ctx));
+        }
+
+        it_data->dissem_head.dissemination = RESERVED_ROUTING_BITS >> ROUTING_BITS_SHIFT;
+        it_data->dissem_head.callback = NULL;
+        it_data->dissem_head.next = NULL;
+        it_data->dissem_tail = &it_data->dissem_head;
+
+        for (i = 0; i < RESERVED_ROUTING_BITS >> ROUTING_BITS_SHIFT; i++)
+            it_data->in_dissem_queue[i] = 0;
+
+        /* TODO: THIS SHOULD GO AWAY WITH LEAKY BUCKET */
+        Burst_Count = 0;
+        Burst_Timeout = now;
+        /* end TODO */
+
+        lk->prot_data = it_data;
+  }
+
   {
     const char * str;
 
@@ -306,6 +483,10 @@ int16 Create_Link(Network_Leg *leg,
 
     case REALTIME_UDP_LINK:
       str = "RealTime";
+      break;
+
+    case INTRUSION_TOL_LINK:
+      str = "Intrusion Tolerant";
       break;
 
     default:
@@ -353,6 +534,19 @@ void Destroy_Link(int16 linkid)
 
     if ((lk = Links[linkid]) == NULL) {
       Alarm(EXIT, "Destroy_Link: no link %hd!\r\n", linkid);
+    }
+
+    switch (lk->link_type) {
+       case INTRUSION_TOL_LINK:
+            Alarm(DEBUG, "Create_Link: Int_Tol_Link will not be destroyed\r\n");
+            return;
+            break;
+        case CONTROL_LINK: 
+        case RELIABLE_UDP_LINK:
+        case REALTIME_UDP_LINK:
+        default:
+            Alarm(DEBUG, "Destroying regular link...\r\n");
+            break;
     }
 
     leg  = lk->leg;
@@ -479,7 +673,7 @@ void Destroy_Link(int16 linkid)
       break;
     }
 
-    Alarm(PRINT, "Destroy_Link: edge = (" IPF " -> " IPF "); leg = (" IPF " -> " IPF "); linkid = %d; type = %s\r\n",
+    Alarm(DEBUG, "Destroy_Link: edge = (" IPF " -> " IPF "); leg = (" IPF " -> " IPF "); linkid = %d; type = %s\r\n",
 	  IP(edge->src_id), IP(edge->dst_id), IP(leg->local_interf->iid), IP(leg->remote_interf->iid), 
 	  (int) linkid, str);
   }
@@ -492,7 +686,10 @@ Link *Get_Best_Link(Node_ID node_id, int mode)
   Link *link = NULL;
   Edge *edge;
 
-  if ((edge = Get_Edge(My_Address, node_id)) != NULL && edge->cost != -1) {
+  if ((edge = Get_Edge(My_Address, node_id)) != NULL &&
+    (edge->cost != -1 || mode == INTRUSION_TOL_LINK))
+  {
+  /*if ((edge = Get_Edge(My_Address, node_id)) != NULL && edge->cost != -1) {*/
     link = edge->leg->links[mode];
   }
 
@@ -501,10 +698,28 @@ Link *Get_Best_Link(Node_ID node_id, int mode)
 
 int Link_Send(Link *lk, sys_scatter *scat)
 {
-  return DL_send(lk->leg->local_interf->channels[lk->link_type], 
+  int ret;
+  /* sp_time diff;
+  sp_time delta = {1,0}; */
+
+  ret = DL_send(lk->leg->local_interf->channels[lk->link_type], 
 		 lk->leg->remote_interf->net_addr,
 		 Port + lk->link_type,
 		 scat);
+
+  /* Suicide_Count += ret; */
+  /* if (Suicide_Count > 16000000) {
+    diff = E_sub_time(E_get_time(),Suicide_Timer); */
+    /* printf("\tSuicide_Count = %d, Suicide_Timer = %ld.%.6ld, Diff = %ld.%.6ld\n", Suicide_Count, 
+                    Suicide_Timer.sec, Suicide_Timer.usec, diff.sec, diff.usec); */
+   /* if (E_compare_time(delta, diff) > 0) {
+        Alarm(EXIT, "Link_Send: Suicide Conditions Met\r\n"); 
+    }
+    Suicide_Count = 0;
+    Suicide_Timer = E_get_time();
+  }*/
+
+  return ret;
 }
 
 /***********************************************************/
@@ -568,7 +783,11 @@ void Check_Link_Loss(Network_Leg *leg, int16u seq_no)
   int32      sum;
   int32      i;
 
-  assert(leg->links[CONTROL_LINK] != NULL);
+  /* assert(leg->links[CONTROL_LINK] != NULL); */
+  /* DT: bug due to race condition? Possibily caused by hello protocol
+   *    not finishing in time when IT_Mode is off */
+  if (leg->links[CONTROL_LINK] != NULL)
+    return;
 
   l_data = &((Control_Data*) leg->links[CONTROL_LINK]->prot_data)->l_data;
 
@@ -627,7 +846,7 @@ void Check_Link_Loss(Network_Leg *leg, int16u seq_no)
     }
   }
 
-  /* record reciept */
+  /* record receipt */
 
   if (l_data->recv_flags[seq_no % MAX_REORDER] == 0) {
     l_data->recv_flags[seq_no % MAX_REORDER] = 1;

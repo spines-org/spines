@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2015 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -58,6 +58,7 @@
 #include "session.h"
 #include "state_flood.h"
 #include "multicast.h"
+#include "configuration.h"
 
 /* Global vriables */
 
@@ -71,6 +72,7 @@ extern stdhash   All_Groups_by_Name;
 extern stdhash   Neighbors;
 extern int       Unicast_Only;
 extern int       Security;
+extern int16u    My_ID;
 
 /* Local constatnts */
 
@@ -108,8 +110,7 @@ void Copy_udp_header(udp_header *from_udp_hdr, udp_header *to_udp_hdr)
 /* Arguments                                               */
 /*                                                         */
 /* lk:        link upon which this packet was recvd        */
-/* buff:      a buffer containing the message              */
-/* data_len:  length of the data in the packet             */
+/* scat:      a sys_scatter containing the message         */
 /* type:      type of the packet                           */
 /* mode:      mode of the link the packet arrived on       */
 /*                                                         */
@@ -119,22 +120,34 @@ void Copy_udp_header(udp_header *from_udp_hdr, udp_header *to_udp_hdr)
 /*                                                         */
 /***********************************************************/
 
-void Process_udp_data_packet(Link *lk, char *buff, int16u data_len, int32u type, int mode)
+void Process_udp_data_packet(Link *lk, sys_scatter *scat, int32u type, int mode)
 {
   /* NOTE: lk can be NULL -> self delivery */
 
-  udp_header *hdr = (udp_header*) buff;
+  /* The first element in the scat is the spines header */
+
+  if (scat->num_elements != 2) {
+    Alarm(PRINT, "Proces_udp_data_packet: Dropping packet because "
+        "scat->num_elements == %d instead of 2\r\n", scat->num_elements);
+    return;
+  }
+
+  udp_header *hdr = (udp_header*) scat->elements[1].buf;
     
   if (!Same_endian(type)) {
     Flip_udp_hdr(hdr);
   }
 
-  if (hdr->len + sizeof(udp_header) != data_len) {
+  /* if (hdr->len + sizeof(udp_header) != data_len) {
     Alarm(PRINT, "Process_udp_data_packet: Packed data not available yet!\r\n");
     return;
-  }
-  
-  Deliver_and_Forward_Data(buff, data_len, mode, lk);
+  } */
+
+  /* REG ROUTING HACK */
+  scat->elements[1].len = ((packet_header*)scat->elements[0].buf)->data_len;
+  Deliver_and_Forward_Data(scat, mode, lk);
+  /* REG ROUTING HACK */
+  scat->elements[1].len = sizeof(packet_body);
 }
 
 /***********************************************************/
@@ -143,8 +156,7 @@ void Process_udp_data_packet(Link *lk, char *buff, int16u data_len, int32u type,
 /* Arguments                                               */
 /*                                                         */
 /* next_hop:  the next node on the path                    */
-/* buff:      buffer containing the message                */
-/* buf_len:   length of the packet                         */
+/* scat:      sys_scatter containing the message           */
 /*                                                         */
 /* Return Value                                            */
 /*                                                         */
@@ -152,44 +164,79 @@ void Process_udp_data_packet(Link *lk, char *buff, int16u data_len, int32u type,
 /*                                                         */
 /***********************************************************/
 
-int Forward_UDP_Data(Node *next_hop, char *buff, int16u buf_len)
+int Forward_UDP_Data(Node *next_hop, sys_scatter *scat)
 {
-  Link         *lk;
-  packet_header hdr;
-  sys_scatter   scat;
-  int           ret;
+  Link          *lk;
+  packet_header *hdr;
+  int           ret, i;
+  unsigned char *path = NULL;
+  unsigned char temp_path_index;
+
+  if (scat->num_elements != 2) {
+    Alarm(PRINT, "Forward_UDP_Data: Malformed sys_scatter: num_elements == %d\r\n",
+                    scat->num_elements);
+    return BUFF_DROP;
+  }
 
   if (next_hop == This_Node) {
-    Process_udp_data_packet(NULL, buff, buf_len, UDP_DATA_TYPE, UDP_LINK);
+    Process_udp_data_packet(NULL, scat, UDP_DATA_TYPE, UDP_LINK);
     return BUFF_EMPTY;
   }
 
   if ((lk = Get_Best_Link(next_hop->nid, UDP_LINK)) == NULL) {
     return BUFF_DROP;
   }
-    
-  scat.num_elements    = 2;
-  scat.elements[0].len = sizeof(packet_header);
-  scat.elements[0].buf = (char*) &hdr;
-  scat.elements[1].len = buf_len;
-  scat.elements[1].buf = buff;
-    
-  hdr.type             = UDP_DATA_TYPE;
-  hdr.type             = Set_endian(hdr.type);
 
-  hdr.sender_id        = My_Address;
-  hdr.ctrl_link_id     = lk->leg->ctrl_link_id;
-  hdr.data_len         = buf_len;
-  hdr.ack_len          = 0;
-  hdr.seq_no           = Set_Loss_SeqNo(lk->leg);
-	
+  if (Path_Stamp_Debug == 1) {
+    path = ((unsigned char *)scat->elements[1].buf) + sizeof(udp_header) + 16;
+    temp_path_index = 8;
+    for (i = 0; i < 8; i++) {
+      if (temp_path_index == 8 && path[i] == 0)
+        temp_path_index = i;
+    }
+    if (temp_path_index != 8)
+      path[temp_path_index] = (unsigned char) My_ID;
+  }
+
+  hdr = (packet_header*) scat->elements[0].buf;
+
+  hdr->type             = UDP_DATA_TYPE;
+  hdr->type             = Set_endian(hdr->type);
+
+  hdr->sender_id        = My_Address;
+  hdr->ctrl_link_id     = lk->leg->ctrl_link_id;
+  hdr->data_len         = scat->elements[1].len;
+  hdr->ack_len          = 0;
+  hdr->seq_no           = Set_Loss_SeqNo(lk->leg);
+
   if(network_flag == 1) {
-    ret = Link_Send(lk, &scat);
+    ret = Link_Send(lk, scat);
 
     if (ret < 0) {
       return BUFF_DROP;
     }
   }
-    
+
   return BUFF_EMPTY;
+}
+
+
+/***********************************************************/
+/* Request Resources to forward a UDP data packet          */
+/*                                                         */
+/* Arguments                                               */
+/*                                                         */
+/* next_hop:  the next node on the path                    */
+/* callback:  function to call when resources are availble */
+/*                                                         */
+/* Return Value                                            */
+/*                                                         */
+/* 1 - Resources available                                 */
+/* 0 - Resources not available                             */
+/*                                                         */
+/***********************************************************/
+int Request_Resources_UDP(Node *next_hop, int (*callback)(Node*, int))
+{
+    (*callback)(next_hop, UDP_LINK);
+    return 1;
 }

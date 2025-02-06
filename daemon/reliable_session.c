@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2015 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -326,11 +326,13 @@ void Ses_Send_Rel_Hello(int sesid, void* dummy)
     udp_header *u_hdr;
     rel_udp_pkt_add *r_add;
     ses_hello_packet *hello_data;
+    sys_scatter *scat;
     char *send_buff;
     Node* next_hop;
     Session *ses;
     stdit it;
 
+    UNUSED(dummy);
 
     stdhash_find(&Sessions_ID, &it, &sesid);
     if(stdhash_is_end(&Sessions_ID, &it)) {
@@ -428,27 +430,32 @@ void Ses_Send_Rel_Hello(int sesid, void* dummy)
 
 
     /* Send the Packet */
+    scat = new_ref_cnt(SYS_SCATTER);
+    scat->num_elements = 2;
+    scat->elements[0].buf = new_ref_cnt(PACK_HEAD_OBJ);
+    scat->elements[0].len = sizeof(packet_header);
+    scat->elements[1].buf = send_buff;
+    scat->elements[1].len = u_hdr->len+sizeof(udp_header);
 
     if(ses->rel_otherside_addr != My_Address) {
 	if(ses->links_used == SOFT_REALTIME_LINKS) {
-	    Forward_RT_UDP_Data(next_hop, send_buff,
-				u_hdr->len+sizeof(udp_header));
+	    Forward_RT_UDP_Data(next_hop, scat);
 	}
 	else if(ses->links_used == RELIABLE_LINKS) {
-	    Forward_Rel_UDP_Data(next_hop, send_buff, 
-				 u_hdr->len+sizeof(udp_header), 0);
+	    Forward_Rel_UDP_Data(next_hop, scat, 0);
 	}
 	else {
-	    Forward_UDP_Data(next_hop, send_buff, 
-			     u_hdr->len+sizeof(udp_header));
+	    Forward_UDP_Data(next_hop, scat);
 	}
     }
     else {
 	/* This is for a session connected locally */
-	Deliver_UDP_Data(send_buff, u_hdr->len+sizeof(udp_header), 0);
+	Deliver_UDP_Data(scat, 0);
     }
 
+    dec_ref_cnt(scat->elements[0].buf);
     dec_ref_cnt(send_buff);
+    dec_ref_cnt(scat);
 
     /* Schedule a timeout for the hello message */
     
@@ -651,6 +658,8 @@ void Ses_Delay_Close(int sesid, void* dummy)
 {
     Session *ses;
     stdit it;
+
+    UNUSED(dummy);
 
     Alarm(DEBUG, "Ses_Delay_Close, timeout on session: %d\n", sesid);
     
@@ -1634,6 +1643,7 @@ int Reliable_Ses_Send(Session* ses)
     Reliable_Data *r_data;
     Buffer_Cell *buf_cell;
     reliable_ses_tail *r_tail;
+    sys_scatter *scat;
     Node* next_hop;
     char *send_buff;
     int16u data_len, ack_len;
@@ -1761,24 +1771,29 @@ int Reliable_Ses_Send(Session* ses)
     r_add->type = Set_endian(REL_UDP_DATA_TYPE);
 
     /* Send the Packet */
+    scat = new_ref_cnt(SYS_SCATTER);
+    scat->num_elements = 2;
+    scat->elements[0].buf = new_ref_cnt(PACK_HEAD_OBJ);
+    scat->elements[0].len = sizeof(packet_header);
+    scat->elements[1].buf = send_buff;
+    scat->elements[1].len = u_hdr->len+sizeof(udp_header);
+
     if(u_hdr->dest == My_Address) {
-      Deliver_UDP_Data(send_buff, u_hdr->len+sizeof(udp_header), 0);
+      Deliver_UDP_Data(scat, 0);
 
     } else {
 
       if(ses->links_used == SOFT_REALTIME_LINKS) {
-        ret = Forward_RT_UDP_Data(next_hop, send_buff,
-			          u_hdr->len+sizeof(udp_header));
-
+        ret = Forward_RT_UDP_Data(next_hop, scat);
       } else if(ses->links_used == RELIABLE_LINKS) {
-	ret = Forward_Rel_UDP_Data(next_hop, send_buff, 
-				   u_hdr->len+sizeof(udp_header), 0);
+	ret = Forward_Rel_UDP_Data(next_hop, scat, 0);
       } else {
-	ret = Forward_UDP_Data(next_hop, send_buff, 
-			       u_hdr->len+sizeof(udp_header));
+	ret = Forward_UDP_Data(next_hop, scat);
       }
     }
-    
+   
+    dec_ref_cnt(scat->elements[0].buf);
+    dec_ref_cnt(scat);
   
     /* Setting the timeout */
     
@@ -1842,6 +1857,7 @@ void Ses_Send_Much(Session *ses)
     Reliable_Data *r_data;
     Buffer_Cell *buf_cell;
     reliable_ses_tail *r_tail;
+    sys_scatter *scat;
     Node* next_hop;
     char *send_buff;
     int16u data_len, ack_len;
@@ -2003,24 +2019,31 @@ void Ses_Send_Much(Session *ses)
 	}
 
 	/* Send the Packet */
+    scat = new_ref_cnt(SYS_SCATTER);
+    scat->num_elements = 2;
+    scat->elements[0].buf = new_ref_cnt(PACK_HEAD_OBJ);
+    scat->elements[0].len = sizeof(packet_header);
+    scat->elements[1].buf = send_buff;
+    scat->elements[1].len = u_hdr->len+sizeof(udp_header);
+
 	if(My_Address == ses->rel_otherside_addr) {
-          ret = Deliver_UDP_Data(send_buff, u_hdr->len+sizeof(udp_header), 0);
+          ret = Deliver_UDP_Data(scat, 0);
 
         } else {
 	  if(ses->links_used == SOFT_REALTIME_LINKS) {
-	    ret = Forward_RT_UDP_Data(next_hop, send_buff,
-				      u_hdr->len+sizeof(udp_header));
+	    ret = Forward_RT_UDP_Data(next_hop, scat);
 
 	  } else if(ses->links_used == RELIABLE_LINKS) {
-	    ret = Forward_Rel_UDP_Data(next_hop, send_buff, 
-				       u_hdr->len+sizeof(udp_header), 0);
+	    ret = Forward_Rel_UDP_Data(next_hop, scat, 0);
 
 	  } else {
-	    ret = Forward_UDP_Data(next_hop, send_buff, 
-				   u_hdr->len+sizeof(udp_header));
+	    ret = Forward_UDP_Data(next_hop, scat);
 	  }
         }
-    
+   
+    dec_ref_cnt(scat->elements[0].buf);
+    dec_ref_cnt(scat);
+
     }
 
     if(ses->rel_blocked == 1) {
@@ -2090,6 +2113,7 @@ void Ses_Send_One(int sesid, void* dummy)
     Session *ses;
     stdit it;
 
+    UNUSED(dummy);
 
     stdhash_find(&Sessions_ID, &it, &sesid);
     if(stdhash_is_end(&Sessions_ID, &it)) {
@@ -2142,6 +2166,7 @@ void Ses_Send_Ack(int sesid, void* dummy)
     char *send_buff;
     Reliable_Data *r_data;
     reliable_ses_tail *r_tail;
+    sys_scatter *scat;
     Node* next_hop;
     int16u data_len, ack_len;
     Session *ses;
@@ -2151,6 +2176,7 @@ void Ses_Send_Ack(int sesid, void* dummy)
     int32u ack_congestion_flag;
     int32u i;
 
+    UNUSED(dummy);
 
     stdhash_find(&Sessions_ID, &it, &sesid);
     if(stdhash_is_end(&Sessions_ID, &it)) {
@@ -2261,25 +2287,31 @@ void Ses_Send_Ack(int sesid, void* dummy)
     ack_congestion_flag = r_data->congestion_flag << 2;
 
     /* Send the Packet */
+    scat = new_ref_cnt(SYS_SCATTER);
+    scat->num_elements = 2;
+    scat->elements[0].buf = new_ref_cnt(PACK_HEAD_OBJ);
+    scat->elements[0].len = sizeof(packet_header);
+    scat->elements[1].buf = send_buff;
+    scat->elements[1].len = u_hdr->len+sizeof(udp_header);
+
     if(My_Address == u_hdr->dest) {
-      Deliver_UDP_Data(send_buff, u_hdr->len+sizeof(udp_header), 0);
+      Deliver_UDP_Data(scat, 0);
 
     } else {
       if(ses->links_used == SOFT_REALTIME_LINKS) {
-	Forward_RT_UDP_Data(next_hop, send_buff,
-	  		    u_hdr->len+sizeof(udp_header));
+	Forward_RT_UDP_Data(next_hop, scat);
 
       } else if(ses->links_used == RELIABLE_LINKS) {
-	Forward_Rel_UDP_Data(next_hop, send_buff, 
-		             u_hdr->len+sizeof(udp_header), ack_congestion_flag);
+	Forward_Rel_UDP_Data(next_hop, scat, ack_congestion_flag);
 
       } else {
-	Forward_UDP_Data(next_hop, send_buff, 
-			 u_hdr->len+sizeof(udp_header));
+	Forward_UDP_Data(next_hop, scat);
       }
     }
 
+    dec_ref_cnt(scat->elements[0].buf);
     dec_ref_cnt(send_buff);
+    dec_ref_cnt(scat);
 }
 
 
@@ -2310,6 +2342,7 @@ void Ses_Reliable_Timeout(int sesid, void *dummy)
     char *send_buff;
     Reliable_Data *r_data;
     reliable_ses_tail *r_tail;
+    sys_scatter *scat;
     int32u pack_type;
     Node* next_hop;
     int16u data_len, ack_len;
@@ -2319,6 +2352,7 @@ void Ses_Reliable_Timeout(int sesid, void *dummy)
     char *p_nack;
     int32u i, cur_seq;
 
+    UNUSED(dummy);
     
     stdhash_find(&Sessions_ID, &it, &sesid);
     if(stdhash_is_end(&Sessions_ID, &it)) {
@@ -2449,19 +2483,22 @@ void Ses_Reliable_Timeout(int sesid, void *dummy)
 	
 	
 	/* Send the Packet */
+    scat = new_ref_cnt(SYS_SCATTER);
+    scat->num_elements = 1;
+    scat->elements[0].buf = send_buff;
+    scat->elements[0].len = u_hdr->len+sizeof(udp_header);
 	
 	if(ses->links_used == SOFT_REALTIME_LINKS) {
-	    Forward_RT_UDP_Data(next_hop, send_buff,
-				      u_hdr->len+sizeof(udp_header));
+	    Forward_RT_UDP_Data(next_hop, scat);
 	}
 	else if(ses->links_used == RELIABLE_LINKS) {
-	    Forward_Rel_UDP_Data(next_hop, send_buff, 
-				 u_hdr->len+sizeof(udp_header), 0);
+	    Forward_Rel_UDP_Data(next_hop, scat, 0);
 	}
 	else {
-	    Forward_UDP_Data(next_hop, send_buff, 
-			     u_hdr->len+sizeof(udp_header));
+	    Forward_UDP_Data(next_hop, scat);
 	}
+
+    dec_ref_cnt(scat);
     }
 
     timeout_val.sec = (r_data->rtt*15)/1000000;
@@ -2524,6 +2561,7 @@ void Ses_Send_Nack_Retransm(int sesid, void *dummy)
     char *send_buff;
     Reliable_Data *r_data;
     reliable_ses_tail *r_tail;
+    sys_scatter *scat;
     int32u pack_type;
     Node* next_hop;
     int16u data_len, ack_len;
@@ -2534,6 +2572,7 @@ void Ses_Send_Nack_Retransm(int sesid, void *dummy)
     int j;
     int32u i, nack_seq;
 
+    UNUSED(dummy);
     
     stdhash_find(&Sessions_ID, &it, &sesid);
     if(stdhash_is_end(&Sessions_ID, &it)) {
@@ -2662,20 +2701,23 @@ void Ses_Send_Nack_Retransm(int sesid, void *dummy)
 	
 
 	/* Send the Packet */
+    scat = new_ref_cnt(SYS_SCATTER);
+    scat->num_elements = 1;
+    scat->elements[0].buf = send_buff;
+    scat->elements[0].len = u_hdr->len+sizeof(udp_header);
 	
 	if(ses->links_used == SOFT_REALTIME_LINKS) {
-	    Forward_RT_UDP_Data(next_hop, send_buff,
-				u_hdr->len+sizeof(udp_header));
+	    Forward_RT_UDP_Data(next_hop, scat);
 	}
 	else if(ses->links_used == RELIABLE_LINKS) {
-	    Forward_Rel_UDP_Data(next_hop, send_buff, 
-				 u_hdr->len+sizeof(udp_header), 0);
+	    Forward_Rel_UDP_Data(next_hop, scat, 0);
 	}
 	else {
-	    Forward_UDP_Data(next_hop, send_buff, 
-			     u_hdr->len+sizeof(udp_header));
+	    Forward_UDP_Data(next_hop, scat);
 	}
-       
+    
+    dec_ref_cnt(scat);
+
     }
 
     dispose(r_data->nack_buff);
@@ -2689,6 +2731,7 @@ void Ses_Try_to_Send(int sesid, void* dummy)
     Session *ses;
     stdit it;
 
+    UNUSED(dummy);
     
     stdhash_find(&Sessions_ID, &it, &sesid);
     if(stdhash_is_end(&Sessions_ID, &it)) {

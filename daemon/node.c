@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2015 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -54,6 +54,8 @@
 #include "route.h"
 #include "multicast.h"
 #include "kernel_routing.h"
+#include "configuration.h"
+#include "multipath.h"
 
 #include "spines.h"
 
@@ -84,7 +86,10 @@ void Init_Nodes(void)
 {
     Node        *node;
     Interface   *interf;
-    int16        i;
+    int16        i, tmp;
+    Edge        *edge;
+    stdit        it;
+    Edge_Key     key;
 
     Num_Neighbors = 0;
 
@@ -123,7 +128,8 @@ void Init_Nodes(void)
     if (Num_Local_Interfaces == 0) {           /* if no interfaces specified set up an INADDR_ANY one; uses reserved 0 ID for interface ID */
 
       My_Interface_IDs[Num_Local_Interfaces]       = 0;           /* NOTE: these entries are already 0 (global arrays); this is just for clarity */
-      My_Interface_Addresses[Num_Local_Interfaces] = INADDR_ANY;
+      /* My_Interface_Addresses[Num_Local_Interfaces] = INADDR_ANY; */
+      My_Interface_Addresses[Num_Local_Interfaces] = My_Address;
       assert(INADDR_ANY == 0);
 
       ++Num_Local_Interfaces;
@@ -136,6 +142,30 @@ void Init_Nodes(void)
       }
 
       Create_Interface(My_Address, My_Interface_IDs[i], My_Interface_Addresses[i]);
+    }
+
+    /* Create all nodes that we know from config file */
+    for (i = 1; i <= MAX_NODES; i++) {
+        if (temp_node_ip[i] != 0) {
+            if (Get_Node(temp_node_ip[i]) == NULL)
+                Create_Node(temp_node_ip[i]);
+        }
+    }
+
+    /* Create all edges that we know from config file */
+    stdskl_begin(&Sorted_Edges, &it);
+    while (!stdskl_is_end(&Sorted_Edges, &it)) {
+        key = *(Edge_Key*)stdskl_it_key(&it);
+        tmp = -1;
+   
+        if (Get_Edge(temp_node_ip[key.src_id], temp_node_ip[key.dst_id]) == NULL)
+            edge = Create_Edge(temp_node_ip[key.src_id], temp_node_ip[key.dst_id], tmp);
+        if (Directed_Edges == 0) {
+            if (Get_Edge(temp_node_ip[key.dst_id], temp_node_ip[key.src_id]) == NULL)
+                edge = Create_Edge(temp_node_ip[key.dst_id], temp_node_ip[key.src_id], tmp);
+        }
+
+        stdskl_it_next(&it);
     }
 
     /* instantiate remote nodes, remote interfaces, edges and network legs specified on command line */
@@ -164,16 +194,16 @@ void Init_Nodes(void)
       /* check if this remote node already exists */
 
       if ((node = Get_Node(Remote_Node_IDs[i])) == NULL) {
-	node = Create_Node(Remote_Node_IDs[i]);
+	    node = Create_Node(Remote_Node_IDs[i]);
       }
 
       /* check if this remote interface already exists */
 
       if ((interf = Get_Interface(Remote_Interface_IDs[i])) == NULL) {
-	interf = Create_Interface(Remote_Node_IDs[i], Remote_Interface_IDs[i], Remote_Interface_Addresses[i]);
+	    interf = Create_Interface(Remote_Node_IDs[i], Remote_Interface_IDs[i], Remote_Interface_Addresses[i]);
 
       } else if (interf->owner != node) {
-	Alarm(EXIT, "-a remapped an interface ID " IPF " to a different node " IPF "; should be " IPF "\r\n", 
+	    Alarm(EXIT, "-a remapped an interface ID " IPF " to a different node " IPF "; should be " IPF "\r\n", 
 	      IP(Remote_Interface_IDs[i]), IP(Remote_Node_IDs[i]), IP(interf->owner->nid));
       }
 
@@ -181,6 +211,7 @@ void Init_Nodes(void)
     }
 
     Init_Routes();
+    Print_Routes(NULL);
 }
 
 /***********************************************************/

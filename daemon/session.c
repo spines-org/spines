@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2015 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -54,6 +54,11 @@
 #  include <errno.h>
 #endif
 
+#include <openssl/engine.h>
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
+#include <openssl/pem.h>
+
 #include "spu_alarm.h"
 #include "spu_events.h"
 #include "spu_memory.h"
@@ -72,16 +77,20 @@
 #include "udp.h"
 #include "reliable_udp.h"
 #include "realtime_udp.h"
+#include "intrusion_tol_udp.h"
+#include "priority_flood.h"
+#include "reliable_flood.h"
 #include "protocol.h"
 #include "route.h"
 #include "session.h"
 #include "reliable_session.h"
 #include "state_flood.h"
 #include "multicast.h"
+#include "multipath.h"
+#include "configuration.h"
 
 /* Global variables */
-
-extern int16     Port;
+extern int16u    Port;
 extern Node_ID   My_Address;
 extern stdhash   Sessions_ID;
 extern stdhash   Sessions_Port;
@@ -95,16 +104,20 @@ extern stdhash   Monitor_Params;
 extern int       Accept_Monitor;
 extern int       Unicast_Only;
 extern channel   Ses_UDP_Channel; /* For udp client connection sends
-				     and receives */ 
+                                     and receives */ 
+extern char      Config_File_Found;
+extern stdhash   Node_Lookup_Addr_to_ID;
+extern int16u    My_ID;
+extern int64u    Injected_Messages;
 
 /* Local variables */
-
 static int32u   Session_Num;
 static const sp_time zero_timeout  = {     0,    0};
 static int last_sess_port;
 static sys_scatter Ses_UDP_Pack;
 static char *frag_buf[55];
 static channel ctrl_sk_requests[MAX_CTRL_SK_REQUESTS];
+static int overwrite_ip;
 
 #define FRAG_TTL         30
 
@@ -126,6 +139,10 @@ static int Get_Ses_Mode(int32 ses_links_used)
     ret = REALTIME_UDP_LINK;
     break;
 
+  case INTRUSION_TOL_LINKS:
+    ret = INTRUSION_TOL_LINK;
+    break;
+
   default:
     break;
   }
@@ -139,26 +156,26 @@ Frag_Packet* Delete_Frag_Element(Frag_Packet **head, Frag_Packet *frag_pkt)
     Frag_Packet *frag_tmp;
     
     if(frag_pkt == NULL) {
-	return NULL;
+        return NULL;
     }
     if(head == NULL) {
-	return NULL;
+        return NULL;
     }
 
 
     for(i=0; i<frag_pkt->scat.num_elements; i++) {
-	if(frag_pkt->scat.elements[i].buf != NULL) {
-	    dec_ref_cnt(frag_pkt->scat.elements[i].buf);
-	}
+        if(frag_pkt->scat.elements[i].buf != NULL) {
+            dec_ref_cnt(frag_pkt->scat.elements[i].buf);
+        }
     }
     if(frag_pkt->prev == NULL) {
-	*head = frag_pkt->next;
+        *head = frag_pkt->next;
     }
     else {
-	frag_pkt->prev->next = frag_pkt->next;
+        frag_pkt->prev->next = frag_pkt->next;
     }
     if(frag_pkt->next != NULL) {
-	frag_pkt->next->prev = frag_pkt->prev;
+        frag_pkt->next->prev = frag_pkt->prev;
     }
     
     frag_tmp = frag_pkt->next;
@@ -190,25 +207,26 @@ void Init_Session(void)
 
     Session_Num = 0;
     last_sess_port = 40000;
+    overwrite_ip = 0;
 
     for(i=0; i<50; i++) {
-	frag_buf[i] = new_ref_cnt(PACK_BODY_OBJ);
-	if(frag_buf[i] == NULL) {
-	    Alarm(EXIT, "Init_Session: Cannot allocate memory\n");
-	}
+        frag_buf[i] = new_ref_cnt(PACK_BODY_OBJ);
+        if(frag_buf[i] == NULL) {
+            Alarm(EXIT, "Init_Session: Cannot allocate memory\n");
+        }
     }
 
     stdhash_construct(&Sessions_ID, sizeof(int32), sizeof(Session*),
-		      NULL, NULL, 0);
+                      NULL, NULL, 0);
 
     stdhash_construct(&Sessions_Port, sizeof(int32), sizeof(Session*),
-		      NULL, NULL, 0);
+                      NULL, NULL, 0);
 
     stdhash_construct(&Rel_Sessions_Port, sizeof(int32), sizeof(Session*),
-		      NULL, NULL, 0);
+                      NULL, NULL, 0);
 
     stdhash_construct(&Sessions_Sock, sizeof(int32), sizeof(Session*),
-		      NULL, NULL, 0);
+                      NULL, NULL, 0);
 
     sk_local = socket(AF_INET, SOCK_STREAM, 0);
     if (sk_local<0) {
@@ -234,11 +252,11 @@ void Init_Session(void)
 
     ret = bind(sk_local, (struct sockaddr *) &name, sizeof(name));
     if (ret == -1) {
-	Alarm(EXIT, "Init_Session: bind error for port %d\n",Port);
+        Alarm(EXIT, "Init_Session: bind error for port %d\n",Port);
     }
 
     if(listen(sk_local, 4) < 0) {
-	Alarm(EXIT, "Session_Init(): Listen failure\n");
+        Alarm(EXIT, "Session_Init(): Listen failure\n");
     }
 
     Alarm(DEBUG, "listen successful on socket: %d\n", sk_local);
@@ -252,10 +270,10 @@ void Init_Session(void)
     /* Use a single socket for sending and receiving udp packets to the client
      * */
     Ses_UDP_Channel = DL_init_channel(SEND_CHANNEL | RECV_CHANNEL,
-				      (int16)(Port+SESS_UDP_PORT), 0, INADDR_ANY /*My_Address*/);
+                                      (int16)(Port+SESS_UDP_PORT), 0, INADDR_ANY /*My_Address*/);
  
     E_attach_fd(Ses_UDP_Channel, READ_FD, Session_UDP_Read, 0, 
-		    NULL, LOW_PRIORITY );
+                    NULL, LOW_PRIORITY );
 
     /* For Control socket */
 
@@ -281,11 +299,11 @@ void Init_Session(void)
 
     ret = bind(sk_local, (struct sockaddr *) &name, sizeof(name));
     if (ret == -1) {
-	Alarm(EXIT, "Init_Session: bind error for port %d\n",Port+SESS_CTRL_PORT);
+        Alarm(EXIT, "Init_Session: bind error for port %d\n",Port+SESS_CTRL_PORT);
     }
 
     if(listen(sk_local, 4) < 0) {
-	Alarm(EXIT, "Session_Init(): Listen failure\n");
+        Alarm(EXIT, "Session_Init(): Listen failure\n");
     }
 
     Alarm(DEBUG, "listen successful on socket: %d\n", sk_local);
@@ -330,32 +348,32 @@ void Session_Accept(int sk_local, int port, void *dummy_p)
     sk = accept(sk_local, (struct sockaddr*)&acc_sin, &acc_sin_len);
 
     /* Increasing the buffer on the socket */
-    for(i=10; i <= 200; i+=5) {
-	val = 1024*i;
+    for(i=10; i <= 200; i+=5) { 
+        val = 1024*i;
 
-	ret = setsockopt(sk, SOL_SOCKET, SO_SNDBUF, (void *)&val, sizeof(val));
-	if (ret < 0) break;
+        ret = setsockopt(sk, SOL_SOCKET, SO_SNDBUF, (void *)&val, sizeof(val));
+        if (ret < 0) break;
 
-	ret = setsockopt(sk, SOL_SOCKET, SO_RCVBUF, (void *)&val, sizeof(val));
-	if (ret < 0) break;
+        ret = setsockopt(sk, SOL_SOCKET, SO_RCVBUF, (void *)&val, sizeof(val));
+        if (ret < 0) break;
 
-	lenval = sizeof(val);
-	ret = getsockopt(sk, SOL_SOCKET, SO_SNDBUF, (void *)&val,  &lenval);
-	if(val < i*1024) break;
-	Alarm(DEBUG, "Sess_accept: set sndbuf %d, ret is %d\n", val, ret);
+        lenval = sizeof(val);
+        ret = getsockopt(sk, SOL_SOCKET, SO_SNDBUF, (void *)&val,  &lenval);
+        if(val < i*1024) break;
+        Alarm(DEBUG, "Sess_accept: set sndbuf %d, ret is %d\n", val, ret);
 
-	lenval = sizeof(val);
-	ret= getsockopt(sk, SOL_SOCKET, SO_RCVBUF, (void *)&val, &lenval);
-	if(val < i*1024 ) break;
-	Alarm(DEBUG, "Sess_accept: set rcvbuf %d, ret is %d\n", val, ret);
+        lenval = sizeof(val);
+        ret= getsockopt(sk, SOL_SOCKET, SO_RCVBUF, (void *)&val, &lenval);
+        if(val < i*1024 ) break;
+        Alarm(DEBUG, "Sess_accept: set rcvbuf %d, ret is %d\n", val, ret);
     }
-    Alarm(DEBUG, "Sess_accept: set sndbuf/rcvbuf to %d\n", 1024*(i-5));
+    Alarm(PRINT, "Sess_accept: set sndbuf/rcvbuf to %d\n", 1024*(i-5));
 
 
     /* Setting no delay option on the socket */
     val = 1;
     if (setsockopt(sk, IPPROTO_TCP, TCP_NODELAY, (char *)&val, sizeof(val))) {
-	    Alarm(PRINT, "Session_Accept: Failed to set TCP_NODELAY\n");
+            Alarm(PRINT, "Session_Accept: Failed to set TCP_NODELAY\n");
     }
 
     /* set file descriptor to non blocking */
@@ -374,7 +392,7 @@ void Session_Accept(int sk_local, int port, void *dummy_p)
         tot_bytes = 0;
         while(tot_bytes < sizeof(int32)) {
             ret = send(sk, ((char*)(&sk))+tot_bytes, sizeof(int32)-tot_bytes, 0);
-	    tot_bytes += ret;
+            tot_bytes += ret;
         } 
         if(tot_bytes != sizeof(int32)) {
             close(sk);
@@ -392,7 +410,7 @@ void Session_Accept(int sk_local, int port, void *dummy_p)
     }
 
     if((ses = (Session*) new(SESSION_OBJ))==NULL) {
-	Alarm(EXIT, "Session_Accept(): Cannot allocte session object\n");
+        Alarm(EXIT, "Session_Accept(): Cannot allocte session object\n");
     }
 
     ses->sess_id = Session_Num++;
@@ -403,6 +421,7 @@ void Session_Accept(int sk_local, int port, void *dummy_p)
     ses->port = 0;
     ses->read_len = sizeof(int32);
     ses->partial_len = 0;
+    ses->sent_bytes = 0;
     ses->state = READY_ENDIAN;
     ses->r_data = NULL;
     ses->rel_blocked = 0;
@@ -411,11 +430,16 @@ void Session_Accept(int sk_local, int port, void *dummy_p)
     ses->recv_fd_flag = 0;
     ses->fd = -1;
     ses->multicast_loopback = 1;
+    ses->priority_lvl   = Conf_Prio.Default_Priority;;
+    ses->expire.sec     = Conf_Prio.Default_Expire_Sec;
+    ses->expire.usec    = Conf_Prio.Default_Expire_USec;
+    ses->disjoint_paths = 0;
+    ses->managed        = 0;
+    ses->rf_dst         = 0;
 
-    if((ses->data = (char*) new_ref_cnt(PACK_BODY_OBJ))==NULL) {
-	Alarm(EXIT, "Session_Accept(): Cannot allocte packet_body object\n");
+    if((ses->data = (char*) new_ref_cnt(MESSAGE_OBJ))==NULL) {
+            Alarm(EXIT, "Session_Accept(): Cannot allocate message object\n");
     }
-
 
     ses->frag_pkts = NULL;
 
@@ -426,21 +450,21 @@ void Session_Accept(int sk_local, int port, void *dummy_p)
 
     /* Allocating a port for the session */
     for(i=last_sess_port+1; i < 60000; i++) {
-	stdhash_find(&Sessions_Port, &it, &i);
-	if(stdhash_is_end(&Sessions_Port, &it)) {
-	    break;
-	}
+        stdhash_find(&Sessions_Port, &it, &i);
+        if(stdhash_is_end(&Sessions_Port, &it)) {
+            break;
+        }
     }
     if(i == 60000) {
-	for(i= 40000; i < last_sess_port; i++) {
-	    stdhash_find(&Sessions_Port, &it, &i);
-	    if(stdhash_is_end(&Sessions_Port, &it)) {
-		break;
-	    }
-	}
-	if(i == last_sess_port) {
-	    Alarm(EXIT, "Session: No more ports for the session\n");
-	}
+        for(i= 40000; i < last_sess_port; i++) {
+            stdhash_find(&Sessions_Port, &it, &i);
+            if(stdhash_is_end(&Sessions_Port, &it)) {
+                break;
+            }
+        }
+        if(i == last_sess_port) {
+            Alarm(EXIT, "Session: No more ports for the session\n");
+        }
     }
 
     last_sess_port = i;
@@ -452,7 +476,9 @@ void Session_Accept(int sk_local, int port, void *dummy_p)
 
     Alarm(PRINT, "new session...%d\n", sk);
 
-    E_attach_fd(ses->sk, READ_FD, Session_Read, 0, NULL, HIGH_PRIORITY );
+    /* Client session data messages are set to low priority to avoid 
+     *      starving messages from other daemons */
+    E_attach_fd(ses->sk, READ_FD, Session_Read, 0, NULL, LOW_PRIORITY );
     E_attach_fd(ses->sk, EXCEPT_FD, Session_Read, 0, NULL, HIGH_PRIORITY );
 
     ses->fd_flags = READ_DESC | EXCEPT_DESC;
@@ -462,11 +488,11 @@ void Session_Accept(int sk_local, int port, void *dummy_p)
 
     tot_bytes = 0;
     while(tot_bytes < sizeof(int32)) {
-	ret = send(sk, ((char*)(&endianess_type))+tot_bytes, sizeof(int32)-tot_bytes, 0);
-	tot_bytes += ret;
+        ret = send(sk, ((char*)(&endianess_type))+tot_bytes, sizeof(int32)-tot_bytes, 0);
+        tot_bytes += ret;
     }   
     if(tot_bytes != sizeof(int32)) {
-	Session_Close(ses->sess_id, SOCK_ERR);
+        Session_Close(ses->sess_id, SOCK_ERR);
     }
 
 }
@@ -505,7 +531,7 @@ void Session_Read(int sk, int dummy, void *dummy_p)
     stdhash_find(&Sessions_Sock, &it, &sk);
     if(stdhash_is_end(&Sessions_Sock, &it)) {
         Alarm(PRINT, "Session_Read(): socket does not exist\n");
-	return;
+        return;
     }
     ses = *((Session **)stdhash_it_val(&it));
 
@@ -517,74 +543,74 @@ void Session_Read(int sk, int dummy, void *dummy_p)
 
     if(received_bytes <= 0) {
 
-	Alarm(DEBUG, "\nsocket err; len: %d; read_len: %d; partial_len: %d; STATE: %d\n",  
-	      scat.elements[0].len, ses->read_len, ses->partial_len, ses->state);
+        Alarm(PRINT, "\nsocket err; len: %d; read_len: %d; partial_len: %d; STATE: %d\n",  
+              scat.elements[0].len, ses->read_len, ses->partial_len, ses->state);
 
-	/* This is non-blocking socket. Not all the errors are treated as
-	 * a disconnect. */
-	if(received_bytes == -1) {
-#ifndef	ARCH_PC_WIN95
-	    if((errno == EWOULDBLOCK)||(errno == EAGAIN))
+        /* This is non-blocking socket. Not all the errors are treated as
+         * a disconnect. */
+        if(received_bytes == -1) {
+#ifndef        ARCH_PC_WIN95
+            if((errno == EWOULDBLOCK)||(errno == EAGAIN))
 #else
 #ifndef _WIN32_WCE
-	    if((errno == WSAEWOULDBLOCK)||(errno == EAGAIN))
+            if((errno == WSAEWOULDBLOCK)||(errno == EAGAIN))
 #else
-	    int sk_errno = WSAGetLastError();
-	    if((sk_errno == WSAEWOULDBLOCK)||(sk_errno == EAGAIN))
+            int sk_errno = WSAGetLastError();
+            if((sk_errno == WSAEWOULDBLOCK)||(sk_errno == EAGAIN))
 #endif /* Windows CE */
 #endif
-	    {
-		Alarm(DEBUG, "EAGAIN - Session_Read()\n");
-		return;
-	    }
-	    else {
-		if(ses->r_data == NULL) {
-		    Session_Close(ses->sess_id, SOCK_ERR);
-		}
-		else {
-		    Disconnect_Reliable_Session(ses);
-		}
-	    }
-	}
-	else {
-	    if(ses->r_data == NULL) {
-		Session_Close(ses->sess_id, SOCK_ERR);
-	    }
-	    else {
-		Disconnect_Reliable_Session(ses);
-	    }
-	}
-	return;
+            {
+                Alarm(DEBUG, "EAGAIN - Session_Read()\n");
+                return;
+            }
+            else {
+                if(ses->r_data == NULL) {
+                    Session_Close(ses->sess_id, SOCK_ERR);
+                }
+                else {
+                    Disconnect_Reliable_Session(ses);
+                }
+            }
+        }
+        else {
+            if(ses->r_data == NULL) {
+                Session_Close(ses->sess_id, SOCK_ERR);
+            }
+            else {
+                Disconnect_Reliable_Session(ses);
+            }
+        }
+        return;
     }
 
     if(received_bytes + ses->partial_len > ses->read_len)
-	Alarm(EXIT, "Session_Read(): Too many bytes...\n");
-   
+        Alarm(EXIT, "Session_Read(): Too many bytes...\n");
+
     if(ses->r_data != NULL) {
-	add_size = sizeof(rel_udp_pkt_add);
+        add_size = sizeof(rel_udp_pkt_add);
     }
     else {
-	add_size = 0;
+        add_size = 0;
     }
 
     /*
      *Alarm(DEBUG, "* received_bytes: %d; partial_len: %d; read_len: %d; STATE: %d\n",
-     *	  received_bytes, ses->partial_len, ses->read_len, ses->state);
+     *          received_bytes, ses->partial_len, ses->read_len, ses->state);
      */
 
     if(received_bytes + ses->partial_len < ses->read_len) {
-	ses->partial_len += received_bytes;
+        ses->partial_len += received_bytes;
     }
     else {
-	if(ses->state == READY_ENDIAN) {
-	    ses->endianess_type = *((int32*)(ses->data));
+        if(ses->state == READY_ENDIAN) {
+            ses->endianess_type = *((int32*)(ses->data));
 
-	    ses->received_len = 0;
-	    ses->read_len = sizeof(int32);
-	    ses->partial_len = 0;
-	    ses->state = READY_CTRL_SK;
-	}
-	else if(ses->state == READY_CTRL_SK) {
+            ses->received_len = 0;
+            ses->read_len = sizeof(int32);
+            ses->partial_len = 0;
+            ses->state = READY_CTRL_SK;
+        }
+        else if(ses->state == READY_CTRL_SK) {
             ses->ctrl_sk = *((int32*)(ses->data));
             for (i=0; i<MAX_CTRL_SK_REQUESTS; i++) {
                 if (ctrl_sk_requests[i] == ses->ctrl_sk) {
@@ -596,102 +622,120 @@ void Session_Read(int sk, int dummy, void *dummy_p)
                 Alarm(EXIT, "Session_Read(): No such control channel: %d\n", ses->ctrl_sk);
             }
             Alarm(PRINT, "linked Spines Socket Channel %d with Control Channel %d\n", ses->sk, ses->ctrl_sk);
-	    ses->state = READY_LEN;
+            ses->state = READY_LEN;
         }
-	else if(ses->state == READY_LEN) {
-	    ses->total_len = *((int32*)(ses->data));
-	    if(!Same_endian(ses->endianess_type)) {
-		ses->total_len = Flip_int32(ses->total_len);
-	    }
+        else if(ses->state == READY_LEN) {
+            ses->total_len = *((int32*)(ses->data));
+            if(!Same_endian(ses->endianess_type)) {
+                ses->total_len = Flip_int32(ses->total_len);
+            }
 
-	    if(ses->total_len > MAX_SPINES_MSG + sizeof(udp_header) + add_size) {
-		ses->read_len = MAX_SPINES_MSG + sizeof(udp_header) + add_size;
-	    }
-	    else {
-		ses->read_len = ses->total_len;
-	    }
-	    
-	    ses->partial_len = 0;
-	    ses->received_len = 0;
-	    ses->seq_no++;
-	    if(ses->seq_no >= 10000) {
-		ses->seq_no = 0;
-	    }
-	    ses->frag_num = (ses->total_len-sizeof(udp_header)-add_size)/MAX_SPINES_MSG;
-	    if((ses->total_len-sizeof(udp_header)-add_size)%MAX_SPINES_MSG != 0) {
-		ses->frag_num++;
-	    }
-	    ses->frag_idx = 0;
-	    ses->state = READY_DATA;
-	}
-	else if(ses->state == READY_DATA) {
-	    u_hdr = (udp_header*)ses->data;
-	    if(!Same_endian(ses->endianess_type)) {
-		Flip_udp_hdr(u_hdr);
-	    }
-	    if(ses->frag_num > 1) {
-		if(ses->frag_idx == 0) {
-		    memcpy((void*)(&ses->save_hdr), (void*)u_hdr, sizeof(udp_header));
-		}
-		u_hdr->len = ses->read_len - sizeof(udp_header);
-		
-		if(ses->r_data != NULL) {
-		    r_add = (rel_udp_pkt_add*)(ses->data + sizeof(udp_header));
-		    r_add->type = Set_endian(0);
-		    r_add->data_len = u_hdr->len - sizeof(rel_udp_pkt_add);
-		    r_add->ack_len = 0;
-		}
-	    }
-	    u_hdr->seq_no = ses->seq_no;
-	    u_hdr->frag_num = (int16u)ses->frag_num;
-	    u_hdr->frag_idx = (int16u)ses->frag_idx;
-	    u_hdr->sess_id = (int16u)(ses->sess_id & 0x0000ffff);
+            if (ses->routing_used == MIN_WEIGHT_ROUTING) {
+                if(ses->total_len > MAX_SPINES_MSG + sizeof(udp_header) + add_size) {
+                    ses->read_len = MAX_SPINES_MSG + sizeof(udp_header) + add_size;
+                }
+                else {
+                    ses->read_len = ses->total_len;
+                }
+                ses->frag_num = (ses->total_len-sizeof(udp_header)-add_size)/MAX_SPINES_MSG;
+                if((ses->total_len-sizeof(udp_header)-add_size)%MAX_SPINES_MSG != 0) {
+                    ses->frag_num++;
+                }
+                ses->frag_idx = 0;
+            }
+            else if (ses->routing_used == BEST_EFFORT_FLOOD_ROUTING ||
+                        ses->routing_used == RELIABLE_FLOOD_ROUTING) {
+                ses->read_len = ses->total_len;
+                ses->frag_num = 1;
+                ses->frag_idx = 0;
+            }
+            else
+                Alarm(PRINT, "Session_Read: Unexpected routing_used %d\r\n",
+                            ses->routing_used);
 
-	    ses->received_len += ses->read_len;
-	    if(ses->frag_idx > 0) {
-		ses->received_len -= sizeof(udp_header)+add_size;
-	    }
-	    ses->frag_idx++;
+            ses->partial_len = 0;
+            ses->received_len = 0;
+            ses->seq_no++;
+            if(ses->seq_no >= 10000) {
+                ses->seq_no = 0;
+            }
 
+            ses->state = READY_DATA;
+            Alarm(DEBUG,"Finished READY_LEN, ses->read_len = %u, ses->partial_len = %u\r\n",
+                        ses->read_len, ses->partial_len);
+        }
+        else if(ses->state == READY_DATA) {
+            u_hdr = (udp_header*)ses->data;
+            if(!Same_endian(ses->endianess_type)) {
+                Flip_udp_hdr(u_hdr);
+            }
+            
+            if (ses->routing_used == MIN_WEIGHT_ROUTING) {
+                if(ses->frag_num > 1) {
+                    if(ses->frag_idx == 0) {
+                        memcpy((void*)(&ses->save_hdr), (void*)u_hdr, sizeof(udp_header));
+                    }
+                    u_hdr->len = ses->read_len - sizeof(udp_header);
+                    
+                    if(ses->r_data != NULL) {
+                        r_add = (rel_udp_pkt_add*)(ses->data + sizeof(udp_header));
+                        r_add->type = Set_endian(0);
+                        r_add->data_len = u_hdr->len - sizeof(rel_udp_pkt_add);
+                        r_add->ack_len = 0;
+                    }
+                }
+            }
+            
+            u_hdr->seq_no = ses->seq_no;
+            u_hdr->frag_num = (int16u)ses->frag_num; 
+            u_hdr->frag_idx = (int16u)ses->frag_idx; 
+            u_hdr->sess_id = (int16u)(ses->sess_id & 0x0000ffff);
 
-	    ret = Process_Session_Packet(ses);
+            ses->received_len += ses->read_len;
+            if(ses->frag_idx > 0) {
+                ses->received_len -= sizeof(udp_header)+add_size;
+            } 
+            ses->frag_idx++;
 
-	    if(ret == NO_BUFF){
-		return;
-	    }
+            ret = Process_Session_Packet(ses);
+           
+            if(get_ref_cnt(ses->data) > 1) {
+                dec_ref_cnt(ses->data);
+                if((ses->data = (char*) new_ref_cnt(MESSAGE_OBJ))==NULL) {
+                    Alarm(EXIT, "Session_Read(): Cannot allocate packet_body\n");
+                }
+            }
 
-	    if(get_ref_cnt(ses->data) > 1) {
-		dec_ref_cnt(ses->data);
-		if((ses->data = (char*) new_ref_cnt(PACK_BODY_OBJ))==NULL) {
-		    Alarm(EXIT, "Session_Read(): Cannot allocte packet_body\n");
-		    
-		}
-	    }
+            if(ret == NO_BUFF){
+                return;
+            }
 
-	    if(ses->frag_idx == ses->frag_num) {
-		ses->read_len = sizeof(int32);
-		ses->partial_len = 0;
-		ses->state = READY_LEN;
-	    }
-	    else {
-		ses->read_len = ses->total_len - ses->received_len;
-		if(ses->read_len > MAX_SPINES_MSG) {
-		    ses->read_len = MAX_SPINES_MSG;
-		}
-		/*
-		 *Alarm(PRINT, "TOT total: %d; received: %d; read: %d\n",
-		 *     ses->total_len, ses->received_len, ses->read_len);
-		 */
-		memcpy((void*)(ses->data), (void*)(&ses->save_hdr), sizeof(udp_header));
-		ses->read_len += sizeof(udp_header);
-		ses->partial_len = sizeof(udp_header);
-		if(ses->r_data != NULL) {
-		    ses->read_len += sizeof(rel_udp_pkt_add);
-		    ses->partial_len += sizeof(rel_udp_pkt_add);
-		}
-		ses->state = READY_DATA;
-	    }
-	}
+            if(ses->frag_idx == ses->frag_num) {
+                ses->read_len = sizeof(int32);
+                ses->partial_len = 0;
+                ses->state = READY_LEN;
+            }
+            else {
+                ses->read_len = ses->total_len - ses->received_len;
+                if(ses->read_len > MAX_SPINES_MSG) {
+                    ses->read_len = MAX_SPINES_MSG;
+                }
+                /*
+                 *Alarm(PRINT, "TOT total: %d; received: %d; read: %d\n",
+                 *     ses->total_len, ses->received_len, ses->read_len);
+                 */
+                memcpy((void*)(ses->data), (void*)(&ses->save_hdr), sizeof(udp_header));
+                ses->read_len += sizeof(udp_header);
+                ses->partial_len = sizeof(udp_header);
+                if(ses->r_data != NULL) {
+                    ses->read_len += sizeof(rel_udp_pkt_add);
+                    ses->partial_len += sizeof(rel_udp_pkt_add);
+                }
+                ses->state = READY_DATA;
+            }
+            Alarm(DEBUG,"Finished READY_DATA, ses->total_len = %u, ses->read_len = %u, ses->partial_len = %u\r\n",
+                        ses->total_len, ses->read_len, ses->partial_len);
+        }
     }
 }
 
@@ -733,84 +777,91 @@ void Session_Close(int sesid, int reason)
     stdhash_find(&Sessions_ID, &it, &sesid);
     if(stdhash_is_end(&Sessions_ID, &it)) {
         Alarm(PRINT, "Session_Close(): session does not exist: %d\n", sesid);
-	return;
+        return;
     }
     ses = *((Session **)stdhash_it_val(&it));
 
     ses->close_reason = reason;
 
+    /* Remove this session from being managed in Reliable Flooding */
+    if (ses->managed == 1) {
+        Reliable_Flood_End_Manage_Session(ses->sess_id, ses->rf_dst);
+        ses->managed = 0;
+        ses->rf_dst = 0;
+    }
+
     /* Detach the socket so it won't bother us */
     if(ses->client_stat == SES_CLIENT_ON) {
-	ses->client_stat = SES_CLIENT_OFF;
+        ses->client_stat = SES_CLIENT_OFF;
 
-	if(ses->fd_flags & READ_DESC)
-	    E_detach_fd(ses->sk, READ_FD);
+        if(ses->fd_flags & READ_DESC)
+            E_detach_fd(ses->sk, READ_FD);
 
-	if(ses->fd_flags & EXCEPT_DESC)
-	    E_detach_fd(ses->sk, EXCEPT_FD);
+        if(ses->fd_flags & EXCEPT_DESC)
+            E_detach_fd(ses->sk, EXCEPT_FD);
 
-	if(ses->fd_flags & WRITE_DESC)
-	    E_detach_fd(ses->sk, WRITE_FD);
+        if(ses->fd_flags & WRITE_DESC)
+            E_detach_fd(ses->sk, WRITE_FD);
 
 
-	while(!stdcarr_empty(&ses->rel_deliver_buff)) {
-	    stdcarr_begin(&ses->rel_deliver_buff, &c_it);
+        while(!stdcarr_empty(&ses->rel_deliver_buff)) {
+            stdcarr_begin(&ses->rel_deliver_buff, &c_it);
 
-	    u_cell = *((UDP_Cell **)stdcarr_it_val(&c_it));
-	    buff = u_cell->buff;
+            u_cell = *((UDP_Cell **)stdcarr_it_val(&c_it));
+            buff = u_cell->buff;
 
-	    dec_ref_cnt(buff);
-	    dispose(u_cell);
-	    stdcarr_pop_front(&ses->rel_deliver_buff);
-	}
-	stdcarr_destruct(&ses->rel_deliver_buff);
+            dec_ref_cnt(buff);
+            dispose(u_cell);
+            stdcarr_pop_front(&ses->rel_deliver_buff);
+        }
+        stdcarr_destruct(&ses->rel_deliver_buff);
 
-	stdhash_find(&Sessions_Sock, &it, &ses->sk);
-	if(!stdhash_is_end(&Sessions_Sock, &it)) {
-	    stdhash_erase(&Sessions_Sock, &it);
-	}
+        stdhash_find(&Sessions_Sock, &it, &ses->sk);
+        if(!stdhash_is_end(&Sessions_Sock, &it)) {
+            stdhash_erase(&Sessions_Sock, &it);
+        }
     }
 
     /* Dispose the receiving buffer */
     if(ses->data != NULL) {
-	dec_ref_cnt(ses->data);
-	ses->data = NULL;
+        dec_ref_cnt(ses->data);
+        ses->data = NULL;
     }
 
     /* Dispose all the incomplete fragmented packets */
     while(ses->frag_pkts != NULL) {
-	frag_pkt = ses->frag_pkts;
-	ses->frag_pkts = ses->frag_pkts->next;
-	for(i=0; i<frag_pkt->scat.num_elements; i++) {
-	    if(frag_pkt->scat.elements[i].buf != NULL) {
-		dec_ref_cnt(frag_pkt->scat.elements[i].buf);
-	    }
-	}
-	dispose(frag_pkt);
+        frag_pkt = ses->frag_pkts;
+        ses->frag_pkts = ses->frag_pkts->next;
+        for(i=0; i<frag_pkt->scat.num_elements; i++) {
+            if(frag_pkt->scat.elements[i].buf != NULL) {
+                dec_ref_cnt(frag_pkt->scat.elements[i].buf);
+            }
+        }
+        dispose(frag_pkt);
     }
 
     /* Remove the reliability data structures */
     if(ses->r_data != NULL) {
-	Close_Reliable_Session(ses);
-	ses->r_data = NULL;
+        Close_Reliable_Session(ses);
+        ses->r_data = NULL;
     }
 
     /* Leave all the groups */
     stdhash_begin(&ses->joined_groups, &it);
     while(!stdhash_is_end(&ses->joined_groups, &it)) {
-	g_state = *((Group_State **)stdhash_it_val(&it));
-	/*Alarm(DEBUG, "Disconnect; Leaving group: %d.%d.%d.%d == %d\n",
-	*/
+        g_state = *((Group_State **)stdhash_it_val(&it));
+        /*Alarm(DEBUG, "Disconnect; Leaving group: %d.%d.%d.%d == %d\n",
+        */
         Alarm(PRINT, "Disconnect; Leaving group: %d.%d.%d.%d == %d\n",
-	      IP1(g_state->mcast_gid), IP2(g_state->mcast_gid),
-	      IP3(g_state->mcast_gid), IP4(g_state->mcast_gid), cnt);
-	Leave_Group(g_state->mcast_gid, ses);
-	cnt++;
-	if(cnt > 10) {
-	    /* Too many groups to leave at once. Queue the function again  */
-	    E_queue(Try_Close_Session, (int)ses->sess_id, NULL, zero_timeout);
-	    return;
-	}
+              IP1(g_state->mcast_gid), IP2(g_state->mcast_gid),
+              IP3(g_state->mcast_gid), IP4(g_state->mcast_gid), cnt);
+        Leave_Group(g_state->mcast_gid, ses);
+        cnt++;
+        if(cnt > 10) {
+            /* Too many groups to leave at once. Queue the function again  */
+            E_queue(Try_Close_Session, (int)ses->sess_id, NULL, zero_timeout);
+            return;
+        }
         stdhash_begin(&ses->joined_groups, &it);
     }
 
@@ -820,34 +871,34 @@ void Session_Close(int sesid, int reason)
 
     stdhash_find(&Sessions_ID, &it, &(ses->sess_id));
     if(!stdhash_is_end(&Sessions_ID, &it)) {
-	stdhash_erase(&Sessions_ID, &it);
+        stdhash_erase(&Sessions_ID, &it);
     }
     else {
-	Alarm(EXIT, "Session_Close(): invalid ID\n");
+        Alarm(EXIT, "Session_Close(): invalid ID\n");
     }
 
     if(reason != PORT_IN_USE){
-	dummy_port = (int32)ses->port;
-	if(dummy_port != 0) {
-	    stdhash_find(&Sessions_Port, &it, &dummy_port);
-	    if(!stdhash_is_end(&Sessions_Port, &it)) {
-		stdhash_erase(&Sessions_Port, &it);
-	    }
-	}
+        dummy_port = (int32)ses->port;
+        if(dummy_port != 0) {
+            stdhash_find(&Sessions_Port, &it, &dummy_port);
+            if(!stdhash_is_end(&Sessions_Port, &it)) {
+                stdhash_erase(&Sessions_Port, &it);
+            }
+        }
     }
 
     if(ses->client_stat != SES_CLIENT_ORPHAN) {
-	/* Close the socket (now we can, since we won't access the session by socket) */
-	Alarm(PRINT, "Session_Close: closing channel: %d\n", ses->sk);
-	DL_close_channel(ses->sk);
-	DL_close_channel(ses->ctrl_sk);
-	Alarm(PRINT, "session closed: %d\n", ses->sk);
+        /* Close the socket (now we can, since we won't access the session by socket) */
+        Alarm(PRINT, "Session_Close: closing channel: %d\n", ses->sk);
+        DL_close_channel(ses->sk);
+        DL_close_channel(ses->ctrl_sk);
+        Alarm(PRINT, "session closed: %d\n", ses->sk);
     }
 
     if(ses->recv_fd_flag == 1) {
-	if(ses->fd != -1) {
-	    close(ses->fd);
-	}
+        if(ses->fd != -1) {
+            close(ses->fd);
+        }
     }
 
     /* Dispose the session */
@@ -881,7 +932,7 @@ void Try_Close_Session(int sesid, void *dummy)
 
     stdhash_find(&Sessions_ID, &it, &sesid);
     if(stdhash_is_end(&Sessions_ID, &it)) {
-	return;
+        return;
     }
     ses = *((Session **)stdhash_it_val(&it));
 
@@ -910,13 +961,27 @@ int Process_Session_Packet(Session *ses)
     udp_header *hdr;
     udp_header *cmd;
     int32 *cmd_int, *pkt_len;
-    int ret, tot_bytes;
-    int32 dummy_port, dest_addr;
-    stdit it;
+    int ret, tot_bytes, routing, prot_sig_len = 0;
+    int msg_size_avail = MAX_MESSAGE_SIZE;
+    unsigned int sign_len;
+    int32 dummy_port, dest_addr, src_id, dst_id;
+    stdit it, ip_it;
     int32 *type;
     Lk_Param lkp;
     spines_trace *spines_tr;
-    char *buf;
+    char *buf, *read_ptr;
+    sys_scatter *scat;
+    unsigned char temp_ttl;
+    unsigned char temp_path[8];
+    unsigned char *path = NULL, *sign_ptr;
+    int i, remaining, link_overhead, paths;
+    packet_header *phdr;
+    sp_time now;
+    prio_flood_header *f_hdr;
+    rel_flood_header *r_hdr;
+    rel_flood_tail    *rt;
+    EVP_MD_CTX md_ctx;
+    Session *ses_seek;
 
     /* Process the packet */
     hdr = (udp_header*)(ses->data);
@@ -926,359 +991,414 @@ int Process_Session_Packet(Session *ses)
     cmd_int = (int32*)(ses->data + sizeof(udp_header)+sizeof(int32));
 
     if((hdr->len == 0) && (hdr->source == 0) && (hdr->dest == 0)) {
-	/* Session command */
-	type = (int32*)(ses->data + sizeof(udp_header));
-	if(!Same_endian(ses->endianess_type)) {
-	    *type = Flip_int32(*type);
-	}
+        /* Session command */
+        type = (int32*)(ses->data + sizeof(udp_header));
+        if(!Same_endian(ses->endianess_type)) {
+            *type = Flip_int32(*type);
+        }
 
-	if(*type == BIND_TYPE_MSG) {
-	    /* spines_bind() */
+        if(*type == BIND_TYPE_MSG) {
+            /* spines_bind() */
 
-	    cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
-	    if(!Same_endian(ses->endianess_type)) {
-		Flip_udp_hdr(cmd);
-	    }
+            cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
+            if(!Same_endian(ses->endianess_type)) {
+                Flip_udp_hdr(cmd);
+            }
 
-	    if(cmd->dest_port == 0) {
-		Alarm(PRINT, "\n!!! Session: you cannot bind on port 0 (zero)\n");
-		Session_Close(ses->sess_id, PORT_IN_USE);
-		return(NO_BUFF);
-	    }
-	    if(ses->type == LISTEN_SES_TYPE) {
-		Alarm(PRINT, "Cannot bind on a listen session\n");
-		Session_Close(ses->sess_id, SES_DISCONNECT);
-		return(NO_BUFF);
-	    }
-	    if(ses->r_data != NULL) {
-		Alarm(PRINT, "\n!!! spines_bind(): session already connected\n");
-		Session_Close(ses->sess_id, SES_DISCONNECT);
-		return(NO_BUFF);
-	    }
+            if(cmd->dest_port == 0) {
+                Alarm(PRINT, "\n!!! Session: you cannot bind on port 0 (zero)\n");
+                Session_Close(ses->sess_id, PORT_IN_USE);
+                return(NO_BUFF);
+            }
+            if(ses->type == LISTEN_SES_TYPE) {
+                Alarm(PRINT, "Cannot bind on a listen session\n");
+                Session_Close(ses->sess_id, SES_DISCONNECT);
+                return(NO_BUFF);
+            }
+            if(ses->r_data != NULL) {
+                Alarm(PRINT, "\n!!! spines_bind(): session already connected\n");
+                Session_Close(ses->sess_id, SES_DISCONNECT);
+                return(NO_BUFF);
+            }
 
 
-	    /* Check whether the port is already used */
-	    dummy_port = cmd->dest_port;
-	    stdhash_find(&Sessions_Port, &it, &dummy_port);
-	    if(!stdhash_is_end(&Sessions_Port, &it)) {
-		Alarm(PRINT, "\n!!! Process_Session_Packet(): port already exists\n");
-		Session_Close(ses->sess_id, PORT_IN_USE);
-		return(NO_BUFF);
-	    }
+            /* Check whether the port is already used */
+            dummy_port = cmd->dest_port;
+            stdhash_find(&Sessions_Port, &it, &dummy_port);
+            if(!stdhash_is_end(&Sessions_Port, &it)) {
+                Alarm(PRINT, "\n!!! Process_Session_Packet(): port already exists\n");
+                Session_Close(ses->sess_id, PORT_IN_USE);
+                return(NO_BUFF);
+            }
 
-	    /* release the current port of the session */
-	    dummy_port = ses->port;
-	    stdhash_find(&Sessions_Port, &it, &dummy_port);
-	    if(stdhash_is_end(&Sessions_Port, &it)) {
-		Alarm(EXIT, "BIND: session does not have a port\n");
-	    }
-	    stdhash_erase(&Sessions_Port, &it);
+            /* release the current port of the session */
+            dummy_port = ses->port;
+            stdhash_find(&Sessions_Port, &it, &dummy_port);
+            if(stdhash_is_end(&Sessions_Port, &it)) {
+                Alarm(EXIT, "BIND: session does not have a port\n");
+            }
+            stdhash_erase(&Sessions_Port, &it);
 
-	    ses->port = cmd->dest_port;
-	    dummy_port = cmd->dest_port;
-	    stdhash_insert(&Sessions_Port, &it, &dummy_port, &ses);
+            ses->port = cmd->dest_port;
+            dummy_port = cmd->dest_port;
+            stdhash_insert(&Sessions_Port, &it, &dummy_port, &ses);
 
-	    if(ses->udp_port != -1) {
-		Ses_Send_ID(ses);
-	    }
+            if(ses->udp_port != -1) {
+                Ses_Send_ID(ses);
+            }
 
-	    Alarm(PRINT, "Accepted bind for port: %d\n", dummy_port);
+            Alarm(PRINT, "Accepted bind for port: %d\n", dummy_port);
 
-	    ses->read_len = sizeof(int32);
-	    ses->partial_len = 0;
-	    ses->state = READY_LEN;
-	    return(BUFF_EMPTY);
-	}
-	else if(*type == CONNECT_TYPE_MSG) {
-	    /* spines_connect() */
+            ses->read_len = sizeof(int32);
+            ses->partial_len = 0;
+            ses->state = READY_LEN;
+            return(BUFF_EMPTY);
+        }
+        else if(*type == CONNECT_TYPE_MSG) {
+            /* spines_connect() */
 
-	    if(ses->r_data != NULL) {
-		Alarm(PRINT, "\n!!! spines_connect(): session already connected\n");
-		Session_Close(ses->sess_id, SES_DISCONNECT);
-		return(NO_BUFF);
-	    }
-	    if(ses->type == LISTEN_SES_TYPE) {
-		Alarm(PRINT, "Listen session\n");
-		Session_Close(ses->sess_id, SES_DISCONNECT);
-		return(NO_BUFF);
-	    }
+            if(ses->r_data != NULL) {
+                Alarm(PRINT, "\n!!! spines_connect(): session already connected\n");
+                Session_Close(ses->sess_id, SES_DISCONNECT);
+                return(NO_BUFF);
+            }
+            if(ses->type == LISTEN_SES_TYPE) {
+                Alarm(PRINT, "Listen session\n");
+                Session_Close(ses->sess_id, SES_DISCONNECT);
+                return(NO_BUFF);
+            }
 
-	    cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
-	    if(!Same_endian(ses->endianess_type)) {
-		Flip_udp_hdr(cmd);
-	    }
+            cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
+            if(!Same_endian(ses->endianess_type)) {
+                Flip_udp_hdr(cmd);
+            }
 
-	    if((cmd->dest & 0xF0000000) == 0xE0000000) {
-		/* Multicast address */
-		Alarm(PRINT, "Error: Connect to a Multicast address\n");
-	    }
-	    else {
-		/* Reliable Connect */
-		ret = Init_Reliable_Connect(ses, cmd->dest, cmd->dest_port);
+            if((cmd->dest & 0xF0000000) == 0xE0000000) {
+                /* Multicast address */
+                Alarm(PRINT, "Error: Connect to a Multicast address\n");
+            }
+            else {
+                /* Reliable Connect */
+                ret = Init_Reliable_Connect(ses, cmd->dest, cmd->dest_port);
 
-		if(ret == -1) {
-		    Alarm(PRINT, "Session_Read(): No ports available\n");
-		    Session_Close(ses->sess_id, SES_DISCONNECT);
-		    return(NO_BUFF);
-		}
-	    }
-	    ses->read_len = sizeof(int32);
-	    ses->partial_len = 0;
-	    ses->state = READY_LEN;
-	    return(BUFF_EMPTY);
-	}
-	else if(*type == LISTEN_TYPE_MSG) {
-	    /* spines_listen() */
-	    if(ses->r_data != NULL) {
-		Alarm(PRINT, "\n!!! spines_listen(): session already connected\n");
-		Session_Close(ses->sess_id, SES_DISCONNECT);
-		return(NO_BUFF);
-	    }
-	    if(ses->type == LISTEN_SES_TYPE) {
-		Alarm(PRINT, "This session already listens\n");
-		Session_Close(ses->sess_id, SES_DISCONNECT);
-		return(NO_BUFF);
-	    }
+                if(ret == -1) {
+                    Alarm(PRINT, "Session_Read(): No ports available\n");
+                    Session_Close(ses->sess_id, SES_DISCONNECT);
+                    return(NO_BUFF);
+                }
+            }
+            ses->read_len = sizeof(int32);
+            ses->partial_len = 0;
+            ses->state = READY_LEN;
+            return(BUFF_EMPTY);
+        }
+        else if(*type == LISTEN_TYPE_MSG) {
+            /* spines_listen() */
+            if(ses->r_data != NULL) {
+                Alarm(PRINT, "\n!!! spines_listen(): session already connected\n");
+                Session_Close(ses->sess_id, SES_DISCONNECT);
+                return(NO_BUFF);
+            }
+            if(ses->type == LISTEN_SES_TYPE) {
+                Alarm(PRINT, "This session already listens\n");
+                Session_Close(ses->sess_id, SES_DISCONNECT);
+                return(NO_BUFF);
+            }
 
-	    ses->type = LISTEN_SES_TYPE;
+            ses->type = LISTEN_SES_TYPE;
 
-	    ses->read_len = sizeof(int32);
-	    ses->partial_len = 0;
-	    ses->state = READY_LEN;
-	    return(BUFF_EMPTY);
-	}
-	else if(*type == LINKS_TYPE_MSG) {
-	    /* spines_socket() */
-	    ses->links_used = *cmd_int;
-	    ses->rnd_num  = *(cmd_int+1);
-	    ses->udp_addr = *(cmd_int+2);
-	    ses->udp_port = *(cmd_int+3);
-	    if(!Same_endian(ses->endianess_type)) {
-		ses->links_used = Flip_int32(ses->links_used);
-		ses->rnd_num  = Flip_int32(ses->rnd_num);
-		ses->udp_addr = Flip_int32(ses->udp_addr);
-		ses->udp_port = Flip_int32(ses->udp_port);
-	    }
-	    ses->seq_no   = ses->rnd_num%MAX_PKT_SEQ;
+            ses->read_len = sizeof(int32);
+            ses->partial_len = 0;
+            ses->state = READY_LEN;
+            return(BUFF_EMPTY);
+        }
+        else if(*type == LINKS_TYPE_MSG) {
+            /* spines_socket() */
+            ses->links_used = *cmd_int;
+            ses->routing_used = *(cmd_int+1);
+            ses->rnd_num  = *(cmd_int+2);
+            ses->udp_addr = *(cmd_int+3);
+            ses->udp_port = *(cmd_int+4);
+            if(!Same_endian(ses->endianess_type)) {
+                ses->links_used = Flip_int32(ses->links_used);
+                ses->rnd_num  = Flip_int32(ses->rnd_num);
+                ses->udp_addr = Flip_int32(ses->udp_addr);
+                ses->udp_port = Flip_int32(ses->udp_port);
+            }
+            ses->seq_no   = ses->rnd_num%MAX_PKT_SEQ;
 
-	    Ses_Send_ID(ses);
+            if ( ses->links_used != INTRUSION_TOL_LINKS &&
+                (ses->routing_used == BEST_EFFORT_FLOOD_ROUTING ||
+                 ses->routing_used == RELIABLE_FLOOD_ROUTING))
+            {
+                Alarm(PRINT, "Cannot support this choice of dissemination (%u) and"
+                                " link (%u) protocols\n", 
+                                ses->routing_used >> ROUTING_BITS_SHIFT, 
+                                ses->links_used);
+                Session_Close(ses->sess_id, SES_DISCONNECT);
+                return(NO_BUFF);
+            }
 
-	    ses->read_len = sizeof(int32);
-	    ses->partial_len = 0;
-	    ses->state = READY_LEN;
-	    return(BUFF_EMPTY);
-	}
-	else if(*type == SETLINK_TYPE_MSG) {
-	    /* spines_setloss() */
+            if (Config_File_Found == 0 && 
+                    (ses->links_used == INTRUSION_TOL_LINKS ||
+                    ses->routing_used == BEST_EFFORT_FLOOD_ROUTING ||
+                    ses->routing_used == RELIABLE_FLOOD_ROUTING) )
+            {
+                Alarm(PRINT, "Cannot support this choice of dissemination (%u) and"
+                                " link (%u) protocols without Configuration File\n", 
+                                ses->routing_used >> ROUTING_BITS_SHIFT, 
+                                ses->links_used);
+                Session_Close(ses->sess_id, SES_DISCONNECT);
+                return(NO_BUFF);
+            }
 
-	    if(Accept_Monitor == 1) {
-	        Network_Leg_ID lid;
+            Ses_Send_ID(ses);
 
-		cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
+            ses->read_len = sizeof(int32);
+            ses->partial_len = 0;
+            ses->state = READY_LEN;
+            return(BUFF_EMPTY);
+        }
+        else if(*type == SETLINK_TYPE_MSG) {
+            /* spines_setloss() */
 
-		memset(&lkp, 0, sizeof(lkp));
+            if(Accept_Monitor == 1) {
+                Network_Leg_ID lid;
 
-		lkp.bandwidth  = *(int32*)(ses->data + 2 * sizeof(udp_header) + 1 * sizeof(int32));
-		lkp.delay.usec = *(int32*)(ses->data + 2 * sizeof(udp_header) + 2 * sizeof(int32));
-		lkp.loss_rate  = *(int32*)(ses->data + 2 * sizeof(udp_header) + 3 * sizeof(int32));
-		lkp.burst_rate = *(int32*)(ses->data + 2 * sizeof(udp_header) + 4 * sizeof(int32));
-		
-		if(!Same_endian(ses->endianess_type)) {
-		    Flip_udp_hdr(cmd);
-		    lkp.bandwidth  = Flip_int32(lkp.bandwidth);
-		    lkp.delay.usec = Flip_int32(lkp.delay.usec);
-		    lkp.loss_rate  = Flip_int32(lkp.loss_rate);
-		    lkp.burst_rate = Flip_int32(lkp.burst_rate);
-		}
+                cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
 
-		/* Delay is given in milliseconds */
+                memset(&lkp, 0, sizeof(lkp));
 
-		lkp.delay.usec   *= 1000;
+                lkp.bandwidth  = *(int32*)(ses->data + 2 * sizeof(udp_header) + 1 * sizeof(int32));
+                lkp.delay.usec = *(int32*)(ses->data + 2 * sizeof(udp_header) + 2 * sizeof(int32));
+                lkp.loss_rate  = *(int32*)(ses->data + 2 * sizeof(udp_header) + 3 * sizeof(int32));
+                lkp.burst_rate = *(int32*)(ses->data + 2 * sizeof(udp_header) + 4 * sizeof(int32));
+                
+                if(!Same_endian(ses->endianess_type)) {
+                    Flip_udp_hdr(cmd);
+                    lkp.bandwidth  = Flip_int32(lkp.bandwidth);
+                    lkp.delay.usec = Flip_int32(lkp.delay.usec);
+                    lkp.loss_rate  = Flip_int32(lkp.loss_rate);
+                    lkp.burst_rate = Flip_int32(lkp.burst_rate);
+                }
 
-		lkp.delay.sec     = lkp.delay.usec / 1000000;
-		lkp.delay.usec    = lkp.delay.usec % 1000000;
+                /* Delay is given in milliseconds */
 
-		lkp.was_loss      = 0;
+                lkp.delay.usec   *= 1000;
 
-		lkp.bucket        = BWTH_BUCKET;
-		lkp.last_time_add = E_get_time();
+                lkp.delay.sec     = lkp.delay.usec / 1000000;
+                lkp.delay.usec    = lkp.delay.usec % 1000000;
 
-		Alarm(PRINT, "\nSetting leg params(" IPF " -> " IPF "): bandwidth: %d; latency: %d; loss: %d; burst: %d; was_loss %d\n\n",
-		      IP(cmd->source), IP(cmd->dest), lkp.bandwidth, lkp.delay.usec, lkp.loss_rate, lkp.burst_rate, lkp.was_loss);
+                lkp.was_loss      = 0;
 
-		memset(&lid, 0, sizeof(lid));
-		lid.src_interf_id = cmd->source;
-		lid.dst_interf_id = cmd->dest;
+                lkp.bucket        = BWTH_BUCKET;
+                lkp.last_time_add = E_get_time();
 
-		stdhash_erase_key(&Monitor_Params, &lid);
+                Alarm(PRINT, "\nSetting leg params(" IPF " -> " IPF "): bandwidth: %d; latency: %d; loss: %d; burst: %d; was_loss %d\n\n",
+                      IP(cmd->source), IP(cmd->dest), lkp.bandwidth, lkp.delay.usec, lkp.loss_rate, lkp.burst_rate, lkp.was_loss);
 
-		if (lkp.bandwidth > 0 || lkp.delay.sec > 0 || lkp.delay.usec > 0 || lkp.loss_rate > 0) {
+                memset(&lid, 0, sizeof(lid));
+                lid.src_interf_id = cmd->source;
+                lid.dst_interf_id = cmd->dest;
 
-		  if (stdhash_insert(&Monitor_Params, &it, &lid, &lkp) != 0) {
-		    Alarm(EXIT, "Couldn't insert into Monitor_Params!\r\n");
-		  }
-		}
-	    }
+                stdhash_erase_key(&Monitor_Params, &lid);
 
-	    return(BUFF_EMPTY);
-	}
-	else if(*type == FLOOD_SEND_TYPE_MSG) {
-	    /* spines_flood_send() */
-	    ses->Sendto_address = *(int32*)(ses->data + sizeof(udp_header)+sizeof(int32));
-	    ses->Sendto_port = *(int32*)(ses->data + sizeof(udp_header)+2*sizeof(int32));
-	    ses->Rate        = *(int32*)(ses->data + sizeof(udp_header)+3*sizeof(int32));
-	    ses->Packet_size = *(int32*)(ses->data + sizeof(udp_header)+4*sizeof(int32));
-	    ses->Num_packets = *(int32*)(ses->data + sizeof(udp_header)+5*sizeof(int32));
-	    ses->Sent_packets = 0;
-	    ses->Start_time = E_get_time();
-	    if(!Same_endian(ses->endianess_type)) {
-		ses->Sendto_address = Flip_int32(ses->Sendto_address);
-		ses->Sendto_port = Flip_int32(ses->Sendto_port);
-		ses->Rate        = Flip_int32(ses->Rate);
-		ses->Packet_size = Flip_int32(ses->Packet_size);
-		ses->Num_packets = Flip_int32(ses->Num_packets);
-	    }
+                if (lkp.bandwidth > 0 || lkp.delay.sec > 0 || lkp.delay.usec > 0 || lkp.loss_rate > 0) {
 
-	    Session_Flooder_Send(ses->sess_id, NULL);
+                  if (stdhash_insert(&Monitor_Params, &it, &lid, &lkp) != 0) {
+                    Alarm(EXIT, "Couldn't insert into Monitor_Params!\r\n");
+                  }
+                }
+            }
 
-	    return(BUFF_EMPTY);
-	}
-	else if(*type == FLOOD_RECV_TYPE_MSG) {
-	    /* spines_flood_recv() */
-	    ses->recv_fd_flag = 1;
+            return(BUFF_EMPTY);
+        }
+        else if (*type == SETDISSEM_TYPE_MSG) {
+            cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
+
+            if (!Same_endian(ses->endianess_type)) {
+                Flip_udp_hdr(cmd);
+            }
+
+            paths = *(int32*)(ses->data + 2*sizeof(udp_header) + sizeof(int32));
+            if (paths < 0 || paths > 4) {
+                Alarm(PRINT, "Cannot change to unsupported dissemination number" 
+                                " of paths: %d\r\n", paths);
+                return(BUFF_EMPTY); 
+            }
+
+            /* For all the data sessions connected to this daemon, switch them
+             *      to the new # of paths (or flooding) */
+            stdhash_begin(&Sessions_ID, &it);
+            while (!stdhash_is_end(&Sessions_ID, &it)) {
+                ses_seek = *((Session **)stdhash_it_val(&it));
+                ses_seek->disjoint_paths = (int16u)paths; 
+                stdhash_it_next(&it);
+            }
+
+            overwrite_ip = *(int32*)(ses->data + 2*sizeof(udp_header) + 2*sizeof(int32));
+
+            Alarm(PRINT, "Changed number of paths in dissemination to %d\r\n", paths);
+            return(BUFF_EMPTY);
+
+        }
+        else if(*type == FLOOD_SEND_TYPE_MSG) {
+            /* spines_flood_send() */
+            ses->Sendto_address = *(int32*)(ses->data + sizeof(udp_header)+sizeof(int32));
+            ses->Sendto_port = *(int32*)(ses->data + sizeof(udp_header)+2*sizeof(int32));
+            ses->Rate        = *(int32*)(ses->data + sizeof(udp_header)+3*sizeof(int32));
+            ses->Packet_size = *(int32*)(ses->data + sizeof(udp_header)+4*sizeof(int32));
+            ses->Num_packets = *(int32*)(ses->data + sizeof(udp_header)+5*sizeof(int32));
+            ses->Sent_packets = 0;
+            ses->Start_time = E_get_time();
+            if(!Same_endian(ses->endianess_type)) {
+                ses->Sendto_address = Flip_int32(ses->Sendto_address);
+                ses->Sendto_port = Flip_int32(ses->Sendto_port);
+                ses->Rate        = Flip_int32(ses->Rate);
+                ses->Packet_size = Flip_int32(ses->Packet_size);
+                ses->Num_packets = Flip_int32(ses->Num_packets);
+            }
+
+            Session_Flooder_Send(ses->sess_id, NULL);
+
+            return(BUFF_EMPTY);
+        }
+        else if(*type == FLOOD_RECV_TYPE_MSG) {
+            /* spines_flood_recv() */
+            ses->recv_fd_flag = 1;
 #ifdef ARCH_PC_WIN95
-		ses->fd   = 0;
-		printf("Error on windows:  flooding not supported\r\n");
-		//ses->fd = _open(ses->data+sizeof(udp_header)+2*sizeof(int32), _O_WRONLY|_O_CREAT|_O_TRUNC, _S_IREAD | _S_IWRITE);
+                ses->fd   = 0;
+                printf("Error on windows:  flooding not supported\r\n");
+                //ses->fd = _open(ses->data+sizeof(udp_header)+2*sizeof(int32), _O_WRONLY|_O_CREAT|_O_TRUNC, _S_IREAD | _S_IWRITE);
 #else
-		ses->fd = open(ses->data+sizeof(udp_header)+2*sizeof(int32), O_WRONLY|O_CREAT|O_TRUNC, 00666);
+                ses->fd = open(ses->data+sizeof(udp_header)+2*sizeof(int32), O_WRONLY|O_CREAT|O_TRUNC, 00666);
 #endif
-	    
-	    if(ses->fd == -1) {
-		Session_Close(ses->sess_id, SES_BUFF_FULL);
-	    }
-	    return(BUFF_EMPTY);
-	}
-	else if(*type == ACCEPT_TYPE_MSG) {
-	    /* spines_accept() */
-	    if(ses->r_data != NULL) {
+            
+            if(ses->fd == -1) {
+                Session_Close(ses->sess_id, SES_BUFF_FULL);
+            }
+            return(BUFF_EMPTY);
+        }
+        else if(*type == ACCEPT_TYPE_MSG) {
+            /* spines_accept() */
+            if(ses->r_data != NULL) {
 
-		Alarm(PRINT, "\n!!! spines_accept(): session already connected\n");
-		Session_Close(ses->sess_id, SES_DISCONNECT);
-		return(NO_BUFF);
-	    }
+                Alarm(PRINT, "\n!!! spines_accept(): session already connected\n");
+                Session_Close(ses->sess_id, SES_DISCONNECT);
+                return(NO_BUFF);
+            }
 
-	    cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
-	    if(!Same_endian(ses->endianess_type)) {
-		Flip_udp_hdr(cmd);
-	    }
+            cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
+            if(!Same_endian(ses->endianess_type)) {
+                Flip_udp_hdr(cmd);
+            }
 
 
-	    ret = Accept_Rel_Session(ses, cmd, ses->data+2*sizeof(udp_header)+sizeof(int32));
+            ret = Accept_Rel_Session(ses, cmd, ses->data+2*sizeof(udp_header)+sizeof(int32));
 
-	    ses->read_len = sizeof(int32);
-	    ses->partial_len = 0;
-	    ses->state = READY_LEN;
-	    return(BUFF_EMPTY);
-	}
-	else if(*type == JOIN_TYPE_MSG) {
-	    /* spines_join() for spines_setsockopt() */
-	    if(ses->r_data != NULL) {
-		Alarm(PRINT, "\n!!! spines_join(): session already connected\n");
+            ses->read_len = sizeof(int32);
+            ses->partial_len = 0;
+            ses->state = READY_LEN;
+            return(BUFF_EMPTY);
+        }
+        else if(*type == JOIN_TYPE_MSG) {
+            /* spines_join() for spines_setsockopt() */
+            if(ses->r_data != NULL) {
+                Alarm(PRINT, "\n!!! spines_join(): session already connected\n");
                 Session_Close(ses->sess_id, SES_DISCONNECT); 
-		return(NO_BUFF);
-	    }
-	    if(ses->type == LISTEN_SES_TYPE) {
-		Alarm(PRINT, "Cannot join on a listen session\n");
-		Session_Close(ses->sess_id, SES_DISCONNECT);
-		return(NO_BUFF);
-	    }
+                return(NO_BUFF);
+            }
+            if(ses->type == LISTEN_SES_TYPE) {
+                Alarm(PRINT, "Cannot join on a listen session\n");
+                Session_Close(ses->sess_id, SES_DISCONNECT);
+                return(NO_BUFF);
+            }
 
-	    cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
-	    if(!Same_endian(ses->endianess_type)) {
-		Flip_udp_hdr(cmd);
-	    }
-	    dest_addr = cmd->dest;
+            cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
+            if(!Same_endian(ses->endianess_type)) {
+                Flip_udp_hdr(cmd);
+            }
+            dest_addr = cmd->dest;
 
-	    ret = Join_Group(dest_addr, ses);
-	    if(ret < 0) {
-		Session_Close(ses->sess_id, SES_DISCONNECT);
-		return(NO_BUFF);
-	    }
+            ret = Join_Group(dest_addr, ses);
+            if(ret < 0) {
+                Session_Close(ses->sess_id, SES_DISCONNECT);
+                return(NO_BUFF);
+            }
 
-	    ses->read_len = sizeof(int32);
-	    ses->partial_len = 0;
-	    ses->state = READY_LEN;
-	    return(BUFF_EMPTY);
-	}
-	else if(*type == LEAVE_TYPE_MSG) {
-	    /* spines_leave() for spines_setsockopt() */
-	    if(ses->r_data != NULL) {
-		Alarm(PRINT, "\n!!! spines_leave(): session already connected\n");
-		Session_Close(ses->sess_id, SES_DISCONNECT);
-		return(NO_BUFF);
-	    }
-	    if(ses->type == LISTEN_SES_TYPE) {
-		Alarm(PRINT, "Cannot leave on a listen session\n");
-		Session_Close(ses->sess_id, SES_DISCONNECT);
-		return(NO_BUFF);
-	    }
+            ses->read_len = sizeof(int32);
+            ses->partial_len = 0;
+            ses->state = READY_LEN;
+            return(BUFF_EMPTY);
+        }
+        else if(*type == LEAVE_TYPE_MSG) {
+            /* spines_leave() for spines_setsockopt() */
+            if(ses->r_data != NULL) {
+                Alarm(PRINT, "\n!!! spines_leave(): session already connected\n");
+                Session_Close(ses->sess_id, SES_DISCONNECT);
+                return(NO_BUFF);
+            }
+            if(ses->type == LISTEN_SES_TYPE) {
+                Alarm(PRINT, "Cannot leave on a listen session\n");
+                Session_Close(ses->sess_id, SES_DISCONNECT);
+                return(NO_BUFF);
+            }
 
-	    cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
-	    if(!Same_endian(ses->endianess_type)) {
-		Flip_udp_hdr(cmd);
-	    }
-	    dest_addr = cmd->dest;
-	    Alarm(PRINT,"LEAVE_TYPE_MESSAGE\n");
-	    ret = Leave_Group(dest_addr, ses);
-	    if(ret < 0) {
-		Session_Close(ses->sess_id, SES_DISCONNECT);
-		return(NO_BUFF);
-	    }
+            cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
+            if(!Same_endian(ses->endianess_type)) {
+                Flip_udp_hdr(cmd);
+            }
+            dest_addr = cmd->dest;
+            Alarm(PRINT,"LEAVE_TYPE_MESSAGE\n");
+            ret = Leave_Group(dest_addr, ses);
+            if(ret < 0) {
+                Session_Close(ses->sess_id, SES_DISCONNECT);
+                return(NO_BUFF);
+            }
 
-	    ses->read_len = sizeof(int32);
-	    ses->partial_len = 0;
-	    ses->state = READY_LEN;
-	    return(BUFF_EMPTY);
-	}
-	else if(*type == LOOP_TYPE_MSG) {
-	    cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
-	    if(!Same_endian(ses->endianess_type)) {
-		Flip_udp_hdr(cmd);
-	    }
-	    ses->multicast_loopback = (char)(cmd->dest);
-	    return(BUFF_EMPTY);
+            ses->read_len = sizeof(int32);
+            ses->partial_len = 0;
+            ses->state = READY_LEN;
+            return(BUFF_EMPTY);
+        }
+        else if(*type == LOOP_TYPE_MSG) {
+            cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
+            if(!Same_endian(ses->endianess_type)) {
+                Flip_udp_hdr(cmd);
+            }
+            ses->multicast_loopback = (char)(cmd->dest);
+            return(BUFF_EMPTY);
         }
 #if 0
-	else if(*type == ADD_NEIGHBOR_MSG) {
+        else if(*type == ADD_NEIGHBOR_MSG) {
 
-	  TODO FIX ME to include network address, interface id, etc.
+          TODO FIX ME to include network address, interface id, etc.
 
-	    /* spines_add_neighbor() for spines_ioctl() */
-	    cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
-	    if(!Same_endian(ses->endianess_type)) {
-		Flip_udp_hdr(cmd);
-	    }
-	    dest_addr = cmd->dest; 
-	    /* Fake a hello ping to initialize connection */ 
-	    Process_hello_ping_packet(cmd->dest, 0);
-	    return(BUFF_EMPTY);
-	}
+            /* spines_add_neighbor() for spines_ioctl() */
+            cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
+            if(!Same_endian(ses->endianess_type)) {
+                Flip_udp_hdr(cmd);
+            }
+            dest_addr = cmd->dest; 
+            /* Fake a hello ping to initialize connection */ 
+            Process_hello_ping_packet(cmd->dest, 0);
+            return(BUFF_EMPTY);
+        }
 #endif
-	else if(*type == TRACEROUTE_TYPE_MSG || 
+        else if(*type == TRACEROUTE_TYPE_MSG || 
             *type == EDISTANCE_TYPE_MSG  || 
             *type == MEMBERSHIP_TYPE_MSG ) { 
 
-	    cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
-	    if(!Same_endian(ses->endianess_type)) {
-		Flip_udp_hdr(cmd);
-	    }
-	    dest_addr = cmd->dest;
+            cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
+            if(!Same_endian(ses->endianess_type)) {
+                Flip_udp_hdr(cmd);
+            }
+            dest_addr = cmd->dest;
 
-	    buf = (char *) new_ref_cnt(PACK_BODY_OBJ); 
-	    if(buf == NULL) { 
-		Alarm(EXIT, "Session_UDP_Read: Cannot allocate buffer\n"); 
-	    } 
+            buf = (char *) new_ref_cnt(PACK_BODY_OBJ); 
+            if(buf == NULL) { 
+                Alarm(EXIT, "Session_UDP_Read: Cannot allocate buffer\n"); 
+            } 
             pkt_len = (int32 *)(buf);
             hdr = (udp_header *)(buf + sizeof(int32));
             hdr->source = My_Address;
@@ -1290,7 +1410,7 @@ int Process_Session_Packet(Session *ses)
 
             spines_tr = (spines_trace *)( (char *)hdr + sizeof(udp_header));
             memset(spines_tr, 0, sizeof(spines_trace));
-	    if(*type == TRACEROUTE_TYPE_MSG) {
+            if(*type == TRACEROUTE_TYPE_MSG) {
                 Trace_Route(My_Address, dest_addr, spines_tr);
             } else if (*type == EDISTANCE_TYPE_MSG) {
                 Trace_Group(dest_addr, spines_tr);
@@ -1303,58 +1423,341 @@ int Process_Session_Packet(Session *ses)
             while(tot_bytes < sizeof(int32)+*pkt_len) {
                 ret = send(ses->ctrl_sk,  buf, sizeof(int32)+*pkt_len-tot_bytes, 0);
                 if (ret < 0) {
-	            if((errno == EWOULDBLOCK)||(errno == EAGAIN)) {
+                    if((errno == EWOULDBLOCK)||(errno == EAGAIN)) {
                         Alarm(PRINT, "Blocking\n");
                     } else {
                         Alarm(EXIT, "Problem sending through control socket\n");
                     }
                 }
-	        tot_bytes += ret;
+                tot_bytes += ret;
             } 
             dec_ref_cnt(buf);
             return(BUFF_EMPTY);
+    } 
+    else if (*type == PRIORITY_TYPE_MSG) {
+        cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
+        if(!Same_endian(ses->endianess_type)) {
+            Flip_udp_hdr(cmd);
         }
-	else {
-	    Alarm(PRINT, "Session unknown command: %X\n", *type);
-	    return(BUFF_EMPTY);
-	}
+        if ( (int16u)(cmd->dest) >= 1 && (int16u)(cmd->dest) <= MAX_PRIORITY ) {
+            ses->priority_lvl = (int16u)(cmd->dest);
+        }
+        return(BUFF_EMPTY);
+    }
+    else if (*type == EXPIRATION_TYPE_MSG) {
+        cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
+        if(!Same_endian(ses->endianess_type)) {
+            Flip_udp_hdr(cmd);
+        }
+        ses->expire.sec = (int32u)(cmd->source);
+        ses->expire.usec = (int32u)(cmd->dest);
+        return(BUFF_EMPTY);
+    }
+    else if (*type == DIS_PATHS_TYPE_MSG) {
+        cmd = (udp_header*)(ses->data + sizeof(udp_header)+sizeof(int32));
+        if(!Same_endian(ses->endianess_type)) {
+            Flip_udp_hdr(cmd);
+        }
+        if ( (int16u)(cmd->dest) > 0 ) {
+            ses->disjoint_paths = (int16u)(cmd->dest);
+            printf("\t\tKPATHS = %hu\n", ses->disjoint_paths);
+        }
+        return(BUFF_EMPTY);
+    }
+        else {
+            Alarm(PRINT, "Session unknown command: %X\n", *type);
+            return(BUFF_EMPTY);
+        }
     }
 
     /* Ok, this is data */
     if(ses->r_data != NULL) {
-	/* This is Reliable UDP Data */
+        /* This is Reliable UDP Data */
         /*Alarm(PRINT,"Reliable UDP Data\n");*/
-	ret = Process_Reliable_Session_Packet(ses);
-	return(ret);
+        ret = Process_Reliable_Session_Packet(ses);
+        return(ret);
     }
     else {
-	/* This is UDP Data*/
-	hdr->source      = My_Address;
-	hdr->source_port = ses->port;
+        /* This is UDP Data*/
+        hdr->source      = My_Address;
+        hdr->source_port = ses->port;
 
-	if(hdr->len + sizeof(udp_header) == ses->read_len) {
-	    return Deliver_and_Forward_Data(ses->data, ses->read_len, Get_Ses_Mode(ses->links_used), NULL);
-	}
-	else {
-	    Alarm(PRINT, "Process_Session_Packet: Packed data... not available yet\n");
-	    Alarm(PRINT, "hdr->len: %d; sizeof(udp_header): %d; ses->read_len: %d\n",
-		  hdr->len, sizeof(udp_header), ses->read_len);
-	}
+        if(hdr->len + sizeof(udp_header) == ses->read_len) {
+            
+            routing = (int) hdr->routing << ROUTING_BITS_SHIFT;
+
+            msg_size_avail -= (MAX_PKTS_PER_MESSAGE * 
+                    Link_Header_Size(Get_Ses_Mode(ses->links_used)));
+            msg_size_avail -= Dissemination_Header_Size(routing);
+
+            /* We check to make sure that it can fit in the packet body
+             * along with the original client message. If it doesn't fit, we can
+             * split the original packet and send fragments, but this requires
+             * reassembling the packet on the other side. */
+            if (ses->read_len > msg_size_avail) {
+                Alarm(PRINT, "Session: packet too big... dropping\r\n");
+                return(NO_ROUTE);
+            }
+                
+            if ((scat = (sys_scatter*) new_ref_cnt(SYS_SCATTER)) == NULL)
+                Alarm(EXIT, "Process_Session_Packet: Could not allocate sys_scatter\r\n");
+
+            if ((scat->elements[0].buf = new_ref_cnt(PACK_HEAD_OBJ)) == NULL)
+                Alarm(EXIT, "Process_Session_Packet: Could not allocate packet_header\r\n");
+
+            scat->elements[0].len = sizeof(packet_header);
+            scat->num_elements = 1;
+
+            i = 1; 
+            remaining = ses->read_len;
+            read_ptr = ses->data;
+            link_overhead = Link_Header_Size(Get_Ses_Mode(ses->links_used));
+
+            while (remaining > 0) {
+                if ((scat->elements[i].buf = new_ref_cnt(PACK_BODY_OBJ)) == NULL)
+                    Alarm(EXIT, "Process_Session_Packet: Could not allocate packet_body\r\n");
+                if (remaining + link_overhead + sizeof(fragment_header) > MAX_PACKET_SIZE) {
+                    scat->elements[i].len = MAX_PACKET_SIZE - link_overhead - sizeof(fragment_header);
+                    memcpy(scat->elements[i].buf, read_ptr, scat->elements[i].len);
+                }
+                else {
+                    scat->elements[i].len = remaining;
+                    memcpy(scat->elements[i].buf, read_ptr, remaining);
+                }
+                read_ptr += scat->elements[i].len;
+                remaining -= scat->elements[i].len;
+                scat->num_elements++;
+                i++;
+            }
+            
+            /* Setup the type field in the Spines packet_header for the signature */
+            phdr = (packet_header*) scat->elements[0].buf;
+            phdr->type = Get_Link_Data_Type(Get_Ses_Mode(ses->links_used));
+            phdr->type = Set_endian(phdr->type);
+
+            /* Reassign hdr so that it points to the copy of the udp_header that we
+             *      will be altering for the signature */
+            hdr = (udp_header*) scat->elements[1].buf;
+
+            /* If this is min weight routing, call deliver and forward, since
+             *      bitmask stamping, crypto, etc. is not needed for this 
+             *      type of routing */
+            if (routing == MIN_WEIGHT_ROUTING) {
+                /* When regular routing has crypto, this should move into the protocol.c function */
+                /* if (Conf_RR.Crypto)... */
+                return Deliver_and_Forward_Data(scat, Get_Ses_Mode(ses->links_used), NULL);
+            }
+    
+            /* Otherwise, e.g. BEST_EFFORT / RELIABLE, continue with message
+             *      fragmentation, bitmask stamping, crypto, etc. */
+            else if (routing == BEST_EFFORT_FLOOD_ROUTING) {
+                now = E_get_time();
+                
+                i = scat->num_elements;
+                if ((scat->elements[i].buf = new_ref_cnt(PACK_BODY_OBJ)) == NULL)
+                    Alarm(EXIT, "Process_Session_Packet: Could not allocate packet body for f_hdr\r\n");
+                scat->elements[i].len = 0;
+                scat->num_elements++;
+
+                f_hdr = (prio_flood_header*) scat->elements[i].buf;
+                scat->elements[i].len += sizeof(prio_flood_header);
+
+                if (Path_Stamp_Debug == 1)
+                    path = ((unsigned char *)scat->elements[1].buf) + sizeof(udp_header) + 16;
+
+                Fill_Packet_Header( (char*)f_hdr, routing, ses->disjoint_paths );
+                f_hdr->priority    = ses->priority_lvl;
+                f_hdr->origin_sec  = now.sec;
+                f_hdr->origin_usec = now.usec;
+                f_hdr->expire_sec  = E_add_time(now,ses->expire).sec;
+                f_hdr->expire_usec = E_add_time(now,ses->expire).usec;
+
+                /* Check if "overwriting" currently active, if so, overwrite dest */
+                if((Is_mcast_addr(hdr->dest) || Is_acast_addr(hdr->dest)) && overwrite_ip != 0)
+                    hdr->dest = overwrite_ip;
+                
+                /* Look for the destination (target) of the message in the lookup table */
+                if(Is_mcast_addr(hdr->dest) || Is_acast_addr(hdr->dest)) {
+                    if (ses->disjoint_paths != 0) {
+                        Alarm(PRINT, "Process_Session_Packet: can only do multicast with Flooding\r\n");
+                        Cleanup_Scatter(scat);
+                        return NO_ROUTE;
+                    }
+                    dst_id = 0; /* Special case for multicast and anycast packets */
+                }
+                else {
+                    stdhash_find(&Node_Lookup_Addr_to_ID, &ip_it, &hdr->dest);
+                    if (stdhash_is_end(&Node_Lookup_Addr_to_ID,  &ip_it)) {
+                        Alarm(PRINT, "Process_Session_Packet(): \
+                                    destination not in config file\r\n");
+                        Cleanup_Scatter(scat);
+                        return NO_ROUTE;
+                    }
+                    dst_id = *(int32u *)stdhash_it_val(&ip_it);
+                }
+
+                if (MultiPath_Stamp_Bitmask(dst_id, ses->disjoint_paths, 
+                        (unsigned char*)((char*)f_hdr + sizeof(prio_flood_header))) == 0)
+                {
+                    Cleanup_Scatter(scat);
+                    return NO_ROUTE;
+                }
+                
+                scat->elements[i].len += MultiPath_Bitmask_Size;
+                sign_ptr = (unsigned char*)f_hdr + sizeof(prio_flood_header) + MultiPath_Bitmask_Size;
+            }
+            else if (routing == RELIABLE_FLOOD_ROUTING) {
+                
+                i = scat->num_elements;
+                if ((scat->elements[i].buf = new_ref_cnt(PACK_BODY_OBJ)) == NULL)
+                    Alarm(EXIT, "Process_Session_Packet: Could not allocate packet body for f_hdr\r\n");
+                scat->elements[i].len = 0;
+                scat->num_elements++;
+                
+                r_hdr = (rel_flood_header*) scat->elements[i].buf;
+                scat->elements[i].len += sizeof(rel_flood_header);
+
+                if (Path_Stamp_Debug == 1) {
+                    now = E_get_time();
+                    path = ((unsigned char *)scat->elements[1].buf) + sizeof(udp_header) + 16;
+                    *((int*) (((unsigned char *)scat->elements[1].buf) + sizeof(udp_header) + 4)) = htonl(now.sec);
+                    *((int*) (((unsigned char *)scat->elements[1].buf) + sizeof(udp_header) + 8)) = htonl(now.usec);
+                }
+
+                /* Look for the source (originator) of the message in the lookup table */
+                stdhash_find(&Node_Lookup_Addr_to_ID, &ip_it, &My_Address);
+                if (stdhash_is_end(&Node_Lookup_Addr_to_ID,  &ip_it)) {
+                    Alarm(PRINT, "Process_Session_Packet(): source not in config file\r\n");
+                    Cleanup_Scatter(scat);
+                    return(NO_ROUTE);
+                }
+                src_id = *(int32u *)stdhash_it_val(&ip_it);
+
+                stdhash_find(&Node_Lookup_Addr_to_ID, &ip_it, &hdr->dest);
+                if (stdhash_is_end(&Node_Lookup_Addr_to_ID,  &ip_it)) {
+                    Alarm(PRINT, "Process_Session_Packet(): dest not in config file\r\n");
+                    Cleanup_Scatter(scat);
+                    return(NO_ROUTE);
+                }
+                dst_id = *(int32u *)stdhash_it_val(&ip_it);
+
+                /* Check if this session is being managed already */
+                if (ses->managed == 0) {
+                    if (Reliable_Flood_Manage_Session(ses->sess_id, dst_id) == 0) {
+                        Alarm(PRINT, "Process_Session_Packet(): cannot manage session"
+                                 " with id = %d and dst = %d\r\n", ses->sess_id, dst_id);
+                        Cleanup_Scatter(scat);
+                        return(NO_ROUTE);
+                    }
+                    ses->managed = 1;
+                    ses->rf_dst = dst_id;
+                }
+
+                r_hdr->src  = src_id;
+                r_hdr->dest = dst_id;
+                if (Fill_Packet_Header( (char*)r_hdr, routing, ses->disjoint_paths ) == 0) {
+                    Cleanup_Scatter(scat);
+                    return(NO_ROUTE);
+                }
+               
+                if (MultiPath_Stamp_Bitmask(dst_id, ses->disjoint_paths, 
+                        (unsigned char*)((char*)r_hdr + sizeof(rel_flood_header))) == 0) {
+                    Cleanup_Scatter(scat);
+                    return NO_ROUTE;
+                }
+
+                scat->elements[i].len += MultiPath_Bitmask_Size;
+                sign_ptr = (unsigned char*)r_hdr + sizeof(rel_flood_header) + MultiPath_Bitmask_Size;
+            }
+            if ( (routing == RELIABLE_FLOOD_ROUTING    && Conf_Rel.Crypto  == 1)  ||
+                 (routing == BEST_EFFORT_FLOOD_ROUTING && Conf_Prio.Crypto == 1) )
+            {
+                if (routing == RELIABLE_FLOOD_ROUTING)
+                    prot_sig_len = Rel_Signature_Len;
+                else /* routing == BEST_EFFORT_FLOOD_ROUTING */
+                    prot_sig_len = Prio_Signature_Len;
+
+                /* Sign with Priv_Key */
+                temp_ttl = hdr->ttl;
+                hdr->ttl = 0;
+                if (Path_Stamp_Debug == 1) {
+                    for (i = 0; i<8; i++) {
+                        temp_path[i] = path[i];
+                        path[i] = (unsigned char) 0;
+                    }
+                }
+                ret = EVP_SignInit(&md_ctx, EVP_sha256()); 
+                if (ret != 1) {
+                    Alarm(PRINT, "Process_Session_Packet: SignInit failed\r\n");
+                    Cleanup_Scatter(scat);
+                    return(NO_ROUTE);
+                }
+                /* Add each part of the message to be signed into the md_ctx */
+                /*      Sign over the type in the packet_header */
+                ret = EVP_SignUpdate(&md_ctx, (unsigned char*)&phdr->type, sizeof(phdr->type));
+                /*      Sign over the remaining elements in the message */
+                for (i = 1; i < scat->num_elements; i++) {
+                    ret = EVP_SignUpdate(&md_ctx, (unsigned char*)scat->elements[i].buf, scat->elements[i].len);
+                    if (ret != 1) {
+                        Alarm(PRINT, "Process_Session_Packet: SignUpdate failed\r\n");
+                        Cleanup_Scatter(scat);
+                        return(NO_ROUTE);
+                    }
+                }
+                ret = EVP_SignFinal(&md_ctx, sign_ptr, &sign_len, Priv_Key);
+                if (ret != 1) {
+                    Alarm(PRINT, "Process_Session_Packet: SignFinal failed\r\n");
+                    Cleanup_Scatter(scat);
+                    return(NO_ROUTE);
+                }
+                if (sign_len != prot_sig_len) {
+                    Alarm(PRINT, "Process_Session_Packet: sign_len (%d) != Key_Len (%d)\r\n",
+                                    sign_len, prot_sig_len);
+                    Cleanup_Scatter(scat);
+                    return(NO_ROUTE);
+                }
+                scat->elements[scat->num_elements-1].len += prot_sig_len;
+                hdr->ttl = temp_ttl;
+                if (Path_Stamp_Debug == 1) {
+                    for (i = 0; i<8; i++) {
+                        path[i] = temp_path[i];
+                    }
+                }
+            }
+            if ( routing == RELIABLE_FLOOD_ROUTING ) {
+                /* Create the scat element for the reliable_flood tail */
+                if ((scat->elements[scat->num_elements].buf = new_ref_cnt(PACK_BODY_OBJ)) == NULL)
+                    Alarm(EXIT, "Process_Session_Packet: Could not allocate packet body for f_hdr\r\n");
+                scat->elements[scat->num_elements].len = sizeof(rel_flood_tail);
+                rt = (rel_flood_tail*)(scat->elements[scat->num_elements].buf);
+                rt->ack_len = 0;
+                scat->num_elements++;
+            }
+            Injected_Messages++;
+            ret = Deliver_and_Forward_Data(scat, Get_Ses_Mode(ses->links_used), NULL);
+            Cleanup_Scatter(scat);
+            return ret;
+        }
+        else {
+            Alarm(PRINT, "Process_Session_Packet: Packed data... not available yet\n");
+            Alarm(PRINT, "hdr->len: %d; sizeof(udp_header): %d; ses->read_len: %d\n",
+                hdr->len, sizeof(udp_header), ses->read_len);
+        }
     }
     return(NO_ROUTE);
 }
 
 /***********************************************************/
-/* int Deliver_UDP_Data(char* buff, int16u len,            */
-/*                      int32u type)                       */
+/* int Deliver_UDP_Data(sys_scatter* scat, int32u type)    */
 /*                                                         */
 /* Delivers UDP data to the application                    */
 /*                                                         */
 /*                                                         */
 /* Arguments                                               */
 /*                                                         */
-/* buff: pointer to the UDP packet                         */
-/* len:  length of the packet                              */
+/* scat: pointer to the scatter holding the message        */
+/* type: the routing scheme this packet is coming from     */
+/*        this is used to strip off extra headers          */
 /*                                                         */
 /*                                                         */
 /* Return Value                                            */
@@ -1363,59 +1766,87 @@ int Process_Session_Packet(Session *ses)
 /*                                                         */
 /***********************************************************/
 
-int Deliver_UDP_Data(char* buff, int16u len, int32u type) {
-    udp_header *hdr;
+int Deliver_UDP_Data(sys_scatter *scat, int32u type) {
+    udp_header *hdr = NULL;
     stdit h_it, it;
     Session *ses;
-    int ret;
+    int ret, i, len = 0, num_elements = 0;
     int32 dummy_port;
     Group_State *g_state;
+    char *msg = NULL;
+    char *write_ptr;
 
-    hdr = (udp_header*)buff;
+    if ((msg = (char*) new_ref_cnt(MESSAGE_OBJ)) == NULL) {
+        Alarm(EXIT, "Deliver_Data(): Cannot allocate message_object\n");
+    }
+    write_ptr = msg;
+    
+    switch(type) {
+        case (int32u)BEST_EFFORT_FLOOD_ROUTING:
+            num_elements = scat->num_elements - 1;
+            break;
+        case (int32u)RELIABLE_FLOOD_ROUTING:
+            num_elements = scat->num_elements - 2;
+            break;
+        case (int32u)MIN_WEIGHT_ROUTING:
+            num_elements = scat->num_elements;
+            break;
+    }
+
+    /* Skip the 0th element since it is a garbage spines hdr (packet_header) */
+    for (i = 1; i < num_elements; i++) {
+        memcpy(write_ptr, scat->elements[i].buf, scat->elements[i].len);
+        write_ptr += scat->elements[i].len;
+        len += scat->elements[i].len;
+    }
+
+    hdr = (udp_header*)(msg);
     dummy_port = (int32)hdr->dest_port;
-
 
     /* Check if this is a multicast message */
     if(Is_mcast_addr(hdr->dest) || Is_acast_addr(hdr->dest)) {
-	/* Multicast or Anycast.... */
-	g_state = (Group_State*)Find_State(&All_Groups_by_Node, My_Address,
-			 hdr->dest);
-	if(g_state == NULL) {
-	    return(NO_ROUTE);
-	}
-	if((g_state->status & ACTIVE_GROUP) == 0) {
-	    return(NO_ROUTE);
-	}
+        /* Multicast or Anycast.... */
+        g_state = (Group_State*)Find_State(&All_Groups_by_Node, My_Address,
+                         hdr->dest);
+        if(g_state == NULL) {
+            dec_ref_cnt(msg);
+            return(NO_ROUTE);
+        }
+        if((g_state->status & ACTIVE_GROUP) == 0) {
+            dec_ref_cnt(msg);
+            return(NO_ROUTE);
+        }
 
-	/* NOTE: we iterate over joined_sessions delivering data, however,
-	   on error we may need to remove some of the joined sessions during the iteration
-	   which can break a normal iteration if the table reallocs.  So, we disallow it
-	   to realloc during this iteration
-	*/	   
+        /* NOTE: we iterate over joined_sessions delivering data, however,
+           on error we may need to remove some of the joined sessions during the iteration
+           which can break a normal iteration if the table reallocs.  So, we disallow it
+           to realloc during this iteration
+        */           
 
-	stdhash_set_opts(&g_state->joined_sessions, STDHASH_OPTS_NO_AUTO_SHRINK | STDHASH_OPTS_NO_AUTO_GROW);
+        stdhash_set_opts(&g_state->joined_sessions, STDHASH_OPTS_NO_AUTO_SHRINK | STDHASH_OPTS_NO_AUTO_GROW);
 
-	/* Ok, this is best effort multicast. */
-	ret = NO_ROUTE;
-	stdhash_begin(&g_state->joined_sessions, &it);
-	while(!stdhash_is_end(&g_state->joined_sessions, &it)) {
-	    ses = *((Session **)stdhash_it_val(&it));
-	    stdhash_it_next(&it);      /* NOTE: we do this before we call deliver to keep iterator valid in case the item is deleted */
+        /* Ok, this is best effort multicast. */
+        ret = NO_ROUTE;
+        stdhash_begin(&g_state->joined_sessions, &it);
+        while(!stdhash_is_end(&g_state->joined_sessions, &it)) {
+            ses = *((Session **)stdhash_it_val(&it));
+            stdhash_it_next(&it);      /* NOTE: we do this before we call deliver to keep iterator valid in case the item is deleted */
 
             if( hdr->source != My_Address || 
                 (hdr->source == My_Address && ses->multicast_loopback == 1)) 
             {
-                ret = Session_Deliver_Data(ses, buff, len, type, 1);
+                ret = Session_Deliver_Data(ses, msg, len, type, 1);
                 /* Deliver to only one. */
-    	        if (Is_acast_addr(hdr->dest)) {
+                    if (Is_acast_addr(hdr->dest)) {
                      break;
-    	        }
+                    }
             }
-	}
+        }
 
-	stdhash_set_opts(&g_state->joined_sessions, STDHASH_OPTS_DEFAULTS);
+        stdhash_set_opts(&g_state->joined_sessions, STDHASH_OPTS_DEFAULTS);
 
-	return ret;
+        dec_ref_cnt(msg);
+        return ret;
     }
 
     /* If I got here, this is not multicast */
@@ -1423,7 +1854,8 @@ int Deliver_UDP_Data(char* buff, int16u len, int32u type) {
     stdhash_find(&Sessions_Port, &h_it, &dummy_port);
 
     if(stdhash_is_end(&Sessions_Port, &h_it)) {
-	return(NO_ROUTE);
+        dec_ref_cnt(msg);
+        return(NO_ROUTE);
     }
 
 
@@ -1431,30 +1863,35 @@ int Deliver_UDP_Data(char* buff, int16u len, int32u type) {
 
 
     if(ses->type == RELIABLE_SES_TYPE) {
-	/* This is a reliable session */
-	ret = Deliver_Rel_UDP_Data(buff, len, type);
+        /* This is a reliable session */
+        ret = Deliver_Rel_UDP_Data(msg, len, type);
 
-	return(ret);
+        dec_ref_cnt(msg);
+        return(ret);
     }
 
 
     /* This is either a regular UDP message or a connect request for Listen/Accept */
 
     if(ses->type == LISTEN_SES_TYPE) {
-	/* This is a connect request as it addresses a listen session */
-	/* Check whether is a double request. If not, the message will be delivered to
-	 * the client for an accept. */
+        /* This is a connect request as it addresses a listen session */
+        /* Check whether is a double request. If not, the message will be delivered to
+         * the client for an accept. */
 
-	if(Check_Double_Connect(buff, len, type)) {
-	    return(BUFF_DROP);
-	}
+        if(Check_Double_Connect(msg, len, type)) {
+            dec_ref_cnt(msg);
+            return(BUFF_DROP);
+        }
     }
 
-    if(ses->client_stat == SES_CLIENT_OFF)
-	return(BUFF_DROP);
+    if(ses->client_stat == SES_CLIENT_OFF) {
+        dec_ref_cnt(msg);
+        return(BUFF_DROP);
+    }
 
-    ret = Session_Deliver_Data(ses, buff, len, type, 1);
+    ret = Session_Deliver_Data(ses, msg, len, type, 1);
 
+    dec_ref_cnt(msg);
     return(ret);
 }
 
@@ -1508,361 +1945,362 @@ int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int 
 
 #if 0
     Alarm(PRINT, "Session_Deliver_Data: src_port: %d; sess_id: %d; len: %d; len_rep: %d; seq_no: %d; frag_num: %d; frag_idx: %d\n",
-	  u_hdr->source_port, u_hdr->sess_id, u_hdr->len, len, u_hdr->seq_no, 
-	  u_hdr->frag_num, u_hdr->frag_idx);
+          u_hdr->source_port, u_hdr->sess_id, u_hdr->len, len, u_hdr->seq_no, 
+          u_hdr->frag_num, u_hdr->frag_idx);
 #endif
-	
-    if(u_hdr->frag_num > 1) {
-	/* This is a fragmented packet */
 
-	
-	now = E_get_time();
-	
-	/* Search for other fragments of the same packet */
-	found_frag_packet = FALSE;
-	cnt = 0;
-	frag_pkt = ses->frag_pkts;
-	while(frag_pkt != NULL) {
-	    if(now.sec - frag_pkt->timestamp_sec > FRAG_TTL) {
-		/* This is an old incomplete packet. Discard it */
-		
-		Alarm(DEBUG, "Old incomplete packet. Delete it\n");
+    if(ses->routing_used == MIN_WEIGHT_ROUTING) {
+        if(u_hdr->frag_num > 1) {
+        /* This is a fragmented packet */
 
-		frag_pkt = Delete_Frag_Element(&ses->frag_pkts, frag_pkt);
-		continue;
-	    }
-	    
-	    /* This is not an expired packet */
+        
+        now = E_get_time();
+        
+        /* Search for other fragments of the same packet */
+        found_frag_packet = FALSE;
+        cnt = 0;
+        frag_pkt = ses->frag_pkts;
+        while(frag_pkt != NULL) {
+            if(now.sec - frag_pkt->timestamp_sec > FRAG_TTL) {
+            /* This is an old incomplete packet. Discard it */
+            
+            Alarm(DEBUG, "Old incomplete packet. Delete it\n");
 
-	    cnt++;
-	    if((frag_pkt->sess_id == u_hdr->sess_id)&&
-	       (frag_pkt->sender == u_hdr->source)&&
-	       (frag_pkt->snd_port == u_hdr->source_port)&&
-	       (frag_pkt->seq_no == u_hdr->seq_no)) {
-
-		/* This is a fragmented packet that we were looking for */
-
-		Alarm(DEBUG, "Found the packet\n");
-
-		if((frag_pkt->scat.num_elements != u_hdr->frag_num)||
-		   (frag_pkt->scat.elements[(int)(u_hdr->frag_idx)].buf != NULL)) {
-
-		    Alarm(DEBUG, "Corrupt packet. Delete it\n");
-
-		    Delete_Frag_Element(&ses->frag_pkts, frag_pkt);
-		    return(BUFF_DROP);
-		}
-		
-		/* Insert the fragment into the packet */
-		
-		frag_pkt->scat.elements[(int)(u_hdr->frag_idx)].buf = buff;
-		inc_ref_cnt(buff);
-		frag_pkt->scat.elements[(int)(u_hdr->frag_idx)].len = u_hdr->len + sizeof(udp_header);
-		frag_pkt->recv_elements++;
-		frag_pkt->timestamp_sec = now.sec;
-		found_frag_packet = TRUE;
-		break;
-	    }
-	    frag_pkt = frag_pkt->next;
-	}
-
-	if(found_frag_packet == FALSE) {
-	    Alarm(DEBUG, "Couldn't find a fragmented packet. Total: %d; Create a new one\n", cnt);
-
-	    cnt++;
-	    if((frag_pkt = new(FRAG_PKT)) == NULL) {
-		Alarm(EXIT, "Could not allocate memory\n");
-	    }
-	    
-	    frag_pkt->scat.num_elements = u_hdr->frag_num;
-
-	    for(i=0; i<u_hdr->frag_num; i++) {
-		frag_pkt->scat.elements[i].buf = NULL;
-	    }
-	    frag_pkt->scat.elements[(int)(u_hdr->frag_idx)].buf = buff;
-	    inc_ref_cnt(buff);
-	    frag_pkt->scat.elements[(int)(u_hdr->frag_idx)].len = u_hdr->len + sizeof(udp_header);
-
-	    frag_pkt->recv_elements = 1;
-	    frag_pkt->sess_id = u_hdr->sess_id;
-	    frag_pkt->seq_no = u_hdr->seq_no;
-	    frag_pkt->snd_port = u_hdr->source_port;
-	    frag_pkt->sender = u_hdr->source;
-	    frag_pkt->timestamp_sec = now.sec;
-	    
-	    /* Insert the fragmented packet into the linked list */
-	    if(ses->frag_pkts != NULL) {
-		ses->frag_pkts->prev = frag_pkt;
-	    }
-	    frag_pkt->next = ses->frag_pkts;
-	    frag_pkt->prev = NULL;
-	    ses->frag_pkts = frag_pkt;
-	}
-	    
-	/* Deliver the packet if it is complete */
-	if(frag_pkt->recv_elements == frag_pkt->scat.num_elements) {
-	    Alarmp(SPLOG_DEBUG, SESSION, "Session_Deliver_Data: Fragmented Packet complete\n");
-
-            /* Calculate total non-fragmented message/packet length */
-	    sum_len = sizeof(udp_header);
-	    for(i=0; i<frag_pkt->scat.num_elements; i++) {
-		sum_len += (frag_pkt->scat.elements[i].len - sizeof(udp_header));
+            frag_pkt = Delete_Frag_Element(&ses->frag_pkts, frag_pkt);
+            continue;
             }
+            
+            /* This is not an expired packet */
 
+            cnt++;
+            if((frag_pkt->sess_id == u_hdr->sess_id)&&
+               (frag_pkt->sender == u_hdr->source)&&
+               (frag_pkt->snd_port == u_hdr->source_port)&&
+               (frag_pkt->seq_no == u_hdr->seq_no)) {
 
-	    Alarmp(SPLOG_DEBUG, SESSION, "Total length of fragmented packet: sum_len: %d\n", sum_len);
+            /* This is a fragmented packet that we were looking for */
 
-	    /* Deliver the packet */
-	    if((ses->udp_port != -1)&&(flags != 3)) {
-		/* The session communicates via UDP */
+            Alarm(DEBUG, "Found the packet\n");
 
-                /* Build UDP scatter to send */
-                /* Scatter layout:
-                 * [0] (int32) total length
-                 * [1] (udp_header) 
-                 * [2] original first data packet payload
-                 * [3..n] original 2..n-2 data packet payloads
-                 */
-                scat.num_elements = frag_pkt->scat.num_elements+2;
-                scat.elements[0].len = sizeof(int32);
-                scat.elements[0].buf = (char*)(&sum_len);
-                for(i=0, j=1; i<frag_pkt->scat.num_elements; i++, j++) {
-                    if(i == 0) {
-                        udp_header *udp_head_buf;
-                        if ((udp_head_buf = (udp_header*) new_ref_cnt(PACK_BODY_OBJ)) == NULL) {
-                            Alarm(EXIT, "Session_Deliver_Data: Failed to allocate packet_body to hold copy of udp_header for fragmented delivery of UDP message.\n");
-                        }
-                        Copy_udp_header((udp_header *)frag_pkt->scat.elements[0].buf, udp_head_buf );
-                        udp_head_buf->len = sum_len;
-                        scat.elements[j].buf = (char*) udp_head_buf;
-                        scat.elements[j].len = sizeof(udp_header);
-                        j++;
-                    }
-                    scat.elements[j].buf = frag_pkt->scat.elements[i].buf + sizeof(udp_header);
-                    scat.elements[j].len = frag_pkt->scat.elements[i].len - sizeof(udp_header);
+            if((frag_pkt->scat.num_elements != u_hdr->frag_num)||
+               (frag_pkt->scat.elements[(int)(u_hdr->frag_idx)].buf != NULL)) {
+
+                Alarm(DEBUG, "Corrupt packet. Delete it\n");
+
+                Delete_Frag_Element(&ses->frag_pkts, frag_pkt);
+                return(BUFF_DROP);
+            }
+            
+            /* Insert the fragment into the packet */
+            
+            frag_pkt->scat.elements[(int)(u_hdr->frag_idx)].buf = buff;
+            inc_ref_cnt(buff);
+            frag_pkt->scat.elements[(int)(u_hdr->frag_idx)].len = u_hdr->len + sizeof(udp_header);
+            frag_pkt->recv_elements++;
+            frag_pkt->timestamp_sec = now.sec;
+            found_frag_packet = TRUE;
+            break;
+            }
+            frag_pkt = frag_pkt->next;
+        }
+
+        if(found_frag_packet == FALSE) {
+            Alarm(DEBUG, "Couldn't find a fragmented packet. Total: %d; Create a new one\n", cnt);
+
+            cnt++;
+            if((frag_pkt = new(FRAG_PKT)) == NULL) {
+            Alarm(EXIT, "Could not allocate memory\n");
+            }
+            
+            frag_pkt->scat.num_elements = u_hdr->frag_num;
+
+            for(i=0; i<u_hdr->frag_num; i++) {
+            frag_pkt->scat.elements[i].buf = NULL;
+            }
+            frag_pkt->scat.elements[(int)(u_hdr->frag_idx)].buf = buff;
+            inc_ref_cnt(buff);
+            frag_pkt->scat.elements[(int)(u_hdr->frag_idx)].len = u_hdr->len + sizeof(udp_header);
+
+            frag_pkt->recv_elements = 1;
+            frag_pkt->sess_id = u_hdr->sess_id;
+            frag_pkt->seq_no = u_hdr->seq_no;
+            frag_pkt->snd_port = u_hdr->source_port;
+            frag_pkt->sender = u_hdr->source;
+            frag_pkt->timestamp_sec = now.sec;
+            
+            /* Insert the fragmented packet into the linked list */
+            if(ses->frag_pkts != NULL) {
+            ses->frag_pkts->prev = frag_pkt;
+            }
+            frag_pkt->next = ses->frag_pkts;
+            frag_pkt->prev = NULL;
+            ses->frag_pkts = frag_pkt;
+        }
+            
+        /* Deliver the packet if it is complete */
+        if(frag_pkt->recv_elements == frag_pkt->scat.num_elements) {
+            Alarmp(SPLOG_DEBUG, SESSION, "Session_Deliver_Data: Fragmented Packet complete\n");
+
+                /* Calculate total non-fragmented message/packet length */
+            sum_len = sizeof(udp_header);
+            for(i=0; i<frag_pkt->scat.num_elements; i++) {
+            sum_len += (frag_pkt->scat.elements[i].len - sizeof(udp_header));
                 }
 
-                /* Send message and unref message body */
 
-		ret = DL_send(Ses_UDP_Channel,  ses->udp_addr, ses->udp_port,  &scat);
+            Alarmp(SPLOG_DEBUG, SESSION, "Total length of fragmented packet: sum_len: %d\n", sum_len);
 
-		Alarm(DEBUG,
-                        "|||||||||||||||||||| Sending packet for dest (%d.%d.%d.%d) to client addr (%d@%d.%d.%d.%d)!\r\n",
-		      IP1(u_hdr->dest), IP2(u_hdr->dest), IP3(u_hdr->dest), IP4(u_hdr->dest),
-		      ses->udp_port, IP1(ses->udp_addr), IP2(ses->udp_addr), IP3(ses->udp_addr), IP4(ses->udp_addr));
+            /* Deliver the packet */
+            if((ses->udp_port != -1)&&(flags != 3)) {
+            /* The session communicates via UDP */
 
-		Delete_Frag_Element(&ses->frag_pkts, frag_pkt);
-                dec_ref_cnt(scat.elements[0].buf);
-		return(BUFF_EMPTY);
-	    }
-	    else {
-		/* The session communicates via TCP */
-
-		Alarmp(SPLOG_DEBUG, SESSION, "Session_Deliver_Data: TCP-based session\n");
-
-		for(i=0; i<frag_pkt->scat.num_elements; i++) {
-		    /* Try to deliver all the fragments, one by one */
-
-		    /* If there is already something in the buffer, put this one too */
-		    if(!stdcarr_empty(&ses->rel_deliver_buff)) {
-
-			Alarmp(SPLOG_DEBUG, SESSION, "Session_Deliver_Data: (TCP) There are (%d) packets in the session buffer already\n",
-			      stdcarr_size(&ses->rel_deliver_buff));
-
-			if(i == 0) {
-			    if(stdcarr_size(&ses->rel_deliver_buff) >= 3*MAX_BUFF_SESS) {
-				/* disconnect the session or drop the packet */
-				if (flags == 1) {
-				    
-				    Alarmp(SPLOG_ERROR, SESSION, "Session_Deliver_Data: (TCP) === Drop packet because session buffer full\n");
-
-				    Delete_Frag_Element(&ses->frag_pkts, frag_pkt);
-				    return(BUFF_DROP);
-				} 
-				else if ((flags == 2)||(flags == 3)) {
-				    /* disconnect */
-				    Session_Close(ses->sess_id, SES_BUFF_FULL);
-				    return(NO_BUFF);
-				}
-			    }			
-			}
-		    
-			if((u_cell = (UDP_Cell*) new(UDP_CELL))==NULL) {
-			    Alarmp(SPLOG_FATAL, SESSION, "Session_Deliver_Data(): Cannot allocte udp cell\n");
-			}
-			u_cell->len = frag_pkt->scat.elements[i].len;
-                        u_cell->total_len = sum_len;
-			u_cell->buff = frag_pkt->scat.elements[i].buf;
-			stdcarr_push_back(&ses->rel_deliver_buff, &u_cell);
-			inc_ref_cnt(frag_pkt->scat.elements[i].buf);
-
-			Alarmp(SPLOG_DEBUG, SESSION, "Session_Deliver_Data: (TCP) Inserted fragment into session buffer\n");
-			continue;
-		    }
-
-		    /* There is nothing in the buffer. Try to deliver the fragment */
-		    total_bytes = frag_pkt->scat.elements[i].len + sizeof(int32);
-		    if(i == 0) {
-			ses->sent_bytes = 0;
-                        if ((first_frag_udp_hdr = (udp_header*) new_ref_cnt(PACK_BODY_OBJ)) == NULL) {
-                            Alarm(EXIT, "Session_Deliver_Data: Failed to allocate packet_body to hold copy of udp_header for fragmentd delivery.\n");
+                    /* Build UDP scatter to send */
+                    /* Scatter layout:
+                     * [0] (int32) total length
+                     * [1] (udp_header) 
+                     * [2] original first data packet payload
+                     * [3..n] original 2..n-2 data packet payloads
+                     */
+                    scat.num_elements = frag_pkt->scat.num_elements+2;
+                    scat.elements[0].len = sizeof(int32);
+                    scat.elements[0].buf = (char*)(&sum_len);
+                    for(i=0, j=1; i<frag_pkt->scat.num_elements; i++, j++) {
+                        if(i == 0) {
+                            udp_header *udp_head_buf;
+                            if ((udp_head_buf = (udp_header*) new_ref_cnt(PACK_BODY_OBJ)) == NULL) {
+                                Alarm(EXIT, "Session_Deliver_Data: Failed to allocate packet_body to hold copy of udp_header for fragmented delivery of UDP message.\n");
+                            }
+                            Copy_udp_header((udp_header *)frag_pkt->scat.elements[0].buf, udp_head_buf );
+                            udp_head_buf->len = sum_len;
+                            scat.elements[j].buf = (char*) udp_head_buf;
+                            scat.elements[j].len = sizeof(udp_header);
+                            j++;
                         }
-                        Copy_udp_header((udp_header *)frag_pkt->scat.elements[0].buf, first_frag_udp_hdr );
-                        first_frag_udp_hdr->len = sum_len;
-		    }
-		    else {
-			ses->sent_bytes = sizeof(udp_header) + sizeof(int32);
-		    }
-		    stop_flag = 0;
-		    while((ses->sent_bytes < total_bytes)&&(stop_flag == 0)) {
-                        if(ses->sent_bytes < sizeof(int32)) {
-			    scat.num_elements = 3;
-			    scat.elements[0].len = sizeof(int32) - ses->sent_bytes;
-			    scat.elements[0].buf = ((char*)(&sum_len)) + ses->sent_bytes;
-			    scat.elements[1].len = sizeof(udp_header);
-			    scat.elements[1].buf = (char *) first_frag_udp_hdr;
-			    scat.elements[2].len = frag_pkt->scat.elements[0].len - sizeof(udp_header);
-			    scat.elements[2].buf = frag_pkt->scat.elements[0].buf + sizeof(udp_header);
-			}
-			else if (ses->sent_bytes < (sizeof(udp_header) + sizeof(int32)) ) {
-			    scat.num_elements = 2;
-			    scat.elements[0].len = sizeof(udp_header) - (ses->sent_bytes- sizeof(int32));
-			    scat.elements[0].buf = ((char*)(first_frag_udp_hdr)) + (ses->sent_bytes - sizeof(int32));
-			    scat.elements[1].len = frag_pkt->scat.elements[0].len - sizeof(udp_header);
-			    scat.elements[1].buf = frag_pkt->scat.elements[0].buf + sizeof(udp_header);
-                        } else {
-			    scat.num_elements = 1;
-			    scat.elements[0].len = frag_pkt->scat.elements[i].len - 
-				(ses->sent_bytes - sizeof(int32));
-			    scat.elements[0].buf = frag_pkt->scat.elements[i].buf + 
-				(ses->sent_bytes - sizeof(int32));
-			}
+                        scat.elements[j].buf = frag_pkt->scat.elements[i].buf + sizeof(udp_header);
+                        scat.elements[j].len = frag_pkt->scat.elements[i].len - sizeof(udp_header);
+                    }
 
-			/* The session communicates via TCP */
-			ret = DL_send(ses->sk,  My_Address, ses->port,  &scat);
-			
-			Alarm(DEBUG,"Session_deliver_data(): %d %d %d %d\n",
-			      ret, ses->sk, ses->port, frag_pkt->scat.elements[i].len);
+                    /* Send message and unref message body */
 
-			if(ret < 0) {
-			    Alarm(DEBUG, "Session_Deliver_Data(): write err\n");
+            ret = DL_send(Ses_UDP_Channel,  ses->udp_addr, ses->udp_port,  &scat);
+
+            Alarm(DEBUG,
+                            "|||||||||||||||||||| Sending packet for dest (%d.%d.%d.%d) to client addr (%d@%d.%d.%d.%d)!\r\n",
+                  IP1(u_hdr->dest), IP2(u_hdr->dest), IP3(u_hdr->dest), IP4(u_hdr->dest),
+                  ses->udp_port, IP1(ses->udp_addr), IP2(ses->udp_addr), IP3(ses->udp_addr), IP4(ses->udp_addr));
+
+            Delete_Frag_Element(&ses->frag_pkts, frag_pkt);
+                    dec_ref_cnt(scat.elements[0].buf);
+            return(BUFF_EMPTY);
+            }
+            else {
+            /* The session communicates via TCP */
+
+            Alarmp(SPLOG_DEBUG, SESSION, "Session_Deliver_Data: TCP-based session\n");
+
+            for(i=0; i<frag_pkt->scat.num_elements; i++) {
+                /* Try to deliver all the fragments, one by one */
+
+                /* If there is already something in the buffer, put this one too */
+                if(!stdcarr_empty(&ses->rel_deliver_buff)) {
+
+                Alarmp(SPLOG_DEBUG, SESSION, "Session_Deliver_Data: (TCP) There are (%d) packets in the session buffer already\n",
+                      stdcarr_size(&ses->rel_deliver_buff));
+
+                if(i == 0) {
+                    if(stdcarr_size(&ses->rel_deliver_buff) >= 3*MAX_BUFF_SESS) {
+                    /* disconnect the session or drop the packet */
+                    if (flags == 1) {
+                        
+                        Alarmp(SPLOG_ERROR, SESSION, "Session_Deliver_Data: (TCP) === Drop packet because session buffer full\n");
+
+                        Delete_Frag_Element(&ses->frag_pkts, frag_pkt);
+                        return(BUFF_DROP);
+                    } 
+                    else if ((flags == 2)||(flags == 3)) {
+                        /* disconnect */
+                        Session_Close(ses->sess_id, SES_BUFF_FULL);
+                        return(NO_BUFF);
+                    }
+                    }			
+                }
+                
+                if((u_cell = (UDP_Cell*) new(UDP_CELL))==NULL) {
+                    Alarmp(SPLOG_FATAL, SESSION, "Session_Deliver_Data(): Cannot allocte udp cell\n");
+                }
+                u_cell->len = frag_pkt->scat.elements[i].len;
+                            u_cell->total_len = sum_len;
+                u_cell->buff = frag_pkt->scat.elements[i].buf;
+                stdcarr_push_back(&ses->rel_deliver_buff, &u_cell);
+                inc_ref_cnt(frag_pkt->scat.elements[i].buf);
+
+                Alarmp(SPLOG_DEBUG, SESSION, "Session_Deliver_Data: (TCP) Inserted fragment into session buffer\n");
+                continue;
+                }
+
+                /* There is nothing in the buffer. Try to deliver the fragment */
+                total_bytes = frag_pkt->scat.elements[i].len + sizeof(int32);
+                if(i == 0) {
+                ses->sent_bytes = 0;
+                            if ((first_frag_udp_hdr = (udp_header*) new_ref_cnt(PACK_BODY_OBJ)) == NULL) {
+                                Alarm(EXIT, "Session_Deliver_Data: Failed to allocate packet_body to hold copy of udp_header for fragmentd delivery.\n");
+                            }
+                            Copy_udp_header((udp_header *)frag_pkt->scat.elements[0].buf, first_frag_udp_hdr );
+                            first_frag_udp_hdr->len = sum_len - sizeof(udp_header);
+                }
+                else {
+                ses->sent_bytes = sizeof(udp_header) + sizeof(int32);
+                }
+                stop_flag = 0;
+                while((ses->sent_bytes < total_bytes)&&(stop_flag == 0)) {
+                            if(ses->sent_bytes < sizeof(int32)) {
+                    scat.num_elements = 3;
+                    scat.elements[0].len = sizeof(int32) - ses->sent_bytes;
+                    scat.elements[0].buf = ((char*)(&sum_len)) + ses->sent_bytes;
+                    scat.elements[1].len = sizeof(udp_header);
+                    scat.elements[1].buf = (char *) first_frag_udp_hdr;
+                    scat.elements[2].len = frag_pkt->scat.elements[0].len - sizeof(udp_header);
+                    scat.elements[2].buf = frag_pkt->scat.elements[0].buf + sizeof(udp_header);
+                }
+                else if (ses->sent_bytes < (sizeof(udp_header) + sizeof(int32)) ) {
+                    scat.num_elements = 2;
+                    scat.elements[0].len = sizeof(udp_header) - (ses->sent_bytes- sizeof(int32));
+                    scat.elements[0].buf = ((char*)(first_frag_udp_hdr)) + (ses->sent_bytes - sizeof(int32));
+                    scat.elements[1].len = frag_pkt->scat.elements[0].len - sizeof(udp_header);
+                    scat.elements[1].buf = frag_pkt->scat.elements[0].buf + sizeof(udp_header);
+                            } else {
+                    scat.num_elements = 1;
+                    scat.elements[0].len = frag_pkt->scat.elements[i].len - 
+                    (ses->sent_bytes - sizeof(int32));
+                    scat.elements[0].buf = frag_pkt->scat.elements[i].buf + 
+                    (ses->sent_bytes - sizeof(int32));
+                }
+
+                /* The session communicates via TCP */
+                ret = DL_send(ses->sk,  My_Address, ses->port,  &scat);
+                
+                Alarm(DEBUG,"Session_deliver_data(): %d %d %d %d\n",
+                      ret, ses->sk, ses->port, frag_pkt->scat.elements[i].len);
+
+                if(ret < 0) {
+                            Alarm(DEBUG, "Session_Deliver_Data(): write err %d %d '%s'\n", 
+                                                    ret, errno, strerror(errno));
 #ifndef	ARCH_PC_WIN95
-			    if((ret == -1)&&
-			       ((errno == EWOULDBLOCK)||(errno == EAGAIN)))
+                    if((ret == -1)&&
+                       ((errno == EWOULDBLOCK)||(errno == EAGAIN)))
 #else
 #ifndef _WIN32_WCE
-				if((ret == -1)&&
-				   ((errno == WSAEWOULDBLOCK)||(errno == EAGAIN)))
+                    if((ret == -1)&&
+                       ((errno == WSAEWOULDBLOCK)||(errno == EAGAIN)))
 #else
-				    int sk_errno = WSAGetLastError();
-			    if((ret == -1)&&
-			       ((sk_errno == WSAEWOULDBLOCK)||(sk_errno == EAGAIN)))
+                        int sk_errno = WSAGetLastError();
+                    if((ret == -1)&&
+                       ((sk_errno == WSAEWOULDBLOCK)||(sk_errno == EAGAIN)))
 #endif /* Windows CE */
 #endif
-			    {
-				if((u_cell = (UDP_Cell*) new(UDP_CELL))==NULL) {
-				    Alarm(EXIT, "Deliver_UDP_Data(): Cannot allocte udp cell\n");
-				}
-				u_cell->len = frag_pkt->scat.elements[i].len;
-				u_cell->buff = frag_pkt->scat.elements[i].buf;
-                                u_cell->total_len = sum_len;
-				stdcarr_push_back(&ses->rel_deliver_buff, &u_cell);
-				inc_ref_cnt(frag_pkt->scat.elements[i].buf);
+                    {
+                    if((u_cell = (UDP_Cell*) new(UDP_CELL))==NULL) {
+                        Alarm(EXIT, "Deliver_UDP_Data(): Cannot allocte udp cell\n");
+                    }
+                    u_cell->len = frag_pkt->scat.elements[i].len;
+                    u_cell->buff = frag_pkt->scat.elements[i].buf;
+                                    u_cell->total_len = sum_len;
+                    stdcarr_push_back(&ses->rel_deliver_buff, &u_cell);
+                    inc_ref_cnt(frag_pkt->scat.elements[i].buf);
 
-				E_attach_fd(ses->sk, WRITE_FD, Session_Write, ses->sess_id,
-					    NULL, HIGH_PRIORITY );
-				ses->fd_flags = ses->fd_flags | WRITE_DESC;
-				stop_flag = 1;
-				break;
-			    }
-			    else {
-                                if (i == 0)
-                                    dec_ref_cnt(first_frag_udp_hdr); /* free udp_header */
-				Session_Close(ses->sess_id, SOCK_ERR);
-				return(NO_BUFF);
-			    }
-			}
-			if(ret == 0) {
-			    Alarm(PRINT, "Error: ZERO write 1; sent: %d, total: %d\n",
-				  ses->sent_bytes, total_bytes);
-			}
-			ses->sent_bytes += ret;
-		    }
-		    if(stop_flag == 0) {
-			if(i == frag_pkt->scat.num_elements - 1) {	
-			    ses->sent_bytes = 0;
-			}
-			else {
-			    ses->sent_bytes = sizeof(udp_header) + sizeof(int32);
-			}
-		    }
-                    if (i == 0)
-                        dec_ref_cnt(first_frag_udp_hdr); /* free udp_header */
-		}
-	    }
-	    Delete_Frag_Element(&ses->frag_pkts, frag_pkt);
-	}
-	if(stdcarr_empty(&ses->rel_deliver_buff)) {
-	    return(BUFF_EMPTY);
-	}
-	else {
-	    return(BUFF_OK);	
-	}
+                    E_attach_fd(ses->sk, WRITE_FD, Session_Write, ses->sess_id,
+                            NULL, HIGH_PRIORITY );
+                    ses->fd_flags = ses->fd_flags | WRITE_DESC;
+                    stop_flag = 1;
+                    break;
+                    }
+                    else {
+                                    if (i == 0)
+                                        dec_ref_cnt(first_frag_udp_hdr); /* free udp_header */
+                    Session_Close(ses->sess_id, SOCK_ERR);
+                    return(NO_BUFF);
+                    }
+                }
+                if(ret == 0) {
+                    Alarm(PRINT, "Error: ZERO write 1; sent: %d, total: %d\n",
+                      ses->sent_bytes, total_bytes);
+                }
+                ses->sent_bytes += ret;
+                }
+                if(stop_flag == 0) {
+                if(i == frag_pkt->scat.num_elements - 1) {	
+                    ses->sent_bytes = 0;
+                }
+                else {
+                    ses->sent_bytes = sizeof(udp_header) + sizeof(int32);
+                }
+                }
+                        if (i == 0)
+                            dec_ref_cnt(first_frag_udp_hdr); /* free udp_header */
+            }
+            }
+            Delete_Frag_Element(&ses->frag_pkts, frag_pkt);
+        }
+        if(stdcarr_empty(&ses->rel_deliver_buff)) {
+            return(BUFF_EMPTY);
+        }
+        else {
+            return(BUFF_OK);	
+        }
+        }
+
     }
-
-
-
 
     /* If we got here this is not a fragmented packet. We can send it directly */
 
     if(ses->recv_fd_flag == 1) {
-	/* This is a log-only session */
-	
-	pkt_no = (int32*)(buff+sizeof(udp_header)+sizeof(int32));
-	if(*pkt_no == -1) {
-	    Session_Close(ses->sess_id, SES_BUFF_FULL);
-	    return(NO_BUFF);
-	}
+        /* This is a log-only session */
+        
+        pkt_no = (int32*)(buff+sizeof(udp_header)+sizeof(int32));
+        if(*pkt_no == -1) {
+            Session_Close(ses->sess_id, SES_BUFF_FULL);
+            return(NO_BUFF);
+        }
 
-	t1  = (sp_time*)(buff+sizeof(udp_header)+2*sizeof(int32));
-	send_time = *t1;
-	now = E_get_time();
-	diff = E_sub_time(now, send_time);
-	oneway_time = diff.usec + diff.sec*1000000;
+        t1  = (sp_time*)(buff+sizeof(udp_header)+2*sizeof(int32));
+        send_time = *t1;
+        now = E_get_time();
+        diff = E_sub_time(now, send_time);
+        oneway_time = diff.usec + diff.sec*1000000;
 
-	sprintf(line, "%d\t%d\n", *pkt_no, oneway_time);
-	
-	write(ses->fd, line, strlen(line));
-	
-	return(BUFF_EMPTY);
+        sprintf(line, "%d\t%d\n", *pkt_no, oneway_time);
+        
+        write(ses->fd, line, strlen(line));
+        
+        return(BUFF_EMPTY);
     }
 
 
     if((ses->udp_port == -1)||(flags == 3)) {
-	/* The session communicates via TCP */
-	if(!stdcarr_empty(&ses->rel_deliver_buff)) {
-	    if(stdcarr_size(&ses->rel_deliver_buff) >= 3*MAX_BUFF_SESS) {
-		/* disconnect the session or drop the packet */
-		if (flags == 1) {
-		    return(BUFF_DROP);
-		} 
-		else if ((flags == 2)||(flags == 3)) {
-		    /* disconnect */
-		    Session_Close(ses->sess_id,SES_BUFF_FULL);
-		    return(NO_BUFF);
-		}
-	    }
-	    
-	    if((u_cell = (UDP_Cell*) new(UDP_CELL))==NULL) {
-		Alarm(EXIT, "Deliver_UDP_Data(): Cannot allocte udp cell\n");
-	    }
+        /* The session communicates via TCP */
+        if(!stdcarr_empty(&ses->rel_deliver_buff)) {
+            if(stdcarr_size(&ses->rel_deliver_buff) >= 3*MAX_BUFF_SESS) {
+                /* disconnect the session or drop the packet */
+                if (flags == 1) {
+                    return(BUFF_DROP);
+                } 
+                else if ((flags == 2)||(flags == 3)) {
+                    /* disconnect */
+                    Session_Close(ses->sess_id,SES_BUFF_FULL);
+                    return(NO_BUFF);
+                }
+            }
+            
+            if((u_cell = (UDP_Cell*) new(UDP_CELL))==NULL) {
+                Alarm(EXIT, "Deliver_UDP_Data(): Cannot allocte udp cell\n");
+            }
             u_cell->total_len = len;
-	    u_cell->len = len;
-	    u_cell->buff = buff;
-	    stdcarr_push_back(&ses->rel_deliver_buff, &u_cell);
-	    inc_ref_cnt(buff);
-	    return(BUFF_OK);
-	}
+            u_cell->len = len;
+            u_cell->buff = buff;
+            stdcarr_push_back(&ses->rel_deliver_buff, &u_cell);
+            inc_ref_cnt(buff);
+            return(BUFF_OK);
+        }
     }
 
 
@@ -1872,82 +2310,82 @@ int Session_Deliver_Data(Session *ses, char* buff, int16u len, int32u type, int 
     send_len = len;
     ses->sent_bytes = 0;
     while(ses->sent_bytes < total_bytes) {
-	if(ses->sent_bytes < sizeof(int32)) {
-	    scat.num_elements = 2;
-	    scat.elements[0].len = sizeof(int32) - ses->sent_bytes;
-	    scat.elements[0].buf = ((char*)(&send_len)) + ses->sent_bytes;
-	    scat.elements[1].len = send_len;
-	    scat.elements[1].buf = buff;
-	}
-	else {
-	    scat.num_elements = 1;
-	    scat.elements[0].len = send_len - (ses->sent_bytes - sizeof(int32));
-	    scat.elements[0].buf = buff + (ses->sent_bytes - sizeof(int32));
-	}
-	if((ses->udp_port == -1)||(flags == 3)) {
-	    /* The session communicates via TCP */
-	    ret = DL_send(ses->sk,  My_Address, ses->port,  &scat);
-	}
-	else {
+        if(ses->sent_bytes < sizeof(int32)) {
+            scat.num_elements = 2;
+            scat.elements[0].len = sizeof(int32) - ses->sent_bytes;
+            scat.elements[0].buf = ((char*)(&send_len)) + ses->sent_bytes;
+            scat.elements[1].len = send_len;
+            scat.elements[1].buf = buff;
+        }
+        else {
+            scat.num_elements = 1;
+            scat.elements[0].len = send_len - (ses->sent_bytes - sizeof(int32));
+            scat.elements[0].buf = buff + (ses->sent_bytes - sizeof(int32));
+        }
+        if((ses->udp_port == -1)||(flags == 3)) {
+            /* The session communicates via TCP */
+            ret = DL_send(ses->sk,  My_Address, ses->port,  &scat);
+        }
+        else {
 
-	  /* The session communicates via UDP */
+          /* The session communicates via UDP */
 
-	  ret = DL_send(Ses_UDP_Channel,  ses->udp_addr, ses->udp_port,  &scat);
+          ret = DL_send(Ses_UDP_Channel,  ses->udp_addr, ses->udp_port,  &scat);
 
-	  Alarm(DEBUG,
-		"|||||||||||||||||||| Sending packet for dest (%d.%d.%d.%d) to client addr (%d@%d.%d.%d.%d)!\r\n",
-		IP1(u_hdr->dest), IP2(u_hdr->dest), IP3(u_hdr->dest), IP4(u_hdr->dest),
-		ses->udp_port, IP1(ses->udp_addr), IP2(ses->udp_addr), IP3(ses->udp_addr), IP4(ses->udp_addr));
-	}
+          Alarm(DEBUG,
+                "|||||||||||||||||||| Sending packet for dest (%d.%d.%d.%d) to client addr (%d@%d.%d.%d.%d)!\r\n",
+                IP1(u_hdr->dest), IP2(u_hdr->dest), IP3(u_hdr->dest), IP4(u_hdr->dest),
+                ses->udp_port, IP1(ses->udp_addr), IP2(ses->udp_addr), IP3(ses->udp_addr), IP4(ses->udp_addr));
+        }
 
-	Alarm(DEBUG,"Session_deliver_data(): %d %d %d %d\n",ret,ses->sk,ses->port, send_len);
+        Alarm(DEBUG,"Session_deliver_data(): %d %d %d %d\n",ret,ses->sk,ses->port, send_len);
 
-	if(ret < 0) {  /* JLS: shouldn't blocking only occur if/when using TCP session? */
-	     Alarm(DEBUG, "Session_Deliver_Data(): write err\n");
-#ifndef	ARCH_PC_WIN95
-	    if((ret == -1)&&
-	       ((errno == EWOULDBLOCK)||(errno == EAGAIN)))
+        if(ret < 0) {  /* JLS: shouldn't blocking only occur if/when using TCP session? */
+             Alarm(DEBUG, "Session_Deliver_Data(): write err\n");
+#ifndef        ARCH_PC_WIN95
+            if((ret == -1)&&
+               ((errno == EWOULDBLOCK)||(errno == EAGAIN)))
 #else
 #ifndef _WIN32_WCE
-	    if((ret == -1)&&
-	       ((errno == WSAEWOULDBLOCK)||(errno == EAGAIN)))
+            if((ret == -1)&&
+               ((errno == WSAEWOULDBLOCK)||(errno == EAGAIN)))
 #else
-	    int sk_errno = WSAGetLastError();
-	    if((ret == -1)&&
-	       ((sk_errno == WSAEWOULDBLOCK)||(sk_errno == EAGAIN)))
+            int sk_errno = WSAGetLastError();
+            if((ret == -1)&&
+               ((sk_errno == WSAEWOULDBLOCK)||(sk_errno == EAGAIN)))
 #endif /* Windows CE */
 #endif
-	    {
-		if((u_cell = (UDP_Cell*) new(UDP_CELL))==NULL) {
-		    Alarm(EXIT, "Deliver_UDP_Data(): Cannot allocte udp cell\n");
-		}
+            {
+                if((u_cell = (UDP_Cell*) new(UDP_CELL))==NULL) {
+                    Alarm(EXIT, "Deliver_UDP_Data(): Cannot allocte udp cell\n");
+                }
                 u_cell->total_len = len;
-		u_cell->len = len;
-		u_cell->buff = buff;
-		stdcarr_push_back(&ses->rel_deliver_buff, &u_cell);
-		inc_ref_cnt(buff);
+                u_cell->len = len;
+                u_cell->buff = buff;
+                stdcarr_push_back(&ses->rel_deliver_buff, &u_cell);
+                inc_ref_cnt(buff);
 
-		E_attach_fd(ses->sk, WRITE_FD, Session_Write, ses->sess_id,
-			    NULL, HIGH_PRIORITY );
-		ses->fd_flags = ses->fd_flags | WRITE_DESC;
-		return(BUFF_OK);
-	    }
-	    else {
-		if(ses->r_data == NULL) {
-		    Session_Close(ses->sess_id, SOCK_ERR);
-		}
-		else {
-		    Disconnect_Reliable_Session(ses);
-		}
-		return(BUFF_DROP);
-	    }
-	}
-	if(ret == 0) {
-	    Alarm(PRINT, "Error: ZERO write 1; sent: %d, total: %d\n",
-		  ses->sent_bytes, total_bytes);
+                E_attach_fd(ses->sk, WRITE_FD, Session_Write, ses->sess_id,
+                            NULL, HIGH_PRIORITY );
+                ses->fd_flags = ses->fd_flags | WRITE_DESC;
+                return(BUFF_OK);
+            }
+            else {
+                if(ses->r_data == NULL) {
+                    Session_Close(ses->sess_id, SOCK_ERR);
+                }
+                else {
+                    Disconnect_Reliable_Session(ses);
+                }
+                return(BUFF_DROP);
+            }
+        }
+        if(ret == 0) {
+            Alarm(PRINT, "Error: ZERO write 1; sent: %d, total: %d\n",
+                  ses->sent_bytes, total_bytes);
 
-	}
-	ses->sent_bytes += ret;
+        }
+        ses->sent_bytes += ret;
     }
     ses->sent_bytes = 0;
     return(BUFF_EMPTY);
@@ -1997,180 +2435,188 @@ void Session_Write(int sk, int sess_id, void *dummy_p)
 
     stdhash_find(&Sessions_ID, &h_it, &sess_id);
     if(stdhash_is_end(&Sessions_ID, &h_it)) {
-	/* The session is gone */
+        /* The session is gone */
         return;
     }
 
     ses = *((Session **)stdhash_it_val(&h_it));
 
     if(ses->sess_id != (unsigned int)sess_id) {
-	/* There's another session here, and it just uses the same socket */
-	return;
+        /* There's another session here, and it just uses the same socket */
+        return;
     }
 
     if(ses->fd_flags & WRITE_DESC) {
-	E_detach_fd(sk, WRITE_FD);
-	ses->fd_flags = ses->fd_flags ^ WRITE_DESC;
+        E_detach_fd(sk, WRITE_FD);
+        ses->fd_flags = ses->fd_flags ^ WRITE_DESC;
     }
     else{
-	Alarm(EXIT, "Session_Write():socket was not set for WRITE_FD\n");
+        Alarm(EXIT, "Session_Write():socket was not set for WRITE_FD\n");
     }
 
     if(ses->client_stat == SES_CLIENT_OFF)
-	return;
+        return;
 
     while(!stdcarr_empty(&ses->rel_deliver_buff)) {
-	stdcarr_begin(&ses->rel_deliver_buff, &it);
+        stdcarr_begin(&ses->rel_deliver_buff, &it);
 
-	u_cell = *((UDP_Cell **)stdcarr_it_val(&it));
-	buff = u_cell->buff;
-	u_hdr = (udp_header*)buff;
+        u_cell = *((UDP_Cell **)stdcarr_it_val(&it));
+        buff = u_cell->buff;
+        u_hdr = (udp_header*)buff;
 
-	/*	get_ref_cnt(buff); */
-	len = u_cell->len;
+        /*        get_ref_cnt(buff); */
+        len = u_cell->len;
 
-	if(ses->r_data != NULL) {
+        if(ses->r_data != NULL) {
             if (ses->sent_bytes == 0) {
                 ses->sent_bytes = sizeof(udp_header) + sizeof(rel_udp_pkt_add) + sizeof(int32);
             }
 
-	    r_add = (rel_udp_pkt_add*)(buff + sizeof(udp_header));
-	    data_bytes = len - r_add->ack_len;
-	    total_bytes = sizeof(int32) + data_bytes;
-	    Alarm(DEBUG, "Reliable session !!!  %d : %d\n", r_add->data_len, r_add->ack_len);
-	}
-	else {
-	    data_bytes = len;
-	    total_bytes = sizeof(int32) + len;
-	}
-	if((u_hdr->frag_num > 1)&&(u_hdr->frag_idx == 0)) {
-	    send_bytes = u_cell->total_len;
-            ses->sent_bytes = 0;
-            if ((first_frag_udp_hdr = (udp_header*) new_ref_cnt(PACK_BODY_OBJ)) == NULL) {
-                Alarm(EXIT, "Session_Write: Failed to allocate packet_body to hold copy of udp_header for fragmented delivery.\n");
+            r_add = (rel_udp_pkt_add*)(buff + sizeof(udp_header));
+            data_bytes = len - r_add->ack_len;
+            total_bytes = sizeof(int32) + data_bytes;
+            Alarm(DEBUG, "Reliable session !!!  %d : %d\n", r_add->data_len, r_add->ack_len);
+        }
+        else {
+            data_bytes = len;
+            total_bytes = sizeof(int32) + len;
+        }
+        if (ses->routing_used == MIN_WEIGHT_ROUTING) {
+            if((u_hdr->frag_num > 1)&&(u_hdr->frag_idx == 0)) {
+                send_bytes = u_cell->total_len;
+                if ((first_frag_udp_hdr = (udp_header*) new_ref_cnt(PACK_BODY_OBJ)) == NULL) {
+                    Alarm(EXIT, "Session_Write: Failed to allocate packet_body to hold copy of udp_header for fragmented delivery.\n");
+                }
+                Copy_udp_header((udp_header *) buff, first_frag_udp_hdr );
+                first_frag_udp_hdr->len = u_cell->total_len - sizeof(udp_header);
             }
-            Copy_udp_header((udp_header *) buff, first_frag_udp_hdr );
-            first_frag_udp_hdr->len = u_cell->total_len;
-	}
-	else {
-	    send_bytes = data_bytes;
-	}
+            else {
+                send_bytes = data_bytes;
+            }
+        }
+        else
+            send_bytes = data_bytes;
 
-	while(ses->sent_bytes < total_bytes) {
+        while(ses->sent_bytes < total_bytes) {
             udp_header *send_hdr = (first_frag_udp_hdr == NULL ? u_hdr : first_frag_udp_hdr);
 
             if(ses->sent_bytes < sizeof(int32)) {
                 scat.num_elements = 3;
                 scat.elements[0].len = sizeof(int32) - ses->sent_bytes;
-		scat.elements[0].buf = ((char*)(&send_bytes)) + ses->sent_bytes;
+                scat.elements[0].buf = ((char*)(&send_bytes)) + ses->sent_bytes;
                 scat.elements[1].len = sizeof(udp_header);
                 scat.elements[1].buf = (char *) send_hdr;
-		scat.elements[2].len = data_bytes - sizeof(udp_header);
-		scat.elements[2].buf = buff + sizeof(udp_header);
+                scat.elements[2].len = data_bytes - sizeof(udp_header);
+                scat.elements[2].buf = buff + sizeof(udp_header);
             }
             else if (ses->sent_bytes < (sizeof(udp_header) + sizeof(int32)) ) {
                 scat.num_elements = 2;
                 scat.elements[0].len = sizeof(udp_header) - (ses->sent_bytes- sizeof(int32));
                 scat.elements[0].buf = (char *) send_hdr + (ses->sent_bytes - sizeof(int32));
-		scat.elements[1].len = data_bytes - sizeof(udp_header);
-		scat.elements[1].buf = buff + sizeof(udp_header);
+                scat.elements[1].len = data_bytes - sizeof(udp_header);
+                scat.elements[1].buf = buff + sizeof(udp_header);
             } else {
                 scat.num_elements = 1;
                 scat.elements[0].len = data_bytes - sizeof(udp_header) - (ses->sent_bytes - sizeof(int32) - sizeof(udp_header));
                 scat.elements[0].buf = buff + sizeof(udp_header) + (ses->sent_bytes - sizeof(int32) - sizeof(udp_header));
             }
 
-	    ret = DL_send(ses->sk,  My_Address, ses->port,  &scat);
+            ret = DL_send(ses->sk,  My_Address, ses->port,  &scat);
 
-	    Alarm(DEBUG, "Session_Write(): ret = %d; sk = %d; port = %d; len = %d; sent_bytes = %d; total_bytes = %d\n", ret, ses->sk, ses->port, len, ses->sent_bytes, total_bytes);
+            Alarm(DEBUG, "Session_Write(): ret = %d; sk = %d; port = %d; len = %d; sent_bytes = %d; total_bytes = %d\n", ret, ses->sk, ses->port, len, ses->sent_bytes, total_bytes);
 
-	    if(ret < 0) {
-		Alarm(DEBUG, "Session_WRITE(): write err %d %d '%s'\n", ret, errno, strerror(errno));
-#ifndef	ARCH_PC_WIN95
-		if((ret == -1)&&
-		   ((errno == EWOULDBLOCK)||(errno == EAGAIN)))
+            if(ret < 0) {
+                Alarm(DEBUG, "Session_WRITE(): write err %d %d '%s'\n", ret, errno, strerror(errno));
+#ifndef        ARCH_PC_WIN95
+                if((ret == -1)&&
+                   ((errno == EWOULDBLOCK)||(errno == EAGAIN)))
 #else
 #ifndef _WIN32_WCE
-		if((ret == -1)&&
-		   ((errno == WSAEWOULDBLOCK)||(errno == EAGAIN)))
+                if((ret == -1)&&
+                   ((errno == WSAEWOULDBLOCK)||(errno == EAGAIN)))
 #else
-		int sk_errno = WSAGetLastError();
-		if((ret == -1)&&
-		   ((sk_errno == WSAEWOULDBLOCK)||(sk_errno == EAGAIN)))
+                int sk_errno = WSAGetLastError();
+                if((ret == -1)&&
+                   ((sk_errno == WSAEWOULDBLOCK)||(sk_errno == EAGAIN)))
 #endif /* Windows CE */
 #endif
-		{
-		    E_attach_fd(ses->sk, WRITE_FD, Session_Write, ses->sess_id,
-				NULL, HIGH_PRIORITY );
-		    ses->fd_flags = ses->fd_flags | WRITE_DESC;
+                {
+                    E_attach_fd(ses->sk, WRITE_FD, Session_Write, ses->sess_id,
+                                NULL, HIGH_PRIORITY );
+                    ses->fd_flags = ses->fd_flags | WRITE_DESC;
                     if (first_frag_udp_hdr != NULL) {
                         dec_ref_cnt(first_frag_udp_hdr);
                         first_frag_udp_hdr = NULL;
                     }
-		    return;
-		}
-		else {
-		    if(ses->r_data == NULL) {
-			Session_Close(ses->sess_id, SOCK_ERR);
-		    }
-		    else {
-			Disconnect_Reliable_Session(ses);
-		    }
+                    return;
+                }
+                else {
+                    if(ses->r_data == NULL) {
+                        Session_Close(ses->sess_id, SOCK_ERR);
+                    }
+                    else {
+                        Disconnect_Reliable_Session(ses);
+                    }
                     if (first_frag_udp_hdr != NULL) {
                         dec_ref_cnt(first_frag_udp_hdr);
                         first_frag_udp_hdr = NULL;
                     }
-		    return;
-		}
-	    }
-	    if(ret == 0) {
-		Alarm(PRINT, "Error: ZERO write 2; sent: %d, total: %d\n",
-		      ses->sent_bytes, total_bytes);
+                    return;
+                }
+            }
+            if(ret == 0) {
+                Alarm(PRINT, "Error: ZERO write 2; sent: %d, total: %d\n",
+                      ses->sent_bytes, total_bytes);
                 if (first_frag_udp_hdr != NULL) {
                     dec_ref_cnt(first_frag_udp_hdr);
                     first_frag_udp_hdr = NULL;
                 }
-		return;
-	    }
-
-	    ses->sent_bytes += ret;
-	}
-	if(ses->r_data == NULL && u_hdr->frag_num > 1 && (u_hdr->frag_idx < u_hdr->frag_num -1)) {
-	    Alarm(PRINT, "Session_Write: Not the last Fragmented Packet\n");
-	    ses->sent_bytes = sizeof(udp_header) + sizeof(int32);
-	}
-	else {
-	    ses->sent_bytes = 0;
-	}
+                return;
+            }
+            ses->sent_bytes += ret;
+        }
+    if (ses->routing_used == MIN_WEIGHT_ROUTING) {
+        if(ses->r_data == NULL && u_hdr->frag_num > 1 && (u_hdr->frag_idx < u_hdr->frag_num -1)) {
+            Alarm(DEBUG, "Session_Write: Not the last Fragmented Packet," 
+                             " seq = %d, %d of %d, send_bytes = %d, total_bytes = %d\n", 
+                             u_hdr->seq_no, u_hdr->frag_idx, u_hdr->frag_num, ses->sent_bytes, total_bytes);
+            ses->sent_bytes = sizeof(udp_header) + sizeof(int32);
+        }
+        else {
+            ses->sent_bytes = 0;
+        }
+    }
+    else 
+        ses->sent_bytes = 0;
 
         if (first_frag_udp_hdr != NULL) {
             dec_ref_cnt(first_frag_udp_hdr);
             first_frag_udp_hdr = NULL;
         }
-	dec_ref_cnt(buff);
-	dispose(u_cell);
-	stdcarr_pop_front(&ses->rel_deliver_buff);
+        dec_ref_cnt(buff);
+        dispose(u_cell);
+        stdcarr_pop_front(&ses->rel_deliver_buff);
     }
 
     /* Send an ack if the sender was blocked */
     if(ses->r_data != NULL) {
-	if(stdcarr_size(&ses->rel_deliver_buff) < MAX_BUFF_SESS/2) {
-	    Alarm(DEBUG, "Session_Write(): sending ack: %d\n",
-		  stdcarr_size(&ses->rel_deliver_buff));
-	    E_queue(Ses_Send_Ack, ses->sess_id, NULL, zero_timeout);
-	}
+        if(stdcarr_size(&ses->rel_deliver_buff) < MAX_BUFF_SESS/2) {
+            Alarm(DEBUG, "Session_Write(): sending ack: %d\n",
+                  stdcarr_size(&ses->rel_deliver_buff));
+            E_queue(Ses_Send_Ack, ses->sess_id, NULL, zero_timeout);
+        }
     }
 
 
     /* Check if this is a disconnected reliable session */
     if(ses->r_data != NULL) {
-	if(ses->r_data->connect_state == DISCONNECT_LINK) {
-	    if(ses->r_data->recv_tail == ses->r_data->last_seq_sent) {
-		if(stdcarr_empty(&ses->rel_deliver_buff)) {
-		    Disconnect_Reliable_Session(ses);
-		}
-	    }
-	}
+        if(ses->r_data->connect_state == DISCONNECT_LINK) {
+            if(ses->r_data->recv_tail == ses->r_data->last_seq_sent) {
+                if(stdcarr_empty(&ses->rel_deliver_buff)) {
+                    Disconnect_Reliable_Session(ses);
+                }
+            }
+        }
     }
 }
 
@@ -2290,9 +2736,9 @@ void Session_UDP_Read(int sk, int dmy, void * dmy_p)
     int i, processed_bytes, bytes_to_send;
 
     int32 recvfrom_address;    /* address from which this packet was
-				  received */
+                                  received */
     int16u recvfrom_port;      /* port from which this packet was
-				  received */
+                                  received */
 
     Ses_UDP_Pack.num_elements = 52;
     Ses_UDP_Pack.elements[0].len = sizeof(int32);
@@ -2302,12 +2748,12 @@ void Session_UDP_Read(int sk, int dmy, void * dmy_p)
     Ses_UDP_Pack.elements[2].len = MAX_SPINES_MSG+sizeof(udp_header);
     Ses_UDP_Pack.elements[2].buf = frag_buf[0]                   ;
     for(i=1; i<50; i++) {
-    	Ses_UDP_Pack.elements[i+2].len = MAX_SPINES_MSG;
-    	Ses_UDP_Pack.elements[i+2].buf = frag_buf[i]+sizeof(udp_header);
+            Ses_UDP_Pack.elements[i+2].len = MAX_SPINES_MSG;
+            Ses_UDP_Pack.elements[i+2].buf = frag_buf[i]+sizeof(udp_header);
     }
 
     received_bytes = DL_recvfrom(sk, &Ses_UDP_Pack, &recvfrom_address,
-	    &recvfrom_port );
+            &recvfrom_port );
     received_bytes -= (2*sizeof(int32));
 
     /* TODO: do/can these two Ses_Send_ERR send an error to all Multicast clients, which probably would be a bad thing? */
@@ -2315,10 +2761,10 @@ void Session_UDP_Read(int sk, int dmy, void * dmy_p)
     u_hdr = (udp_header*)frag_buf[0];
     stdhash_find(&Sessions_ID, &it, &sess_id);
     if(stdhash_is_end(&Sessions_ID, &it)) {
-	/* The session is gone */
-	Alarm(PRINT, "The session is gone\n");
-	Ses_Send_ERR(u_hdr->source, u_hdr->source_port);
-	return;
+        /* The session is gone */
+        Alarm(PRINT, "The session is gone\n");
+        Ses_Send_ERR(u_hdr->source, u_hdr->source_port);
+        return;
     }
 
     ses = *((Session **)stdhash_it_val(&it));
@@ -2331,19 +2777,19 @@ void Session_UDP_Read(int sk, int dmy, void * dmy_p)
      * they use, 0. A new packet type should be created and handled
      * explicity. */
     if ( u_hdr->dest_port == 0 ) {
-    	Alarm(PRINT,"Session_UDP_Read() Initial UDP packet, source address="IPF","
-	    " port=%d sess_id=%d rnd_num=%d\n",
-	    IP(recvfrom_address),recvfrom_port,sess_id,rnd_num);
-	ses->udp_addr = recvfrom_address;
-	ses->udp_port = recvfrom_port;
-	return;
+            Alarm(PRINT,"Session_UDP_Read() Initial UDP packet, source address="IPF","
+            " port=%d sess_id=%d rnd_num=%d\n",
+            IP(recvfrom_address),recvfrom_port,sess_id,rnd_num);
+        ses->udp_addr = recvfrom_address;
+        ses->udp_port = recvfrom_port;
+        return;
     }
 
     if(ses->rnd_num != rnd_num) {
-	/* The session is gone */
-	Alarm(PRINT, "The session is gone\n");
-	Ses_Send_ERR(u_hdr->source, u_hdr->source_port);
-	return;
+        /* The session is gone */
+        Alarm(PRINT, "The session is gone\n");
+        Ses_Send_ERR(u_hdr->source, u_hdr->source_port);
+        return;
     }
 
     /* This is valid data for this session. It should be processed */
@@ -2352,11 +2798,11 @@ void Session_UDP_Read(int sk, int dmy, void * dmy_p)
 
     ses->seq_no++;
     if(ses->seq_no >= 10000) {
-	ses->seq_no = 0;
+        ses->seq_no = 0;
     }
     ses->frag_num = u_hdr->len/MAX_SPINES_MSG;
     if(u_hdr->len%MAX_SPINES_MSG != 0) {
-	ses->frag_num++;
+        ses->frag_num++;
     }
     ses->frag_idx = 0;
 
@@ -2364,62 +2810,62 @@ void Session_UDP_Read(int sk, int dmy, void * dmy_p)
     processed_bytes = sizeof(udp_header);
     i = 0;
     while(processed_bytes < received_bytes) {
-	if(received_bytes - processed_bytes <= MAX_SPINES_MSG) {
-	    bytes_to_send = received_bytes - processed_bytes;
-	}
-	else {
-	    bytes_to_send = MAX_SPINES_MSG;
-	}
+        if(received_bytes - processed_bytes <= MAX_SPINES_MSG) {
+            bytes_to_send = received_bytes - processed_bytes;
+        }
+        else {
+            bytes_to_send = MAX_SPINES_MSG;
+        }
 
-	tmp_buf = frag_buf[i];
+        tmp_buf = frag_buf[i];
 
-	u_hdr = (udp_header*)tmp_buf;
+        u_hdr = (udp_header*)tmp_buf;
 
-	if(ses->frag_num > 1) {
-	    if(ses->frag_idx == 0) {
-		memcpy((void*)(&ses->save_hdr), (void*)u_hdr, sizeof(udp_header));
-	    }
-	    else {
-		memcpy((void*)u_hdr, (void*)(&ses->save_hdr), sizeof(udp_header));
-	    }
-	    u_hdr->len = bytes_to_send;
-	}
-	u_hdr->seq_no = ses->seq_no;
-	u_hdr->frag_num = ses->frag_num;
-	u_hdr->frag_idx = ses->frag_idx;
-	
-	Alarm(DEBUG, "snd udp seq_no: %d; frag_num: %d; frag_idx: %d; len: %d\n",
-	      u_hdr->seq_no, u_hdr->frag_num, u_hdr->frag_idx, u_hdr->len);
-	
-	ses->data = tmp_buf;
-	ses->read_len = u_hdr->len + sizeof(udp_header);
+        if(ses->frag_num > 1) {
+            if(ses->frag_idx == 0) {
+                memcpy((void*)(&ses->save_hdr), (void*)u_hdr, sizeof(udp_header));
+            }
+            else {
+                memcpy((void*)u_hdr, (void*)(&ses->save_hdr), sizeof(udp_header));
+            }
+            u_hdr->len = bytes_to_send;
+        }
+        u_hdr->seq_no = ses->seq_no;
+        u_hdr->frag_num = ses->frag_num;
+        u_hdr->frag_idx = ses->frag_idx;
+        
+        Alarm(DEBUG, "snd udp seq_no: %d; frag_num: %d; frag_idx: %d; len: %d\n",
+              u_hdr->seq_no, u_hdr->frag_num, u_hdr->frag_idx, u_hdr->len);
+        
+        ses->data = tmp_buf;
+        ses->read_len = u_hdr->len + sizeof(udp_header);
 
-	/* Process the packet */
-	Process_Session_Packet(ses);
+        /* Process the packet */
+        Process_Session_Packet(ses);
 
-	/*
-	 * if(get_ref_cnt(ses->data) > 1) {
-	 *    Alarm(PRINT, "I'm here\n");
-	 *    dec_ref_cnt(ses->data);
-	 * }
-	 */
+        /*
+         * if(get_ref_cnt(ses->data) > 1) {
+         *    Alarm(PRINT, "I'm here\n");
+         *    dec_ref_cnt(ses->data);
+         * }
+         */
 
-	ses->frag_idx++;
-	i++;
-	processed_bytes += bytes_to_send;
+        ses->frag_idx++;
+        i++;
+        processed_bytes += bytes_to_send;
     }
 
     /*    for(i=ses->frag_num; i<50; i++) {*/
     for(i=0; i<ses->frag_num; i++) {
-	dec_ref_cnt(frag_buf[i]);
-	frag_buf[i] = new_ref_cnt(PACK_BODY_OBJ);
-	if(frag_buf[i] == NULL) {
-	    Alarm(EXIT, "Cannot allocate memory\n");
-	}
+        dec_ref_cnt(frag_buf[i]);
+        frag_buf[i] = new_ref_cnt(PACK_BODY_OBJ);
+        if(frag_buf[i] == NULL) {
+            Alarm(EXIT, "Cannot allocate memory\n");
+        }
     }
 
-    if((ses->data = (char*) new_ref_cnt(PACK_BODY_OBJ))==NULL) {
-	Alarm(EXIT, "Session_Read(): Cannot allocte packet_body\n");
+    if((ses->data = (char*) new_ref_cnt(MESSAGE_OBJ))==NULL) {
+        Alarm(EXIT, "Session_Read(): Cannot allocte packet_body\n");
     }
 }
 
@@ -2439,14 +2885,14 @@ void Block_Session(struct Session_d *ses)
 #endif
 
     if(ses->fd_flags & READ_DESC) {
-	E_detach_fd(ses->sk, READ_FD);
-	ses->fd_flags = ses->fd_flags ^ READ_DESC;
+        E_detach_fd(ses->sk, READ_FD);
+        ses->fd_flags = ses->fd_flags ^ READ_DESC;
     }
 
     /*
      *if(ses->fd_flags & EXCEPT_DESC) {
-     *	E_detach_fd(ses->sk, EXCEPT_FD);
-     *	ses->fd_flags = ses->fd_flags ^ EXCEPT_DESC;
+     *        E_detach_fd(ses->sk, EXCEPT_FD);
+     *        ses->fd_flags = ses->fd_flags ^ EXCEPT_DESC;
      *}
      */
 
@@ -2470,10 +2916,10 @@ void Block_All_Sessions(void) {
     stdhash_begin(&Sessions_ID, &it);
     while(!stdhash_is_end(&Sessions_ID, &it)) {
         ses = *((Session **)stdhash_it_val(&it));
-	if(ses->rel_blocked == 0) {
-	    Block_Session(ses);
-	}
-	stdhash_it_next(&it);
+        if(ses->rel_blocked == 0) {
+            Block_Session(ses);
+        }
+        stdhash_it_next(&it);
     }
 }
 
@@ -2491,13 +2937,15 @@ void Resume_Session(struct Session_d *ses)
 #endif
 
     if(!(ses->fd_flags & READ_DESC)) {
-	E_attach_fd(ses->sk, READ_FD, Session_Read, 0, NULL, HIGH_PRIORITY );
-	ses->fd_flags = ses->fd_flags | READ_DESC;
+        /* Similar to earlier, avoid client messages causing starvation 
+         *      of daemon-daemon messages */
+        E_attach_fd(ses->sk, READ_FD, Session_Read, 0, NULL, LOW_PRIORITY );
+        ses->fd_flags = ses->fd_flags | READ_DESC;
     }
 
     if(!(ses->fd_flags & EXCEPT_DESC)) {
-     	E_attach_fd(ses->sk, EXCEPT_FD, Session_Read, 0, NULL, HIGH_PRIORITY );
-     	ses->fd_flags = ses->fd_flags | EXCEPT_DESC;
+             E_attach_fd(ses->sk, EXCEPT_FD, Session_Read, 0, NULL, HIGH_PRIORITY );
+             ses->fd_flags = ses->fd_flags | EXCEPT_DESC;
     }
 
 
@@ -2521,11 +2969,11 @@ void Resume_All_Sessions(void) {
     stdhash_begin(&Sessions_ID, &it);
     while(!stdhash_is_end(&Sessions_ID, &it)) {
         ses = *((Session **)stdhash_it_val(&it));
-	if(ses->rel_blocked == 0) {
-	    Resume_Session(ses);
-	}
+        if(ses->rel_blocked == 0) {
+            Resume_Session(ses);
+        }
 
-	stdhash_it_next(&it);
+        stdhash_it_next(&it);
     }
 }
 
@@ -2544,30 +2992,30 @@ void Session_Flooder_Send(int sesid, void *dummy)
     int i;
 
 #ifdef ARCH_PC_WIN95
-	printf("ERROR: Flooding NOT SUPPORTED ON WINDOWS CURRENTLY\r\n");
-	return;
+        printf("ERROR: Flooding NOT SUPPORTED ON WINDOWS CURRENTLY\r\n");
+        return;
 #endif
  
     stdhash_find(&Sessions_ID, &it, &sesid);
     if(stdhash_is_end(&Sessions_ID, &it)) {
-	/* The session is gone */
+        /* The session is gone */
         return;
     }
     ses = *((Session **)stdhash_it_val(&it));
     if(ses->sess_id != (unsigned int)sesid) {
-	/* There's another session here, and it just uses the same socket */
-	Alarm(PRINT, "different session: %d != %d\n", sesid, ses->sess_id);
-	return;
+        /* There's another session here, and it just uses the same socket */
+        Alarm(PRINT, "different session: %d != %d\n", sesid, ses->sess_id);
+        return;
     }
 
     Alarm(DEBUG,""IPF" port: %d; rate: %d; size: %d; num: %d\n",
-	  IP(ses->Sendto_address), ses->Sendto_port, ses->Rate, 
-	  ses->Packet_size, ses->Num_packets);
+          IP(ses->Sendto_address), ses->Sendto_port, ses->Rate, 
+          ses->Packet_size, ses->Num_packets);
 
     /* Prepare the packet */
     ses->seq_no++;
     ses->Sent_packets++;
-    now = E_get_time();	
+    now = E_get_time();        
 
     hdr = (udp_header*)ses->data;
     hdr->source = My_Address;
@@ -2593,49 +3041,49 @@ void Session_Flooder_Send(int sesid, void *dummy)
     Process_Session_Packet(ses);    
     
     if(get_ref_cnt(ses->data) > 1) {
-	dec_ref_cnt(ses->data);
-	if((ses->data = (char*) new_ref_cnt(PACK_BODY_OBJ))==NULL) {
-	    Alarm(EXIT, "Session_Flooder_Send(): Cannot allocte packet_body\n");
-	}
+        dec_ref_cnt(ses->data);
+        if((ses->data = (char*) new_ref_cnt(MESSAGE_OBJ))==NULL) {
+            Alarm(EXIT, "Session_Flooder_Send(): Cannot allocte packet_body\n");
+        }
     }
 
 
     if(ses->Sent_packets == ses->Num_packets) {
-	*pkt_no = -1;
-	for(i=0; i<10; i++) {
-	    ses->seq_no++;
-	    hdr = (udp_header*)ses->data;
-	    hdr->source = My_Address;
-	    hdr->source_port = ses->port;
-	    hdr->dest = ses->Sendto_address;
-	    hdr->dest_port = ses->Sendto_port;
-	    hdr->len = ses->Packet_size;
-	    hdr->seq_no = ses->seq_no;
-	    hdr->frag_num = (int16u)ses->frag_num;
-	    hdr->frag_idx = (int16u)ses->frag_idx;
-	    hdr->sess_id = (int16u)(ses->sess_id & 0x0000ffff);
-	    
-	    buf = ses->data+sizeof(udp_header);
-	    msg_size = (int32*)buf;
-	    pkt_no = (int32*)(buf+sizeof(int32));
-	    t1 = (sp_time*)(buf+2*sizeof(int32));
-	    *pkt_no = -1;
-	    *msg_size = ses->Packet_size;
-	    *t1 = now;
+        *pkt_no = -1;
+        for(i=0; i<10; i++) {
+            ses->seq_no++;
+            hdr = (udp_header*)ses->data;
+            hdr->source = My_Address;
+            hdr->source_port = ses->port;
+            hdr->dest = ses->Sendto_address;
+            hdr->dest_port = ses->Sendto_port;
+            hdr->len = ses->Packet_size;
+            hdr->seq_no = ses->seq_no;
+            hdr->frag_num = (int16u)ses->frag_num;
+            hdr->frag_idx = (int16u)ses->frag_idx;
+            hdr->sess_id = (int16u)(ses->sess_id & 0x0000ffff);
+            
+            buf = ses->data+sizeof(udp_header);
+            msg_size = (int32*)buf;
+            pkt_no = (int32*)(buf+sizeof(int32));
+            t1 = (sp_time*)(buf+2*sizeof(int32));
+            *pkt_no = -1;
+            *msg_size = ses->Packet_size;
+            *t1 = now;
 
-	    ses->read_len = ses->Packet_size + sizeof(udp_header);
+            ses->read_len = ses->Packet_size + sizeof(udp_header);
 
-	    Process_Session_Packet(ses);
+            Process_Session_Packet(ses);
 
-	    if(get_ref_cnt(ses->data) > 1) {
-		dec_ref_cnt(ses->data);
-		if((ses->data = (char*) new_ref_cnt(PACK_BODY_OBJ))==NULL) {
-		    Alarm(EXIT, "Session_Flooder_Send(): Cannot allocte packet_body\n");
-		}
-	    }
-	}
-	Session_Close(sesid, SES_BUFF_FULL);
-	return;
+            if(get_ref_cnt(ses->data) > 1) {
+                dec_ref_cnt(ses->data);
+                if((ses->data = (char*) new_ref_cnt(MESSAGE_OBJ))==NULL) {
+                    Alarm(EXIT, "Session_Flooder_Send(): Cannot allocte packet_body\n");
+                }
+            }
+        }
+        Session_Close(sesid, SES_BUFF_FULL);
+        return;
     }
     duration_now  = (now.sec - ses->Start_time.sec);
     duration_now *= 1000000;
@@ -2646,17 +3094,17 @@ void Session_Flooder_Send(int sesid, void *dummy)
     rate_now = rate_now/duration_now;
     
     next_delay.sec = 0;
-    next_delay.usec = 0;	    
+    next_delay.usec = 0;            
     if(rate_now > ses->Rate) {
-	int_delay = ses->Packet_size;
-	int_delay = int_delay * ses->Sent_packets * 8 * 1000;
-	int_delay = int_delay/ses->Rate; 
-	int_delay = int_delay - duration_now;
-	
-	if(int_delay > 0) {
-	    next_delay.sec = int_delay/1000000;
-	    next_delay.usec = int_delay%1000000;
-	}
+        int_delay = ses->Packet_size;
+        int_delay = int_delay * ses->Sent_packets * 8 * 1000;
+        int_delay = int_delay/ses->Rate; 
+        int_delay = int_delay - duration_now;
+        
+        if(int_delay > 0) {
+            next_delay.sec = int_delay/1000000;
+            next_delay.usec = int_delay%1000000;
+        }
     }
     E_queue(Session_Flooder_Send, sesid, NULL, next_delay);   
 }

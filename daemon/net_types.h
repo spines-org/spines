@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2015 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -35,7 +35,7 @@
 #include "arch.h"
 #include "spu_data_link.h"
 
-/* Dont forget that 0x80000080 is kept for endians */
+/* Don't forget that 0x80000080 is kept for endianness */
 
 #define         ENDIAN_TYPE             0x80000080
 
@@ -85,13 +85,17 @@
 #define         RESERVED_TYPE1          0x00000007
 #define         RESERVED_TYPE2          0x00000008  /* SC2 */
 #define         RESERVED_TYPE3          0x00000009  /* SC2 */
+#define         INTRU_TOL_DATA_TYPE     0x0000000A 
+#define         INTRU_TOL_ACK_TYPE      0x0000000B 
+#define         INTRU_TOL_PING_TYPE     0x0000000C 
+#define         DIFFIE_HELLMAN_TYPE     0x0000000D 
 
 #define         DATA_MASK               0x0000007f
 
 /* Type macros */
 #define		Is_reliable(t)       (((t) & RELIABLE_TYPE) != 0)
 
-#define         Is_hello_type(t)     (((t) & HELLO_MASK) != 0)
+#define     Is_hello_type(t)     (((t) & HELLO_MASK) != 0)
 #define		Is_hello(t)          (((t) & HELLO_MASK) == HELLO_TYPE)
 #define		Is_hello_req(t)      (((t) & HELLO_MASK) == HELLO_REQ_TYPE)
 #define		Is_hello_ping(t)     (((t) & HELLO_MASK) == HELLO_PING_TYPE)
@@ -106,10 +110,21 @@
 #define		Is_realtime_data(t)  (((t) & DATA_MASK) == REALTIME_DATA_TYPE)
 #define		Is_realtime_nack(t)  (((t) & DATA_MASK) == REALTIME_NACK_TYPE)
 #define		Is_link_ack(t)       (((t) & DATA_MASK) == LINK_ACK_TYPE)
+#define     Is_intru_tol_data(t) (((t) & DATA_MASK) == INTRU_TOL_DATA_TYPE)
+#define     Is_intru_tol_ack(t)  (((t) & DATA_MASK) == INTRU_TOL_ACK_TYPE)
+#define     Is_intru_tol_ping(t) (((t) & DATA_MASK) == INTRU_TOL_PING_TYPE)
+#define     Is_diffie_hellman(t) (((t) & DATA_MASK) == DIFFIE_HELLMAN_TYPE)
 
 #define         SPINES_TTL_MAX  255
 
-typedef int32          Spines_ID;  /* a logical Spines ID -- can be a node id, a group id or a network interface id */
+#define     PING 1
+#define     PONG 2
+
+#define     MAX_NODES            50
+#define     MAX_PKTS_PER_MESSAGE 10
+#define     MAX_MESSAGE_SIZE     (MAX_PACKET_SIZE * MAX_PKTS_PER_MESSAGE)
+
+typedef int32u         Spines_ID;  /* a logical Spines ID -- can be a node id, a group id or a network interface id */
 typedef Spines_ID      Node_ID;
 typedef Spines_ID      Group_ID;
 typedef Spines_ID      Interface_ID;
@@ -141,6 +156,7 @@ typedef	char       packet_body[MAX_PACKET_SIZE-sizeof(packet_header)];
 typedef	struct	dummy_udp_pkt_header {
     Node_ID           source;
     Spines_ID         dest;
+    int32u            reserved32;
     int16u            source_port;
     int16u            dest_port;
     int16u            len;
@@ -150,6 +166,7 @@ typedef	struct	dummy_udp_pkt_header {
     char              frag_idx;   /* Fragment index */
     unsigned char     ttl;        /* used for both unicast and multicast packets */
     unsigned char     routing;
+    /* ### int16u - DO WE NEED PADDING? */
 } udp_header;
 
 typedef struct dummy_rel_udp_pkt_add {
@@ -157,6 +174,93 @@ typedef struct dummy_rel_udp_pkt_add {
     int16u data_len;
     int16u ack_len;
 } rel_udp_pkt_add;
+
+typedef struct dummy_rel_flood_header {
+    int16u          src;        /* Source of this flow (logical ID) */ 
+    int16u          dest;       /* Destination of this flow (logical ID) */
+    int32u          src_epoch;  /* Source's current epoch for this flow */
+    int64u          seq_num;    /* Seq_Num on this flow */
+    unsigned char   type;       /* Type: Data, E2E, Standalone Ack */
+    unsigned char   dummy1;     /* Included only for padding reasons */
+    unsigned char   dummy2;     /* Included only for padding reasons */
+    unsigned char   dummy3;     /* Included only for padding reasons */
+} rel_flood_header;
+
+typedef struct dummy_rel_flood_tail {
+    int32u          ack_len;    /* Length (in bytes) of piggy-backed HBH acks */
+} rel_flood_tail;
+
+typedef struct dummy_rel_flood_hbh_ack {
+    int16u          src;        /* This is a logical ID, not an IP address */
+    int16u          dest;       /* This is a logical ID, not an IP address */
+    int32u          src_epoch;  /* Source's current epoch */
+    int64u          aru;
+    int64u          sow;
+} rel_flood_hbh_ack;
+
+typedef struct dummy_e2e_cell {
+    int32u src_epoch; 
+    int32u dest_epoch;
+    int64u aru;
+} e2e_cell;
+
+typedef struct dummy_rel_flood_e2e_ack {
+    int32u          dest;
+    e2e_cell        cell[MAX_NODES+1];
+} rel_flood_e2e_ack;
+
+typedef struct dummy_status_change_cell {
+    int64u          seq;
+    int16           cost;
+    int16u          dummy1; /* Padding */
+    int16u          dummy2; /* Padding */
+    int16u          dummy3; /* Padding */
+} status_change_cell;
+
+typedef struct dummy_status_change {
+    int32u              epoch;
+    int16u              creator;
+    int16u              dummy; /* Padding */
+    status_change_cell  cell[MAX_NODES+1];
+} status_change;
+
+typedef struct dummy_prio_flood_header {
+    /* Do not separate seq_num and incarnation, these
+     * are used as the key for the hash tables */
+    int64u          incarnation;    /* high-level incarnation of src node */
+    int64u          seq_num;        /* seq num of pkt in this incarnation */
+    int32u          priority;       /* client-defined priority on this pkt */
+    int32u          origin_sec;     /* time pkt was received at src node */
+    int32u          origin_usec;    /* time pkt was received at src node */
+    int32u          expire_sec;     /* time pkt should be discarded */
+    int32u          expire_usec;    /* time pkt should be discarded */
+    /*unsigned char   path[8];*/
+} prio_flood_header;
+
+typedef struct dummy_fragment_header {
+    int16u frag_length;       /* Length of the fragment */
+    unsigned char frag_idx;   /* Fragment index of this packet in the message */
+    unsigned char frag_total; /* Total number of fragments in the message */
+} fragment_header;
+
+typedef struct dummy_intru_tol_pkt_tail {
+    int64u link_seq;        /* This is 0 for stand-alone ACKS */
+    int64u seq_nonce;       /* Random number associated with this pkt */
+    int64u aru;             /* ARU that sender of this pkt has for dest */
+    int64u aru_nonce;       /* Digest of all nonces up to and including ARU */
+    int32u incarnation;     /* Sender's incarnation number */
+    int32u aru_incarnation; /* The incarnation that the sender thinks the
+                                    dest is currently on */
+    int32u dummy;           /* Padding */
+} intru_tol_pkt_tail;
+
+typedef struct dummy_intru_tol_ping {
+    int64u ping_seq;
+    int64u ping_nonce;
+    int32u incarnation;
+    int32u aru_incarnation;
+    unsigned char ping_type;
+} intru_tol_ping;
 
 typedef	struct	dummy_ses_hello_packet {
     int32u          type;

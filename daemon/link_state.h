@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2015 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -67,6 +67,19 @@ typedef struct Edge_d
   
 } Edge;
 
+typedef struct Edge_Key_d
+{
+    Node_ID        src_id;                 /* Source identifier */
+    Node_ID        dst_id;                 /* Destination idenifier */
+
+} Edge_Key;
+
+typedef struct Edge_Value_d
+{
+    int16u         cost;                   /* Edge Cost */
+    int16u         index;                  /* Index in Bitmask */
+} Edge_Value;
+
 stdhash *Edge_All_States(void); 
 stdhash *Edge_All_States_by_Dest(void); 
 stdhash *Edge_Changed_States(void); 
@@ -81,7 +94,7 @@ void     Edge_Process_state_header(char *pos, int32 type);
 void    *Edge_Process_state_cell(Node_ID source, Node_ID sender, char *pos, int32 type);
 int      Edge_Destroy_State_Data(void *state);
 
-Edge    *Create_Edge(Node_ID source, Node_ID dest);
+Edge    *Create_Edge(Node_ID source, Node_ID dest, int16 cost);
 Edge    *Get_Edge(Node_ID src, Node_ID dst);
 Edge    *Destroy_Edge(Node_ID source, Node_ID dest, int local_call);
 /*int      Edge_Update_Cost(int link_id, int mode);*/

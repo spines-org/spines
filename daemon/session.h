@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2015 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -72,6 +72,10 @@
 #define TRACEROUTE_TYPE_MSG 21
 #define EDISTANCE_TYPE_MSG  22
 #define MEMBERSHIP_TYPE_MSG 23
+#define PRIORITY_TYPE_MSG   24
+#define EXPIRATION_TYPE_MSG 25
+#define DIS_PATHS_TYPE_MSG  26
+#define SETDISSEM_TYPE_MSG  27
 
 #define SES_CLIENT_ON       1
 #define SES_CLIENT_OFF      2
@@ -91,7 +95,12 @@
    protocol combinations)  
 */
 
+#if 0
 #define MAX_SPINES_MSG (MAX_PACKET_SIZE /* ethernet - IP - UDP */ - sizeof(packet_header) - (sizeof(udp_header) + sizeof(rel_udp_pkt_add) + sizeof(reliable_ses_tail) + sizeof(reliable_tail)))
+#endif
+
+#define MAX_SPINES_MSG (MAX_PACKET_SIZE /* ethernet - IP - UDP */ - sizeof(packet_header) - (sizeof(udp_header) + sizeof(intru_tol_pkt_tail) + sizeof(int64u) + 32 + sizeof(prio_flood_header) + 8 + 128))
+
 
 #define MAX_CTRL_SK_REQUESTS 10
 
@@ -118,6 +127,7 @@ typedef struct Session_d {
     int32  endianess_type;
     int16  type;
     int32  links_used;
+    int32  routing_used;
     int32  rnd_num;
     int32  udp_addr;
     int32  udp_port;
@@ -148,6 +158,15 @@ typedef struct Session_d {
     stdhash joined_groups;
     int close_reason;
 
+    /* Priority Flooding Settings */
+    int16u priority_lvl;
+    sp_time expire;
+    int16u disjoint_paths;
+
+    /* Reliable Flooding Settings */
+    char managed;
+    int32u rf_dst;
+
     /* Sender Flooder */
     int Rate;
     sp_time Start_time;
@@ -169,7 +188,7 @@ void Session_Accept(int sk_local, int dummy, void *dummy_p);
 void Session_Read(int sk, int dummy, void *dummy_p);
 void Session_Close(int sesid, int reason);
 int  Process_Session_Packet(struct Session_d *ses);
-int  Deliver_UDP_Data(char* buff, int16u buf_len, int32u type);
+int  Deliver_UDP_Data(sys_scatter *scat, int32u type);
 int  Session_Deliver_Data(Session *ses, char* buff, int16u buf_len, int32u type, int flags);
 void Session_Write(int sk, int sess_id, void *dummy_p);
 void Ses_Send_ID(struct Session_d *ses);

@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2015 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -60,7 +60,7 @@
 #include "state_flood.h"
 #include "multicast.h"
 
-/* Global vriables */
+/* Global variables */
 
 extern Node     *This_Node;
 extern Node_ID   My_Address;
@@ -84,8 +84,7 @@ static const sp_time zero_timeout  = {     0,    0};
 /* Arguments                                               */
 /*                                                         */
 /* sender_id: IP of the node that gave me the message      */
-/* buff:      a buffer containing the message              */
-/* data_len:  length of the data in the packet             */
+/* scat:      a sys_scatter containing the message         */
 /* type:      type of the packet                           */
 /* mode:      mode of the link the packet arrived on       */
 /*                                                         */
@@ -96,24 +95,39 @@ static const sp_time zero_timeout  = {     0,    0};
 /*                                                         */
 /***********************************************************/
 
-void Process_RT_UDP_data_packet(Link *lk, char *buff, int16u data_len, 
-				int16u ack_len, int32u type, int mode)
+void Process_RT_UDP_data_packet(Link *lk, sys_scatter *scat,
+				int32u type, int mode)
 {
-    udp_header    *hdr = (udp_header*) buff;
+    packet_header  *phdr;
+    int16u          data_len, ack_len;
+    udp_header     *hdr;
+    char           *buff;
     Realtime_Data *rt_data;
     int32          seq_no;
     int32          diff;
     sp_time        now;
     int            i;
 
+    if (scat->num_elements != 2) {
+        Alarm(PRINT, "Proces_RT_UDP_data_packet: Dropping packet because "
+            "scat->num_elements == %d instead of 2\r\n", scat->num_elements);
+        return;
+    }
+
+    phdr     = (packet_header*) scat->elements[0].buf;
+    data_len = phdr->data_len; 
+    ack_len  = phdr->ack_len;
+    hdr      = (udp_header*) scat->elements[1].buf;
+    buff     = (char*) scat->elements[1].buf;
+
     if (!Same_endian(type)) {
       Flip_udp_hdr(hdr);
     }
     
-    if (hdr->len + sizeof(udp_header) != data_len) {
+    /* if (hdr->len + sizeof(udp_header) != data_len) {
       Alarm(PRINT, "Process_RT_UDP_data_packet: Packed data not available yet!\r\n");
       return;
-    }
+    } */
   
     rt_data = (Realtime_Data*) lk->prot_data;
     seq_no  = *(int*)(buff+data_len);
@@ -190,13 +204,17 @@ void Process_RT_UDP_data_packet(Link *lk, char *buff, int16u data_len,
     
     Alarm(DEBUG, "recv_tail: %d; diff: %d\n", rt_data->recv_tail, 
 	  rt_data->recv_head - rt_data->recv_tail);
-    
-    Deliver_and_Forward_Data(buff, data_len, mode, lk);
+   
+    /* REG ROUTING HACK */
+    scat->elements[1].len = phdr->data_len;
+    Deliver_and_Forward_Data(scat, mode, lk);
+    /* REG ROUTING HACK */
+    scat->elements[1].len = sizeof(packet_body);
 }
 
 /***********************************************************/
-/* int Forward_RT_UDP_data(Node *next_hop, char *buff,     */
-/*                         int16u buf_len)                 */
+/* int Forward_RT_UDP_data(Node *next_hop,                 */
+/*                         sys_scatter *msg_scat)          */
 /*                                                         */
 /*                                                         */
 /*                                                         */
@@ -206,8 +224,7 @@ void Process_RT_UDP_data_packet(Link *lk, char *buff, int16u data_len,
 /* Arguments                                               */
 /*                                                         */
 /* next_hop:  the next node on the path                    */
-/* buff:      buffer containing the message                */
-/* buf_len:   length of the packet                         */
+/* scat:  sys_scatter containing the message               */
 /*                                                         */
 /*                                                         */
 /* Return Value                                            */
@@ -216,23 +233,28 @@ void Process_RT_UDP_data_packet(Link *lk, char *buff, int16u data_len,
 /*                                                         */
 /***********************************************************/
 
-int Forward_RT_UDP_Data(Node *next_hop, char *buff, int16u buf_len)
+int Forward_RT_UDP_Data(Node *next_hop, sys_scatter *scat)
 {
     Link *lk;
-    packet_header hdr;
-    sys_scatter scat;
+    packet_header *hdr;
     Realtime_Data *rt_data;
     History_Cell *h_cell;
     int ret, diff;
     sp_time now;
     
+    if (scat->num_elements != 2) {
+        Alarm(PRINT, "Forward_RT_UDP_Data: Malformed sys_scatter: num_elements == %d\r\n",
+                    scat->num_elements);
+        return BUFF_DROP;
+    }
+
     if (next_hop == This_Node) {
-	Process_udp_data_packet(NULL, buff, buf_len, UDP_DATA_TYPE, UDP_LINK);
-	return BUFF_EMPTY;
+        Process_udp_data_packet(NULL, scat, UDP_DATA_TYPE, UDP_LINK);
+	    return BUFF_EMPTY;
     }
 
     if ((lk = Get_Best_Link(next_hop->nid, REALTIME_UDP_LINK)) == NULL) {
-	return BUFF_DROP;
+	    return BUFF_DROP;
     }
 
     rt_data = (Realtime_Data*) lk->prot_data;
@@ -262,30 +284,27 @@ int Forward_RT_UDP_Data(Node *next_hop, char *buff, int16u buf_len)
 	Alarm(DEBUG, "Forward_RT_UDP_Data: History window limit reached\n");
     }
 
+    hdr = (packet_header*) scat->elements[0].buf;
 
-    scat.num_elements    = 2;
-    scat.elements[0].len = sizeof(packet_header);
-    scat.elements[0].buf = (char *) &hdr;
-    scat.elements[1].len = buf_len+sizeof(int32);
-    scat.elements[1].buf = buff;
-    
-    hdr.type             = REALTIME_DATA_TYPE;
-    hdr.type             = Set_endian(hdr.type);
+    hdr->type             = REALTIME_DATA_TYPE;
+    hdr->type             = Set_endian(hdr->type);
 
-    hdr.sender_id        = My_Address;
-    hdr.ctrl_link_id     = lk->leg->ctrl_link_id;
-    hdr.data_len         = buf_len;
-    hdr.ack_len          = sizeof(int32);
-    hdr.seq_no           = Set_Loss_SeqNo(lk->leg);
+    hdr->sender_id        = My_Address;
+    hdr->ctrl_link_id     = lk->leg->ctrl_link_id;
+    hdr->data_len         = scat->elements[1].len;
+    hdr->ack_len          = sizeof(int32);
+    hdr->seq_no           = Set_Loss_SeqNo(lk->leg);
 
     /* Set the sequence number of the packet */
-    *(int*)(buff+buf_len) = rt_data->head;
+    *(int*)(scat->elements[1].buf + scat->elements[1].len) = rt_data->head;
 
     /* Save the packet in the window */
-    rt_data->window[rt_data->head%MAX_HISTORY].buff = buff;
-    inc_ref_cnt(buff);
-    rt_data->window[rt_data->head%MAX_HISTORY].len = buf_len;
+    rt_data->window[rt_data->head%MAX_HISTORY].buff = scat->elements[1].buf;
+    inc_ref_cnt(scat->elements[1].buf);
+    rt_data->window[rt_data->head%MAX_HISTORY].len = scat->elements[1].len;
     rt_data->window[rt_data->head%MAX_HISTORY].timestamp = now;
+  
+    scat->elements[1].len += sizeof(int32);
 
     /* Advance the head of the window */
     rt_data->head++;
@@ -295,13 +314,36 @@ int Forward_RT_UDP_Data(Node *next_hop, char *buff, int16u buf_len)
     }
 
     if(network_flag == 1) {
-      ret = Link_Send(lk, &scat);
+      ret = Link_Send(lk, scat);
 
       if(ret < 0) {
-	return BUFF_DROP;
+        scat->elements[1].len -= sizeof(int32);
+	    return BUFF_DROP;
       }
     }
+
+    scat->elements[1].len -= sizeof(int32);
     return BUFF_EMPTY;
+}
+
+/***********************************************************/
+/* Request Resources to forward a Realtime UDP data packet */
+/*                                                         */
+/* Arguments                                               */
+/*                                                         */
+/* next_hop:  the next node on the path                    */
+/* callback:  function to call when resources are availble */
+/*                                                         */
+/* Return Value                                            */
+/*                                                         */
+/* 1 - Resources available                                 */
+/* 0 - Resources not available                             */
+/*                                                         */
+/***********************************************************/
+int Request_Resources_RT_UDP(Node *next_hop, int (*callback)(Node*, int))
+{
+    (*callback)(next_hop, REALTIME_UDP_LINK);
+    return 1;
 }
 
 /***********************************************************/
@@ -521,8 +563,9 @@ void Send_RT_Retransm(int linkid, void* dummy)
 }
 
 /***********************************************************/
-/* void Process_RT_nack_packet(Node_ID sender, char *buff,   */
-/*                  int16u ack_len, int32u type, int mode) */
+/* void Process_RT_nack_packet(Node_ID sender,             */
+/*                  sys_scatter *scat, int32u type,        */
+/*                  int mode)                              */         
 /*                                                         */
 /* Processes an ACK packet                                 */
 /*                                                         */
@@ -530,8 +573,7 @@ void Send_RT_Retransm(int linkid, void* dummy)
 /* Arguments                                               */
 /*                                                         */
 /* sender:    IP of the sender                             */
-/* buff:      buffer cointaining the ACK                   */
-/* ack_len:   length of the ACK                            */
+/* scat:      sys_scatter cointaining the ACK              */
 /* type:      type of the packet, cointaining endianess    */
 /* mode:      mode of the link                             */
 /*                                                         */
@@ -542,11 +584,24 @@ void Send_RT_Retransm(int linkid, void* dummy)
 /*                                                         */
 /***********************************************************/
 
-void Process_RT_nack_packet(Link *lk, char *buf, int16u ack_len, int32u type, int mode)
+void Process_RT_nack_packet(Link *lk, sys_scatter *scat, int32u type, int mode)
 {
+    int16u ack_len;
+    char *buff;
+    packet_header *phdr;
     Realtime_Data *rt_data;
     int32 *tmp;
     int i;
+
+    if (scat->num_elements != 2) {
+        Alarm(PRINT, "Proces_RT_nack_packet: Dropping packet because "
+            "scat->num_elements == %d instead of 2\r\n", scat->num_elements);
+        return;
+    }
+
+    phdr     = (packet_header*) scat->elements[0].buf;
+    ack_len  = phdr->ack_len;
+    buff     = (char*) scat->elements[1].buf;
 
     rt_data = lk->prot_data;
 
@@ -554,7 +609,7 @@ void Process_RT_nack_packet(Link *lk, char *buf, int16u ack_len, int32u type, in
       dec_ref_cnt(rt_data->retransm_buff);
     }
 
-    tmp = (int32*)buf;
+    tmp = (int32*)scat->elements[1].buf;
 	
     if (!Same_endian(type)) {
 
@@ -564,9 +619,9 @@ void Process_RT_nack_packet(Link *lk, char *buf, int16u ack_len, int32u type, in
       }
     }
 
-    rt_data->retransm_buff = buf;
-    inc_ref_cnt(buf);
+    rt_data->retransm_buff = scat->elements[1].buf;
+    inc_ref_cnt(scat->elements[1].buf);
     rt_data->num_retransm = ack_len / sizeof(int32);
 
     E_queue(Send_RT_Retransm, (int)lk->link_id, NULL, zero_timeout);
-}   
+}

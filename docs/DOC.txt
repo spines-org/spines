@@ -39,7 +39,7 @@ reliable and best effort communication between two applications connected to
 the Spines network are done using the IP address and the virtual port
 described above in a way similar to TCP and UDP. Note that the virtual port of
 an application is only defined in relationship with a Spines node, and is not
-related to an operating system port of the computer the application, or the
+related to an operating system port of the computer the application or the
 daemon is running on.
 
 A multicast group is defined as a class D multicast address and an anycast
@@ -68,8 +68,10 @@ protocols cannot be activated as packets are routed by the underlying kernel
 services. In addition, kernel-routing services are available in Spines to
 support anypath and multipath routing based on group membership.
 
-The current version of Spines was tested to run on Linux X86 computers and on
-Linksys WRT54G wireless routers. 
+Documentation about the new intrusion tolerance capabilities added in version
+5.0 can be found in DOC_Intrusion_Tolerance.txt.
+
+The current version of Spines was tested to run on Linux X86 computers. 
 
 
 
@@ -82,9 +84,9 @@ NAME
 
 SYNOPSIS 
 
-     spines [-p spines_port] [-l local_address] [[-a destination]*]
-            [[-d discovery_address]*] [-w ] [-sf]
-            [-m] [-U] [-x time_to_live] [-secure] [-k level] [-W] 
+     spines [-p spines_port] [-l logical_id] [-I local_address] [[-a destination]*]
+            [[-d discovery_address]*] [-w Route_Weight] [-sf] [-m] [-x time_to_live]
+            [-U] [-W] [-k level] [-lf log_file] [-c config_file]
 
 
 DESCRIPTION 
@@ -98,16 +100,19 @@ DESCRIPTION
 
 OPTIONS 
 
-    -p spines_port 
+    -p spines_port
           The port on which the daemon will send and receive messages
           (default 8100). All the daemons in a Spines network need to
           run on the same port.
 
-    -l local_address
+    -l logical_id
+          The logical ID of this node
+
+    -I local_address
           Local IP address that will be used by Spines (default the
           address of the first defined network interface).
 
-    -a destination   
+    -a destination
           The address of an existing node participating in a Spines
           network. The current daemon will create a virtual link
           together with the daemon running at this address.  A Spines
@@ -118,7 +123,7 @@ OPTIONS
           The IP-multicast address used to auto-discover other Spines
           daemons. A discovery packet is multicasted periodically to
           allow Spines routers that can hear each other to interconnect.
-          A node can specify up to 10 different discovery addresses. 
+          A node can specify up to 10 different discovery addresses.
 
     -w Route_Weight
           Sets the route metric for shortest path computation.
@@ -141,41 +146,31 @@ OPTIONS
           end-to-end delivery ratio within a time constraint for
           packet delay.
 
-
-    -sf   
+    -sf
           Stream based fairness for reliable links. Makes a reliable
           link between two neighbors behave as multiple streams
           (individual streams that actually go through the link) with
           regard to the TCP congestion control
 
-    -m    
+    -m
           Accept monitor commands for setting link characteristics
           in order to create virtual topologies (see setlink program).
-
-    -U    
-          Unicast only. Instructs the daemon to use Dijkstra for route
-          computation instead of Floyd Warshall (all pairs shortest
-          path). This allows faster route computation and scalability
-          to more router nodes (up to 1000), but Spines will not be
-          able to route multicast messages.
 
     -x time_to_live
           Sets the time (in seconds) until the daemon will exit
           gracefully. If no such time is given, the daemon will run
           indefinitely.
 
-    -secure
-          Enables application-level SSL encryption on messages sent
-          between Spines overlay daemons. Additional flags must
-          be specified when using this options:
-          -pub public_key_file_name
-          -priv private_key_file_name
-          -cacert ca_certificate_file_name
-          -pass passphrase
+    -U
+          Unicast only. Instructs the daemon to use Dijkstra for route
+          computation instead of Floyd Warshall (all pairs shortest
+          path). This allows faster route computation and scalability
+          to more router nodes (up to 1000), but Spines will not be
+          able to route multicast messages.
 
-          This option is experimental and available only when compiled
-          with -DSPINES_SSL. It is based on DTLS, which is available in
-          OpenSSL library version 0.9.8 or greater.
+    -W
+          Wireless mode.  Will change some default timers to better
+          accommodate a wireless environment.
 
     -k level
           Sets the kernel routing level that should be used when
@@ -186,7 +181,7 @@ OPTIONS
 
           0 -- Set kernel routes to every node in the Spines network.
                This allows Spines to manage kernel routes through the
-               overlay topology. 
+               overlay topology.
           1 -- Set unicast kernel routes based on a anycast group
                membership.  By default, 247.0.0.0/8 will map to routes on
                a 10.0.0.0/8 network.  One route entry (on the main route
@@ -197,12 +192,20 @@ OPTIONS
                routes (in different routing tables), each with possibly
                multiple next-hop, are entered.
 
-    -W 
-          Wireless mode.  Will change some default timers to better
-          accommodate a wireless environment.
+    -lf log_file_name
+          Name of the log file to use. If no log file name is given, Spines
+          does not log to file.
 
-
+    -c configuration_file_name
+         Name of the configuration file to read from. The default configuration
+         file name is spines.conf. If no configuration file is found, Spines will
+         continue with the default parameter values for the link protocols and
+         dissemination protocols. Note that without a configuration file, the
+         Intrusion Tolerant Link protocol and both the Priority Messaging and
+         Reliable Messaging dissemination protocols will be turned off.
 	 
+
+
 
 Spines client API
 ~~~~~~~~~~~~~~~~~
@@ -276,20 +279,51 @@ DESCRIPTION
 		   UDP communication
 
        Message forwarding between the Spines daemons for this
-       particular socket:
+       particular socket uses a link protocol and a dissemination
+       protocol:
+
+       Link Protocols:
        UDP_LINKS
-		   best effort forwarding
+                   Best effort forwarding
 
        RELIABLE_LINKS
-		   messages are sent reliably between daemons
+                   Messages are sent reliably between daemons
 
        SOFT_REALTIME_LINKS
-		   message losses are attempted to be recovered, but
-		   only if they are likely to be recovered within a
-		   certain time frame
+                   Message losses are attempted to be recovered, but
+                   only if they are likely to be recovered within a
+                   certain time frame
+
+       INTRUSION_TOL_LINKS
+                   Messages are sent reliably between daemons and can be
+                   cryptographically protected (configuration option).
+                   The link provides protection against a potentially
+                   compromised endpoint by forcing each packet
+                   acknowledgement to contain evidence that the packet
+                   was actually received.
+
+       Dissemination Protocols:
+       MIN_WEIGHT_ROUTING:
+                   Stateless routing protocol based on link-state routing
+
+       BEST_EFFORT_FLOOD_ROUTING:
+                   Stateful intrusion-tolerant routing protocol based on
+                   source-based routing, providing timeliness guarantees
+                   and priority semantics independently for each active
+                   source. Messages can be cryptographically protected
+                   (configuration option).
+
+       RELIABLE_FLOOD_ROUTING:
+                   Stateful intrusion-tolerant routing protocol based on
+                   source-based routing, providing end-to-end reliable
+                   message delivery, using back-pressure to stop new
+                   messages from entering the network when buffers are
+                   full, until existing messages are delivered. Messages
+                   can be cryptographically protected (configuration
+                   option).
 
        By default, if the Protocol is set to zero, Spines will use
-       TCP_CONNECT, and UDP_LINKS.
+       TCP_CONNECT, and UDP_LINKS, and MIN_WEIGHT_ROUTING.
 
        Different sockets connected to the same or different Spines
        daemons can use different values for their protocol parameter.
@@ -605,6 +639,25 @@ DESCRIPTION
        SPINES_MULTICAST_LOOP 
            Turns on/off the multicast loopback. The optval and optlen
            should refer to a u_char boolean parameter where 0=off and 1=on
+
+       SPINES_SET_PRIORITY
+           Sets the priority level that will be assigned to all future messages
+           using the BEST_EFFORT_FLOOD_ROUTING dissemination protocol. Valid
+           priority levels are between 1 and 10 (inclusive), where 10 is the
+           highest priority.
+
+       SPINES_SET_EXPIRATION
+           Sets the expiration time for all future messages using the
+           BEST_EFFORT_FLOOD_ROUTING dissemination protocol. Meta data for
+           messages are stored at spines daemons until they expire in order
+           to prevent message replay attacks from potentially malicious
+           neighbors.
+
+       SPINES_DISJOINT_PATHS
+           Sets the number of node-disjoint paths to use for all future
+           messages using either BEST_EFFORT_FLOOD_ROUTING or
+           RELIABLE_FLOOD_ROUTING. Spines currently supports values between
+           0 and 5 (inclusive), where 0 represents flooding on the overlay.
 
        Spines multicast address space is from 224.0.0.0 to 239.255.255.255
        (Class D address). Spines anycast address space is from 240.0.0.0 to

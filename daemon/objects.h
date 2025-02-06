@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2015 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -58,7 +58,8 @@
 #define PACK_BODY_OBJ           11
 #define SYS_SCATTER             12
 #define STDHASH_OBJ             13
-
+#define MESSAGE_OBJ             14
+#define FRAG_OBJ                15
 
 /* Non-Transmitted objects */
 #define TREE_NODE               21
@@ -75,11 +76,20 @@
 #define UDP_CELL                32
 #define FRAG_PKT                33
 
+#define PRIO_FLOOD_PQ_NODE      34
+#define PRIO_FLOOD_NS_OBJ       35
+#define SEND_QUEUE_NODE         36
+#define FLOW_QUEUE_NODE         37
+#define RF_SESSION_OBJ          38
+#define DISSEM_QUEUE_NODE       39
+#define MP_BITMASK              40
+
 #define CONTROL_DATA            41
 #define RELIABLE_DATA           42
 #define REALTIME_DATA           43
 #define RESERVED_DATA1          44 /* MN */
 #define RESERVED_DATA2          45 /* SC2 */
+#define INTRUSION_TOL_DATA      46
 
 #define SESSION_OBJ             51
 

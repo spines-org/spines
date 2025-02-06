@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2015 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -659,12 +659,19 @@ static  void    Usage(int argc, char *argv[])
     } else if( !strncmp( *argv, "-q", 2 ) ){
       report_latency_stats = 1;
     } else if( !strncmp( *argv, "-P", 2 ) ){
-      if(sscanf(argv[1], "%d", (int*)&tmp ) < 1 || tmp < 0 || tmp > 2) {
+      if(sscanf(argv[1], "%d", (int*)&tmp ) < 1 || tmp < 0 || (tmp > 2 && tmp != 8)) {
 	printf("Bad Protocol %d specified through -P option!\r\n", tmp);
 	exit(0);
       }
       Protocol |= tmp;
       argc--; argv++;
+    } else if( !strncmp( *argv, "-D", 2 ) ){
+        if(sscanf(argv[1], "%d", (int*)&tmp ) < 1 || (tmp < 0) || (tmp > 2)) {
+            printf("Bad Dissemination Method!\n");
+            exit(0);
+        }
+        Protocol |= (tmp << ROUTING_BITS_SHIFT);
+        argc--; argv++;
     } else if( !strncmp( *argv, "-f", 2 ) ){
       sscanf(argv[1], "%s", filename );
       fileflag = 1;

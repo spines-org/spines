@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2015 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -65,7 +65,7 @@ typedef struct dummy_kr_entry {
 } KR_Entry;
 
 void  KR_Init();
-void  KR_Set_Group_Route(Group_ID group_destination, void *dummy);
+void  KR_Set_Group_Route(int group_destination, void *dummy);
 void  KR_Set_Table_Route(Spines_ID destination, int table_id);
 void  KR_Delete_Table_Route(Spines_ID destination, int table_id);
 void  KR_Create_Overlay_Node(Spines_ID address);

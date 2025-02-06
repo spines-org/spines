@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2015 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -51,7 +51,7 @@ extern Node_ID          My_Address;
 extern int16u	        Port;
 extern char             My_Host_Name[];
 
-extern int16            Num_Local_Interfaces;
+extern int16u           Num_Local_Interfaces;
 extern Interface_ID     My_Interface_IDs[];
 extern Network_Address  My_Interface_Addresses[];
 
@@ -95,6 +95,14 @@ extern int      Wireless_monitor;
 
 extern char     Log_Filename[];
 extern int      Use_Log_File;
+
+/* Configuration File Variables */
+extern char        Config_File_Found;
+extern stdhash     Node_Lookup_Addr_to_ID;
+extern stdhash     Node_Lookup_ID_to_Addr;
+extern int16u      My_ID;
+extern int32u      *Neighbor_Addrs[];
+extern int16u      *Neighbor_IDs[];
 
 /* Sessions */
 
@@ -141,11 +149,19 @@ extern int64_t total_rel_udp_pkts;
 extern int64_t total_rel_udp_bytes;
 extern int64_t total_link_ack_pkts;
 extern int64_t total_link_ack_bytes;
+extern int64_t total_intru_tol_pkts;
+extern int64_t total_intru_tol_bytes;
+extern int64_t total_intru_tol_ack_pkts;
+extern int64_t total_intru_tol_ack_bytes;
+extern int64_t total_intru_tol_ping_pkts;
+extern int64_t total_intru_tol_ping_bytes;
 extern int64_t total_hello_pkts;
 extern int64_t total_hello_bytes;
 extern int64_t total_link_state_pkts;
 extern int64_t total_link_state_bytes;
 extern int64_t total_group_state_pkts;
 extern int64_t total_group_state_bytes;
+
+extern int64u Injected_Messages;
 
 #endif

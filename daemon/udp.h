@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2015 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -52,9 +52,9 @@
 void Flip_udp_hdr(udp_header *udp_hdr);
 void Copy_udp_header(udp_header *from_udp_hdr, udp_header *to_udp_hdr);
 
-void Process_udp_data_packet(Link *lk, char *buff_p, 
-			     int16u data_len, int32u type, int mode);
+void Process_udp_data_packet(Link *lk, sys_scatter *scat, int32u type, int mode);
 
-int  Forward_UDP_Data(Node* next_hop, char *buff, int16u buf_len);
+int  Forward_UDP_Data(Node* next_hop, sys_scatter *scat);
+int  Request_Resources_UDP(Node *next_hop, int (*callback)(Node*, int));
 
 #endif

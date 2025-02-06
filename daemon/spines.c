@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2015 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -33,6 +33,9 @@
 #include <stdlib.h>
 #include <errno.h>
 
+#include <signal.h>
+#include <execinfo.h>
+
 #ifdef ARCH_PC_WIN95
 #  include <winsock2.h>
 #else
@@ -44,6 +47,10 @@
 #  include <sys/time.h>
 #  include <sys/resource.h>
 #  include <netdb.h>
+#  include <openssl/engine.h>
+#  include <openssl/evp.h>
+#  include <openssl/hmac.h>
+#  include <openssl/pem.h>
 #endif
 
 #include "arch.h"
@@ -67,8 +74,11 @@
 #include "objects.h"
 #include "link_state.h"
 #include "route.h"
+#include "priority_flood.h"
+#include "reliable_flood.h"
 #include "multicast.h"
 #include "kernel_routing.h"
+#include "configuration.h"
 
 #ifdef	ARCH_PC_WIN95
 WSADATA		WSAData;
@@ -82,6 +92,8 @@ WSADATA		WSAData;
 #define HOST_NAME_LEN 50
 #define SERVER_TYPE_LEN 20
 #define LOG_FILE_NAME_LEN 2000
+#define KEY_FILE_NAME_LEN 50
+
 
 /* Global Variables */
 
@@ -90,7 +102,7 @@ Node_ID         My_Address;
 int16u	        Port;
 char            My_Host_Name[HOST_NAME_LEN];
 
-int16           Num_Local_Interfaces;
+int16u          Num_Local_Interfaces;
 Interface_ID    My_Interface_IDs[MAX_LOCAL_INTERFACES];
 Network_Address My_Interface_Addresses[MAX_LOCAL_INTERFACES];
 
@@ -132,6 +144,15 @@ int      Wireless_monitor;
 
 char     Log_Filename[LOG_FILE_NAME_LEN];
 int      Use_Log_File;
+
+/* Configuration File Variables */
+char        Config_file[80];
+char        Config_File_Found;
+stdhash     Node_Lookup_Addr_to_ID;
+stdhash     Node_Lookup_ID_to_Addr;
+int16u      My_ID;
+int32u      *Neighbor_Addrs[MAX_NODES + 1];
+int16u      *Neighbor_IDs[MAX_NODES + 1];
 
 /* Sessions */
 
@@ -196,7 +217,6 @@ int      Unicast_Only;
 int      Memory_Limit;
 int16    KR_Flags;
 
-
 /* Statistics */
 int64_t total_received_bytes;
 int64_t total_received_pkts;
@@ -206,12 +226,36 @@ int64_t total_rel_udp_pkts;
 int64_t total_rel_udp_bytes;
 int64_t total_link_ack_pkts;
 int64_t total_link_ack_bytes;
+int64_t total_intru_tol_pkts;
+int64_t total_intru_tol_bytes;
+int64_t total_intru_tol_ack_pkts;
+int64_t total_intru_tol_ack_bytes;
+int64_t total_intru_tol_ping_pkts;
+int64_t total_intru_tol_ping_bytes;
 int64_t total_hello_pkts;
 int64_t total_hello_bytes;
 int64_t total_link_state_pkts;
 int64_t total_link_state_bytes;
 int64_t total_group_state_pkts;
 int64_t total_group_state_bytes;
+
+/* DT variables */
+int64u IT_full_dropped;
+int64u IT_dead_dropped;
+int64u IT_size_dropped;
+int64u IT_total_pkts;
+int64u Injected_Messages;
+
+/* DT Crypto */
+int16u HMAC_Key_Len;
+int16u DH_Key_Len;
+int16u Signature_Len;
+int16u Signature_Len_Bits;
+EVP_PKEY *Pub_Keys[MAX_NODES + 1];
+EVP_PKEY *Priv_Key;
+
+/* unsigned char Path_Stamp_Debug; */
+/* char DH_Param_file[KEY_FILE_NAME_LEN]; */
 
 /* Static Variables */
 
@@ -220,6 +264,34 @@ static void     Init_Memory_Objects(int x);
 
 void            Set_resource_limit(int max_mem);
 int32           Get_Interface_ip(char *iface);
+
+/* 01/2015 - SIGNAL HANDLER FUNCTION FOR DEBUGGING CRASHES */
+void signal_handler(int sig) {
+    
+    int size = 100, j, nptrs;
+    void *buffer[100];
+    char **strings;
+
+    nptrs = backtrace(buffer, size);
+    printf("backtrace() returned %d addresses\n", nptrs);
+
+    /* The call backtrace_symbols_fd(buffer, nptrs, STDOUT_FILENO)
+       would produce similar output to the following: */
+
+    strings = backtrace_symbols(buffer, nptrs);
+    if (strings == NULL) {
+        perror("backtrace_symbols");
+        exit(EXIT_FAILURE);
+    }
+
+    for (j = 0; j < nptrs; j++)
+        printf("%s\n", strings[j]);
+
+    free(strings);
+
+    printf("... Goodbye\n");
+    exit(0);
+}
 
 /***********************************************************/
 /* int main(int argc, char* argv[])                        */
@@ -247,7 +319,7 @@ int main(int argc, char* argv[])
 
     Alarm( PRINT, "/===========================================================================\\\n");
     Alarm( PRINT, "| Spines                                                                    |\n");
-    Alarm( PRINT, "| Copyright (c) 2003 - 2013 Johns Hopkins University                        |\n"); 
+    Alarm( PRINT, "| Copyright (c) 2003 - 2015 Johns Hopkins University                        |\n"); 
     Alarm( PRINT, "| All rights reserved.                                                      |\n");
     Alarm( PRINT, "|                                                                           |\n");
     Alarm( PRINT, "| Spines is licensed under the Spines Open-Source License.                  |\n");
@@ -258,6 +330,8 @@ int main(int argc, char* argv[])
     Alarm( PRINT, "|    Yair Amir                 yairamir@cs.jhu.edu                          |\n");
     Alarm( PRINT, "|    Claudiu Danilov           claudiu@cs.jhu.edu                           |\n");
     Alarm( PRINT, "|    John Lane Schultz         jschultz@spreadconcepts.com                  |\n");
+    Alarm( PRINT, "|    Daniel Obenshain          dano@cs.jhu.edu                              |\n");
+    Alarm( PRINT, "|    Thomas Tantillo           tantillo@cs.jhu.edu                          |\n");
     Alarm( PRINT, "|                                                                           |\n");
     Alarm( PRINT, "| Major Contributors:                                                       |\n");
     Alarm( PRINT, "|    John Lane                 johnlane@cs.jhu.edu                          |\n");
@@ -268,7 +342,7 @@ int main(int argc, char* argv[])
     Alarm( PRINT, "| WWW:     www.spines.org      www.dsn.jhu.edu                              |\n");
     Alarm( PRINT, "| Contact: spines@spines.org                                                |\n");
     Alarm( PRINT, "|                                                                           |\n");
-    Alarm( PRINT, "| Version 4.0, Built September 4, 2013                                      |\n"); 
+    Alarm( PRINT, "| Version 5.0, Built January 26, 2015                                       |\n"); 
     Alarm( PRINT, "|                                                                           |\n");
     Alarm( PRINT, "| This product uses software developed by Spread Concepts LLC for use       |\n");
     Alarm( PRINT, "| in the Spread toolkit. For more information about Spread,                 |\n");
@@ -277,7 +351,7 @@ int main(int argc, char* argv[])
 
     Usage(argc, argv);
 
-    Alarm_set_types(PRINT|STATUS); 
+    Alarm_set_types(PRINT|STATUS);
     /*Alarm_set_types(PRINT|DEBUG|STATUS);*/
     Alarm_set_priority(SPLOG_INFO);
 
@@ -285,12 +359,23 @@ int main(int argc, char* argv[])
 #ifndef ARCH_PC_WIN95
     signal(SIGPIPE, SIG_IGN);
 #endif
+
+    signal(SIGSEGV, signal_handler);
     
 #ifdef	ARCH_PC_WIN95    
     ret = WSAStartup( MAKEWORD(1,1), &WSAData );
     if( ret != 0 )
         Alarm( EXIT, "r: winsock initialization error %d\n", ret );
 #endif	/* ARCH_PC_WIN95 */
+
+    Injected_Messages = 0;
+
+    /* Initialize this node */
+    Init_My_Node();
+
+    /* Load Spines Configuration File */
+    Config_File_Found = 0;
+    Conf_init(Config_file);
 
     E_init();
 
@@ -309,6 +394,12 @@ int main(int argc, char* argv[])
         Init_Memory_Objects(10);
     }
 
+    if (Conf_IT_Link.Crypto == 1 || Conf_Prio.Crypto == 1 || 
+            Conf_Rel.Crypto == 1) {
+        ENGINE_load_builtin_engines();
+        ENGINE_register_all_complete();
+    }
+
     Init_Network();
 
     if(Up_Down_Interval.sec != 0)
@@ -316,6 +407,11 @@ int main(int argc, char* argv[])
 
     if(Time_until_Exit.sec != 0)
 	E_queue(Graceful_Exit, 0, NULL, Time_until_Exit);
+
+    IT_full_dropped = 0;
+    IT_dead_dropped = 0;
+    IT_size_dropped = 0;
+    IT_total_pkts   = 0;
 
     E_handle_events();
 
@@ -347,6 +443,8 @@ static void Init_Memory_Objects(int x)
   Mem_init_object_abort(PACK_HEAD_OBJ, "packet_header", sizeof(packet_header), (int)(10*x), 1);
   Mem_init_object_abort(PACK_BODY_OBJ, "packet_body", sizeof(packet_body), (int)(20*x), 20);
   Mem_init_object_abort(SYS_SCATTER, "sys_scatter", sizeof(sys_scatter), (int)(10*x), 1);
+  Mem_init_object_abort(MESSAGE_OBJ, "message", MAX_PACKET_SIZE * MAX_PKTS_PER_MESSAGE, (int)(20*x), 20);
+  Mem_init_object_abort(FRAG_OBJ, "fragment", sizeof(fragment_header), (int)(20*x), 20);
   Mem_init_object_abort(TREE_NODE, "Node", sizeof(Node), (int)(3*x), 10);
   Mem_init_object_abort(DIRECT_LINK, "Link", sizeof(Link), (int)(1*x), 1);
   Mem_init_object_abort(OVERLAY_EDGE, "Edge", sizeof(Edge), (int)(5*x), 10);
@@ -359,9 +457,17 @@ static void Init_Memory_Objects(int x)
   Mem_init_object_abort(BUFFER_CELL, "Buffer_Cell", sizeof(Buffer_Cell), (int)(30*x), 1);
   Mem_init_object_abort(FRAG_PKT, "Frag_Packet", sizeof(Frag_Packet), (int)(30*x), 1);
   Mem_init_object_abort(UDP_CELL, "UDP_Cell", sizeof(UDP_Cell), (int)(30*x), 1);
+  Mem_init_object_abort(PRIO_FLOOD_PQ_NODE, "Priority_Flood_PQ", sizeof(Prio_PQ_Node), (int)(30*x), 20);
+  Mem_init_object_abort(PRIO_FLOOD_NS_OBJ, "Priority_Flood_NS", sizeof(Prio_Neighbor_Status) * (Degree[My_ID] + 1), (int)(30*x), 20);
+  Mem_init_object_abort(SEND_QUEUE_NODE, "Send_Fairness_Queue", sizeof(Send_Fair_Queue), (int)(3*x), 1); 
+  Mem_init_object_abort(FLOW_QUEUE_NODE, "Flow_Fairness_Queue", sizeof(Flow_Queue), (int)(3*x), 1); 
+  Mem_init_object_abort(RF_SESSION_OBJ, "Reliable_Flood_Session", sizeof(Session_Obj), (int)(3*x), 1); 
+  Mem_init_object_abort(DISSEM_QUEUE_NODE, "Dissemination_Queue", sizeof(Dissem_Fair_Queue), (int)(3*x), 1); 
+  Mem_init_object_abort(MP_BITMASK, "MultiPath_Bitmask", MultiPath_Bitmask_Size, (int)(10*x), 1); 
   Mem_init_object_abort(CONTROL_DATA, "Control_Data", sizeof(Control_Data), (int)(1*x), 1);
   Mem_init_object_abort(RELIABLE_DATA, "Reliable_Data", sizeof(Reliable_Data), (int)(3*x), 1);
   Mem_init_object_abort(REALTIME_DATA, "Reatltime_Data", sizeof(Realtime_Data), (int)(1*x), 0);
+  Mem_init_object_abort(INTRUSION_TOL_DATA, "Intrusion_Tol_Data", sizeof(Int_Tol_Data), (int)(1*x), 0);
   Mem_init_object_abort(SESSION_OBJ, "Session", sizeof(Session), (int)(3*x), 0);
   Mem_init_object_abort(STDHASH_OBJ, "stdhash", sizeof(stdhash), (int)(10*x), 0);
 }
@@ -510,7 +616,7 @@ static  void    Usage(int argc, char *argv[])
     struct sockaddr_in sock_addr;
 
     /* Setting defaults values */
-    My_Address = -1;
+    My_Address = 0;
     Port = 8100;
     Route_Weight = DISTANCE_ROUTE;
     network_flag = 1;
@@ -531,6 +637,7 @@ static  void    Usage(int argc, char *argv[])
     memset((void*)Wireless_if, '\0', sizeof(Wireless_if));
     Use_Log_File = 0;
 
+    strcpy( Config_file, "spines.conf" );
     Num_Discovery_Addresses = 0;
 
     while(--argc > 0) {
@@ -573,8 +680,9 @@ static  void    Usage(int argc, char *argv[])
 	    argc--; argv++;
 	}else if(!strncmp(*argv, "-l", 3)) {
 
-	    if (My_Address != -1) {
-	      Alarm(EXIT, "-l should be specified at most once!\r\n");
+	    if (My_Address != 0) {
+	      Alarm(EXIT, "-l should be specified at most once and should be "
+                        "specified before any -I parameters!\r\n");
 	    }
 
 	    sscanf(argv[1], "%s", ip_str);
@@ -583,7 +691,7 @@ static  void    Usage(int argc, char *argv[])
 		  My_Address = ( (i1 << 24 ) | (i2 << 16) | (i3 << 8) | i4 );
 	    } else { 
 		  My_Address = Get_Interface_ip(ip_str);
-		  if(My_Address == -1) {
+		  if(My_Address == 0) {
 			break;
 	          }
 	    }
@@ -621,6 +729,9 @@ static  void    Usage(int argc, char *argv[])
 	  }
 
 	  My_Interface_Addresses[Num_Local_Interfaces] = ((i1 << 24) | (i2 << 16) | (i3 << 8) | i4);
+
+      if (My_Address == 0 && Num_Local_Interfaces == 0)
+        My_Address = ((i1 << 24) | (i2 << 16) | (i3 << 8) | i4);
 
 	  if (argc > 1 && argv[1][0] != '-') {
 
@@ -673,7 +784,7 @@ static  void    Usage(int argc, char *argv[])
 
 	  if (sscanf(*argv, "%d.%d.%d.%d", &i1, &i2, &i3, &i4) != 4 ||
 	      i1 < 0 || i1 > 255 || i2 < 0 || i2 > 255 || i3 < 0 || i3 > 255 || i4 < 0 || i4 > 255) {
-	    Alarm(EXIT, "-I expects an IPv4 remote network address first!\r\n");
+	    Alarm(EXIT, "-a expects an IPv4 remote network address first!\r\n");
 	  }
 
 	  Remote_Interface_Addresses[Num_Legs] = ((i1 << 24) | (i2 << 16) | (i3 << 8) | i4);
@@ -684,7 +795,7 @@ static  void    Usage(int argc, char *argv[])
 
 	    if (sscanf(*argv, "%d.%d.%d.%d", &i1, &i2, &i3, &i4) != 4 ||
 		i1 < 0 || i1 > 255 || i2 < 0 || i2 > 255 || i3 < 0 || i3 > 255 || i4 < 0 || i4 > 255) {
-	      Alarm(EXIT, "-I expects an IPv4 interface identifier second!\r\n");
+	      Alarm(EXIT, "-a expects an IPv4 interface identifier second!\r\n");
 	    }
 
 	    Remote_Interface_IDs[Num_Legs] = ((i1 << 24) | (i2 << 16) | (i3 << 8) | i4);
@@ -696,7 +807,7 @@ static  void    Usage(int argc, char *argv[])
 
 	    if (sscanf(*argv, "%d.%d.%d.%d", &i1, &i2, &i3, &i4) != 4 ||
 		i1 < 0 || i1 > 255 || i2 < 0 || i2 > 255 || i3 < 0 || i3 > 255 || i4 < 0 || i4 > 255) {
-	      Alarm(EXIT, "-I expects an IPv4 node identifier third!\r\n");
+	      Alarm(EXIT, "-a expects an IPv4 node identifier third!\r\n");
 	    }
 
 	    Remote_Node_IDs[Num_Legs] = ((i1 << 24) | (i2 << 16) | (i3 << 8) | i4);
@@ -708,7 +819,7 @@ static  void    Usage(int argc, char *argv[])
 
 	    if (sscanf(*argv, "%d.%d.%d.%d", &i1, &i2, &i3, &i4) != 4 ||
 		i1 < 0 || i1 > 255 || i2 < 0 || i2 > 255 || i3 < 0 || i3 > 255 || i4 < 0 || i4 > 255) {
-	      Alarm(EXIT, "-I expects an IPv4 local interface identifier fourth!\r\n");
+	      Alarm(EXIT, "-a expects an IPv4 local interface identifier fourth!\r\n");
 	    }
 
 	    Local_Interface_IDs[Num_Legs] = ((i1 << 24) | (i2 << 16) | (i3 << 8) | i4);
@@ -716,7 +827,7 @@ static  void    Usage(int argc, char *argv[])
 
 	  ++Num_Legs;
 
-	}else if(!(strncmp(*argv, "-k", 3))) { 
+	} else if(!(strncmp(*argv, "-k", 3))) { 
 	    sscanf(argv[1], "%d", (int*)&tmp);
 	    if (tmp == 0) KR_Flags |= KR_OVERLAY_NODES;
 	    if (tmp == 1) KR_Flags |= KR_CLIENT_ACAST_PATH;
@@ -728,25 +839,33 @@ static  void    Usage(int argc, char *argv[])
 	    Log_Filename[LOG_FILE_NAME_LEN-1] = 0;
 	    Use_Log_File = 1;
 	    argc--; argv++;
+	}else if(!(strncmp(*argv, "-c", 3))) {
+        ++argv;
+	    --argc;
+	    if (argc == 0) {
+	        Alarm(EXIT, "-c requires a parameter!\r\n");
+	    }
+        strncpy( Config_file, *argv, 80 );
 	}else{
 
 		Alarm(PRINT, "ERR: %d | %s\r\n", argc, *argv);
 		
 		Alarm(PRINT,
 		      "Usage:\r\n"
-		      "\t[-p <port>                    : base port on which to send, default is 8100\r\n"
-		      "\t[-l <IP>                      : the logical ID of this node\r\n"
-		      "\t[-I <IP> [<IP>]               : a local network address mapped to an interface ID to use for communication\r\n"
-		      "\t[-a <IP> [<IP> [<IP> [<IP>]]] : a remote network address, remote interface ID, remote node ID and local interface ID that define a connection\r\n"
-		      "\t[-d <IP address>              : auto-discovery multicast address\r\n"
-		      "\t[-w <Route_Type>              : [distance, latency, loss, explat], default: distance\r\n"
-		      "\t[-sf                          : stream based fairness (for reliable links)\r\n"
-		      "\t[-m                           : accept monitor commands for setting loss rates\r\n"
-		      "\t[-x <seconds>                 : time until exit\r\n"
-		      "\t[-U                           : Unicast only: no multicast capabilities\r\n"
-		      "\t[-W                           : Wireless Mode\r\n"
-		      "\t[-k <level>                   : kernel routing on data packets\r\n"
-		      "\t[-lf <file>                   : log file name\r\n");
+		      "\t[-p <port>]                    : base port on which to send, default is 8100\r\n"
+		      "\t[-l <IP>]                      : the logical ID of this node\r\n"
+		      "\t[-I <IP> [<IP>]]               : a local network address mapped to an interface ID to use for communication\r\n"
+		      "\t[-a <IP> [<IP> [<IP> [<IP>]]]] : a remote network address, remote interface ID, remote node ID and local interface ID that define a connection\r\n"
+		      "\t[-d <IP address>]              : auto-discovery multicast address\r\n"
+		      "\t[-w <Route_Type>]              : [distance, latency, loss, explat], default: distance\r\n"
+		      "\t[-sf]                          : stream based fairness (for reliable links)\r\n"
+		      "\t[-m]                           : accept monitor commands for setting loss rates\r\n"
+		      "\t[-x <seconds>]                 : time until exit\r\n"
+		      "\t[-U]                           : Unicast only: no multicast capabilities\r\n"
+		      "\t[-W]                           : Wireless Mode\r\n"
+		      "\t[-k <level>]                   : kernel routing on data packets\r\n"
+		      "\t[-lf <file>]                   : log file name\r\n"
+              "\t[-c <file>]                    : configuration file name, default is spines.conf\r\n");
 		Alarm(EXIT, "Bye...\r\n");
 	}
     }

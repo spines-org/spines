@@ -20,10 +20,10 @@ libspines-core.a: spines_lib.o
 clean:
 	rm -f *.o
 	rm -f *.to
+	rm -f libspines.a
+	rm -f libspines-core.a
 
 distclean: clean
 	rm -f *~
 	rm -f core*
-	rm -f libspines.a
-	rm -f libspines-core.a
 	rm -f Makefile

@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2015 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -108,7 +108,7 @@ int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_typ
     if(r_data == NULL) {
 	Alarm(EXIT, "Reliable_Send_Msg(): Link has no reliable data struct !");
     }
-
+    
     /* Setting the reliability tail of the packet */
     r_tail = (reliable_tail*)(buff+buff_len);
     r_tail->seq_no = r_data->seq_no++;
@@ -133,7 +133,7 @@ int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_typ
        (!stdcarr_empty(&r_data->msg_buff))||
        (!(r_data->flags & CONNECTED_LINK))) {
 	if((buf_cell = (Buffer_Cell*) new(BUFFER_CELL))==NULL) {
-	    Alarm(EXIT, "Reliable_Send_Control_Msg(): Cannot allocte buffer cell\n");
+	    Alarm(EXIT, "Reliable_Send_Control_Msg(): Cannot allocate buffer cell\n");
 	}
 	buf_cell->data_len = buff_len;
 	buf_cell->pack_type = pack_type;
@@ -166,7 +166,7 @@ int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_typ
 		r_data->last_tail_resent = r_data->tail;
 		if(r_data->nack_buff == NULL) {
 		    if((r_data->nack_buff = (char*) new(PACK_BODY_OBJ))==NULL) {
-			Alarm(EXIT, "Process_Ack(): Cannot allocte pack_body object\n");
+			Alarm(EXIT, "Process_Ack(): Cannot allocate pack_body object\n");
 		    }	
 		}
 		if(r_data->nack_len + sizeof(int32) < sizeof(packet_body)) {
@@ -213,10 +213,10 @@ int Reliable_Send_Msg(int16 linkid, char *buff, int16u buff_len, int32u pack_typ
     /* Allocating the new scatter and header for the reliable message */
     
     if((scat = (sys_scatter*) new(SYS_SCATTER))==NULL) {
-	Alarm(EXIT, "Reliable_Send_Msg(): Cannot allocte sys_scatter object\n");
+	Alarm(EXIT, "Reliable_Send_Msg(): Cannot allocate sys_scatter object\n");
     }
     if((hdr = (packet_header*) new(PACK_HEAD_OBJ))==NULL) {
-	Alarm(EXIT, "Reliable_Send_Msg(): Cannot allocte pack_header object\n");
+	Alarm(EXIT, "Reliable_Send_Msg(): Cannot allocate pack_header object\n");
     }
     
     ack_len = sizeof(reliable_tail); 
@@ -770,10 +770,10 @@ void Reliable_timeout(int linkid, void *dummy)
     /* Allocating the new scatter and header for the reliable messages */
     
     if((scat = (sys_scatter*) new(SYS_SCATTER))==NULL) {
-	Alarm(EXIT, "Reliable_timeout: Cannot allocte sys_scatter object\n");
+	Alarm(EXIT, "Reliable_timeout: Cannot allocate sys_scatter object\n");
     }
     if((hdr = (packet_header*) new(PACK_HEAD_OBJ))==NULL) {
-	Alarm(EXIT, "Reliable_timeout: Cannot allocte pack_header object\n");
+	Alarm(EXIT, "Reliable_timeout: Cannot allocate pack_header object\n");
     }
     scat->num_elements = 2; /* For now there are only two elements in 
 			       the scatter */
@@ -890,7 +890,7 @@ void Reliable_timeout(int linkid, void *dummy)
 	r_data->timeout_multiply = 100;
 
     Alarm(DEBUG, "\n! ! timeout_multiply: %d\n", r_data->timeout_multiply);
-    Alarm(PRINT, "Reliable_timeout: Current timeout_multiply: %d\n", r_data->timeout_multiply);
+    Alarm(DEBUG, "Reliable_timeout: Current timeout_multiply: %d\n", r_data->timeout_multiply);
 
     timeout_val.sec  *= r_data->timeout_multiply;
     timeout_val.usec *= r_data->timeout_multiply;
@@ -1020,10 +1020,10 @@ void Send_Nack_Retransm(int linkid, void *dummy)
     /* Allocating the new scatter and header for the reliable messages */
     
     if((scat = (sys_scatter*) new(SYS_SCATTER))==NULL) {
-	Alarm(EXIT, "Reliable_timeout: Cannot allocte sys_scatter object\n");
+	Alarm(EXIT, "Reliable_timeout: Cannot allocate sys_scatter object\n");
     }
     if((hdr = (packet_header*) new(PACK_HEAD_OBJ))==NULL) {
-	Alarm(EXIT, "Reliable_timeout: Cannot allocte pack_header object\n");
+	Alarm(EXIT, "Reliable_timeout: Cannot allocate pack_header object\n");
     }
     scat->num_elements = 2; /* For now there are only two elements in 
 			       the scatter */
@@ -1104,7 +1104,7 @@ void Send_Nack_Retransm(int linkid, void *dummy)
 	
 	scat->elements[1].len = data_len + ack_len;    
 	scat->elements[1].buf = send_buff;
-	
+
 	/* Sending the data */
         if(network_flag == 1) {
 	  ret = Link_Send(Links[linkid], scat);
@@ -1177,7 +1177,7 @@ int Process_Ack(int16 linkid, char *buff, int16u ack_len, int32u type)
 
 	if(r_data->nack_buff == NULL) {
 	    if((r_data->nack_buff = (char*) new(PACK_BODY_OBJ))==NULL) {
-		Alarm(EXIT, "Process_Ack(): Cannot allocte pack_body object\n");
+		Alarm(EXIT, "Process_Ack(): Cannot allocate pack_body object\n");
 	    }	
 	}
 	if(r_data->nack_len + ack_len - sizeof(reliable_tail) <
@@ -1395,19 +1395,32 @@ void Try_to_Send(int linkid, void* dummy)
 /* Arguments                                               */
 /*                                                         */
 /* sender:    IP of the sender                             */
-/* buff:      buffer cointaining the ACK                   */
-/* ack_len:   length of the ACK                            */
+/* scat:      sys_scatter cointaining the ACK              */
 /* type:      type of the packet, cointaining endianess    */
 /* mode:      mode of the link                             */
 /***********************************************************/
                                                          
-void Process_ack_packet(Link *lk, char *buf, int16u ack_len, int32u type, int mode)
+void Process_ack_packet(Link *lk, sys_scatter *scat, int32u type, int mode)
 {
+  packet_header *phdr;
+  int16u         ack_len;
+  char          *buff;
+    
+  if (scat->num_elements != 2) {
+      Alarm(PRINT, "Proces_ack_packet: Dropping packet because "
+          "scat->num_elements == %d instead of 2\r\n", scat->num_elements);
+      return;
+  }
+
+  phdr     = (packet_header*) scat->elements[0].buf;
+  ack_len  = phdr->ack_len;
+  buff     = (char*) scat->elements[1].buf;
+
   if (lk->r_data == NULL) { 
     Alarm(EXIT, "Process_ack_packet: ack packet for non-reliable link?!\r\n");
   }
 
   if (lk->r_data->flags & CONNECTED_LINK) {
-    Process_Ack(lk->link_id, buf, ack_len, type);
+    Process_Ack(lk->link_id, buff, ack_len, type);
   }
 }   

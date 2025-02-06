@@ -99,6 +99,7 @@ AC_PTHREAD_FREEBSD
 AC_SUBST(THLDFLAGS)
  LDFLAGS=$OLDLDFLAGS
 
+AC_CHECK_LIB(crypto, PEM_read_PUBKEY, , )
 AC_CHECK_LIB(pthread, pthread_create, , )
 AC_CHECK_LIB(thread, thr_create, , )
 AC_CHECK_LIB(posix4, sem_wait, , )
@@ -117,6 +118,9 @@ AC_CHECK_HEADERS(arpa/inet.h assert.h errno.h grp.h limits.h netdb.h netinet/in.
 
 # New checks to support wireless
 AC_CHECK_HEADERS(features.h netpacket/packet.h net/ethernet.h net/if_arp.h dlfcn.h)
+
+# New checks to support crypto
+AC_CHECK_HEADERS(openssl/dh.h openssl/engine.h openssl/evp.h openssl/hmac.h openssl/pem.h openssl/sha.h)
 
 dnl    Checks for library functions.
 AC_CHECK_FUNCS(bcopy inet_aton inet_ntoa inet_ntop memmove setsid snprintf strerror lrand48)
@@ -726,8 +730,8 @@ mips-sgi-irix*)
 	SHLD="$CC -shared"
 	SHLDFLAGS="$SHLDFLAGS $LDFLAGS"
 	SHLIBS=$LIBS
-	SHLDCONVERTSTATIC="-Wl,-whole-archive"
-	SHLDCONVERTSTATICEND="-Wl,-no-whole-archive"
+	SHLDCONVERTSTATIC="-Wl,--whole-archive"
+	SHLDCONVERTSTATICEND="-Wl,--no-whole-archive"
 	;;
 esac
 

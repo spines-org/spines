@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2015 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -143,6 +143,8 @@ int Groups_Is_state_relevant(void *state)
 
 int Groups_Set_state_header(void *state, char *pos)
 {
+  UNUSED(state);
+  UNUSED(pos);
   return 0;  /* Nothing for now... */
 }
 
@@ -152,6 +154,8 @@ int Groups_Set_state_header(void *state, char *pos)
 
 int Groups_Set_state_cell(void *state, char *pos)
 {
+  UNUSED(state);
+  UNUSED(pos);
   return 0;  /* Nothing for now... */
 }
 
@@ -197,6 +201,9 @@ void *Groups_Process_state_cell(Node_ID source,  /* originator of join/leave */
 {
   group_cell_packet *group_cell = (group_cell_packet*) pos;
   Group_State       *g_state;
+
+  UNUSED(sender);
+  UNUSED(type);
 
   if ((g_state = (Group_State*) Find_State(&All_Groups_by_Node, source, group_cell->dest)) == NULL) {
     g_state = Create_Group(source, group_cell->dest);
@@ -539,6 +546,9 @@ void Print_Mcast_Groups(int dummy_int, void* dummy)
     spines_trace spt;
     int i;
     char file_name[50];
+
+    UNUSED(dummy_int);
+    UNUSED(dummy);
 
     sprintf(file_name, MCAST_SNAPSHOT_FILE, Port);
 

@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2015 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -62,7 +62,6 @@ extern stdhash   All_Groups_by_Name;
 extern stdhash   Neighbors;
 extern int       Unicast_Only;
 
-
 /* Local variables */
 static const sp_time zero_timeout        = {     0,     0};
 static const sp_time short_timeout       = {     0, 10000};
@@ -81,9 +80,7 @@ static const sp_time short_timeout       = {     0, 10000};
 /* Arguments                                               */
 /*                                                         */
 /* sender_id: IP of the node that gave me the message      */
-/* buff:      a buffer containing the message              */
-/* data_len:  length of the data in the packet             */
-/* ack_len:   length of the ack in the packet              */
+/* scat:      a sys_scatter containing the message         */
 /* type:      type of the packet                           */
 /* mode:      mode of the link the packet arrived on       */
 /*                                                         */
@@ -94,23 +91,38 @@ static const sp_time short_timeout       = {     0, 10000};
 /*                                                         */
 /***********************************************************/
 
-void Process_rel_udp_data_packet(Link *lk, char *buff, 
-				 int16u data_len, int16u ack_len,
+void Process_rel_udp_data_packet(Link *lk, sys_scatter *scat,
 				 int32u type, int mode)
 {
-  udp_header    *hdr = (udp_header*) buff;
-  reliable_tail *r_tail;
-  Reliable_Data *r_data;
-  int            flag;
-    
+
+  packet_header  *phdr;
+  int16u          data_len, ack_len;
+  char           *buff;
+  udp_header     *hdr;
+  reliable_tail  *r_tail;
+  Reliable_Data  *r_data;
+  int             flag;
+  
+  if (scat->num_elements != 2) {
+    Alarm(PRINT, "Proces_rel_udp_data_packet: Dropping packet because "
+        "scat->num_elements == %d instead of 2\r\n", scat->num_elements);
+    return;
+  }
+
+  phdr     = (packet_header*) scat->elements[0].buf;
+  data_len = phdr->data_len; 
+  ack_len  = phdr->ack_len;
+  hdr      = (udp_header*) scat->elements[1].buf;
+  buff     = (char*) scat->elements[1].buf;
+
   if (!Same_endian(type)) {
     Flip_udp_hdr(hdr);
   }
 
-  if (hdr->len + sizeof(udp_header) != data_len) {
+  /* if (hdr->len + sizeof(udp_header) != data_len) {
     Alarm(PRINT, "Process_rel_udp_data_packet: Packed data not available yet!\r\n");
     return;
-  }
+  } */
   
   r_data = (Reliable_Data*) lk->r_data;
 
@@ -147,12 +159,16 @@ void Process_rel_udp_data_packet(Link *lk, char *buff,
     return;
   }
 	    
-  Deliver_and_Forward_Data(buff, data_len, mode, lk);
+  /* REG ROUTING HACK */
+  scat->elements[1].len = phdr->data_len;
+  Deliver_and_Forward_Data(scat, mode, lk);
+  /* REG ROUTING HACK */
+  scat->elements[1].len = sizeof(packet_body);
 }
 
 /***********************************************************/
-/* int Forward_Rel_UDP_Data((Node *next_hop, char *buff,   */
-/*                       int16u buf_len, int32u type)      */
+/* int Forward_Rel_UDP_Data((Node *next_hop,               */
+/*                  sys_scatter *msg_scat, int32u type)    */
 /*                                                         */
 /*                                                         */
 /*                                                         */
@@ -162,8 +178,7 @@ void Process_rel_udp_data_packet(Link *lk, char *buff,
 /* Arguments                                               */
 /*                                                         */
 /* next_hop:  the next node on the path                    */
-/* buff:      a buffer containing the message              */
-/* buf_len:   length of the packet                         */
+/* msg_scat:  a sys_scatter containing the message         */
 /* type:      type of the message                          */
 /*                                                         */
 /*                                                         */
@@ -173,16 +188,22 @@ void Process_rel_udp_data_packet(Link *lk, char *buff,
 /*                                                         */
 /***********************************************************/
 
-int Forward_Rel_UDP_Data(Node *next_hop, char *buff, int16u buf_len, int32u type)
+int Forward_Rel_UDP_Data(Node *next_hop, sys_scatter *scat, int32u type)
 {
-    Link *lk;
+    Link   *lk;
+
+    if (scat->num_elements !=  2) {
+        Alarm(PRINT, "Forward_Rel_UDP_Data: Malformed sys_scatter: num_elements == %d\r\n",
+                    scat->num_elements);
+        return BUFF_DROP;
+    }
 
     if (type & DATA_MASK) {
       Alarm(EXIT, "Forward_Rel_UDP_Data: Data type already set?!\r\n");
     }
     
     if (next_hop == This_Node) {
-      Process_udp_data_packet(NULL, buff, buf_len, (type | UDP_DATA_TYPE), UDP_LINK);
+      Process_udp_data_packet(NULL, scat, (type | UDP_DATA_TYPE), UDP_LINK);
       return BUFF_EMPTY;
     }
 
@@ -190,7 +211,27 @@ int Forward_Rel_UDP_Data(Node *next_hop, char *buff, int16u buf_len, int32u type
       return BUFF_DROP;
     }
 
-    Reliable_Send_Msg(lk->link_id, buff, buf_len, (type | REL_UDP_DATA_TYPE));
+    Reliable_Send_Msg(lk->link_id, scat->elements[1].buf, scat->elements[1].len, (type | REL_UDP_DATA_TYPE));
 
     return BUFF_OK;
+}
+
+/***********************************************************/
+/* Request Resources to forward a Reliable UDP data packet */
+/*                                                         */
+/* Arguments                                               */
+/*                                                         */
+/* next_hop:  the next node on the path                    */
+/* callback:  function to call when resources are availble */
+/*                                                         */
+/* Return Value                                            */
+/*                                                         */
+/* 1 - Resources available                                 */
+/* 0 - Resources not available                             */
+/*                                                         */
+/***********************************************************/
+int Request_Resources_Rel_UDP(Node *next_hop, int (*callback)(Node*, int))
+{
+    (*callback)(next_hop, RELIABLE_UDP_LINK);
+    return 1;
 }

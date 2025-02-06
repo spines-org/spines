@@ -33,6 +33,12 @@
 
 #include <string.h>
 #include <stdlib.h>
+
+#ifndef NDEBUG  /* NOTE: turn this off if you want asserts for debugging */
+#  define NDEBUG
+#endif
+#include <assert.h>
+
 #include <unistd.h>
 #include <netdb.h>
 #include <sys/socket.h>
@@ -54,6 +60,13 @@
 #include "spu_events.h"
 #include "net_types.h"
 #include "session.h" 
+
+#ifndef PRIORITY_TYPE_MSG
+#  define PRIORITY_TYPE_MSG   24
+#  define EXPIRATION_TYPE_MSG 25
+#  define DIS_PATHS_TYPE_MSG  26
+#endif
+
 #include "stdutil/stderror.h"
 #include "stdutil/stdthread.h"
 
@@ -72,7 +85,10 @@
 */
 
 /*#define MAX_SPINES_MSG 1400 */ /* (packet_body ) 1456 - ( (udp_header) 28 + (rel_ses_pkt_add) 8 + (reliable_ses_tail) 12 + (reliable_tail) 8 ) = 1456 - 56 */
+
+#if 0
 #define MAX_SPINES_MSG (MAX_PACKET_SIZE /* ethernet - IP - UDP */ - sizeof(packet_header) - (sizeof(udp_header) + sizeof(rel_udp_pkt_add) + sizeof(reliable_ses_tail) + sizeof(reliable_tail)))
+#endif
 
 #define MAX_APP_CLIENTS  1024
 
@@ -90,10 +106,11 @@ static int             init_flag  = 0;
 static stdmutex	       data_mutex = { 0 };
 
 
-void	Flip_udp_hdr( udp_header *udp_hdr )
+static void	Flip_udp_hdr( udp_header *udp_hdr )
 {
     udp_hdr->source	  = Flip_int32( udp_hdr->source );
     udp_hdr->dest	  = Flip_int32( udp_hdr->dest );
+    udp_hdr->reserved32   = Flip_int32( udp_hdr->reserved32 );
     udp_hdr->source_port  = Flip_int16( udp_hdr->source_port );
     udp_hdr->dest_port	  = Flip_int16( udp_hdr->dest_port );
     udp_hdr->len	  = Flip_int16( udp_hdr->len );
@@ -224,6 +241,19 @@ int Send_Initial_UDP_Packet_To_Server(int s, int srv_addr, int srv_port, int my_
     u_hdr.dest_port     =	port;
     u_hdr.len		=	len;
 
+#if 0
+    TODO -- Set ttl?
+
+    /* set the TTL of the packet */
+    if(!Is_mcast_addr(u_hdr.dest) && !Is_acast_addr(u_hdr.dest)) { 
+	/* This is unicast */
+	u_hdr.ttl = l_ip_ttl;
+    } else { 
+	/* This is a multicast */
+	u_hdr.ttl = l_mcast_ttl;
+    }
+#endif
+
     scat.num_elements = 3;
     scat.elements[0].len = sizeof(int);
     scat.elements[0].buf = (char*)&sess_id;
@@ -268,25 +298,35 @@ int Send_Initial_UDP_Packet_To_Server(int s, int srv_addr, int srv_port, int my_
 int  spines_socket(int domain, int type, int protocol, 
 		   const struct sockaddr *serv_addr)
 {
-    struct sockaddr_in host, my_host;
+    struct sockaddr_in ctrl_host, host;
     udp_header *u_hdr;
     char buf[MAX_PACKET_SIZE];
     int32 *total_len;
     int32 *msg_type;
     int ret, sk, u_sk, ctrl_sk, s_ctrl_sk, client;
     int val = 1;
-    int32 *flag_var, *rnd_var, *port_var, *addr_var;
+    int32 *flag_var, *route_var, *rnd_var, *port_var, *addr_var;
     struct hostent  *host_ptr;
     char   machine_name[256];
-    int address, port, udp_port;
+    int address, port, udp_port, local_addr;
     int rnd_num, sess_id;
     sp_time t_now;
-    int link_prot, connect_flag;
+    int link_prot, route_prot, connect_flag;
     int tot_bytes, recv_bytes;
     int v_local_port;
     int32 endianess_type;
     int i;
     unsigned int lenval;
+
+    struct sockaddr *ctrl_sk_addr     = NULL;
+    socklen_t        ctrl_sk_addr_len = 0;
+    struct sockaddr *sk_addr          = NULL;
+    socklen_t        sk_addr_len      = 0;
+
+#if 0
+    struct	sockaddr_un	unix_ctrl_sk_addr;
+    struct	sockaddr_un	unix_sk_addr;
+#endif	/* ARCH_PC_WIN95 */
 
     if (type != SOCK_DGRAM && type != SOCK_STREAM) {
       Alarm(PRINT, "spines_socket(): Unknown socket type: %d\n", type);
@@ -295,6 +335,7 @@ int  spines_socket(int domain, int type, int protocol,
     }
 
     link_prot    = protocol & RESERVED_LINKS_BITS;
+    route_prot   = protocol & RESERVED_ROUTING_BITS;
     connect_flag = protocol & UDP_CONNECT;
 
     if (connect_flag && type != SOCK_DGRAM) {
@@ -310,23 +351,118 @@ int  spines_socket(int domain, int type, int protocol,
 
     total_len = (int32*)(buf);
     u_hdr = (udp_header*)(buf+sizeof(int32));
-    msg_type = (int32*)(buf+sizeof(int32)+sizeof(udp_header));
-    flag_var = (int32*)(buf+sizeof(int32)+sizeof(udp_header)+sizeof(int32));
-    rnd_var = (int32*)(buf+sizeof(int32)+sizeof(udp_header)+2*sizeof(int32));
-    addr_var = (int32*)(buf+sizeof(int32)+sizeof(udp_header)+3*sizeof(int32));
-    port_var = (int32*)(buf+sizeof(int32)+sizeof(udp_header)+4*sizeof(int32));
+    msg_type  = (int32*)(buf+sizeof(int32)+sizeof(udp_header));
+    flag_var  = (int32*)(buf+sizeof(int32)+sizeof(udp_header)+sizeof(int32));
+    route_var = (int32*)(buf+sizeof(int32)+sizeof(udp_header)+2*sizeof(int32));
+    rnd_var   = (int32*)(buf+sizeof(int32)+sizeof(udp_header)+3*sizeof(int32));
+    addr_var  = (int32*)(buf+sizeof(int32)+sizeof(udp_header)+4*sizeof(int32));
+    port_var  = (int32*)(buf+sizeof(int32)+sizeof(udp_header)+5*sizeof(int32));
 
-    sk = socket(AF_INET, SOCK_STREAM, 0);        
-    ctrl_sk = socket(AF_INET, SOCK_STREAM, 0);        
+    /* lookup local machine address */
 
-    if (sk < 0 || ctrl_sk < 0) {
-	Alarm(PRINT, "spines_socket(): Can not initiate socket...");
-	/* errno set by OS level call */
-	return(-1);
+    gethostname(machine_name, sizeof(machine_name)); 
+    host_ptr = gethostbyname(machine_name);
+
+    if (host_ptr == NULL || host_ptr->h_addrtype != AF_INET || host_ptr->h_length != 4) {
+      Alarm(PRINT, "spines_socket(): could not get my default IPv4 interface (my name is '%s')\n", machine_name);
+      local_addr = 0;
+
+      if (type == SOCK_DGRAM && connect_flag == UDP_CONNECT) {
+        spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
+	return(-1);      
+      }
+
+    } else {
+      memcpy(&local_addr, host_ptr->h_addr, sizeof(struct in_addr));
+      local_addr = ntohl(local_addr);
     }
 
-    /* Increase the buffer on the socket used for sending and receiving data. */
-    for(i=10; i <= 200; i+=5) {
+    /* lookup daemon address */
+
+    if (serv_addr != NULL) {
+	memcpy(&host, serv_addr, sizeof(struct sockaddr_in));
+    }
+    else {
+	memcpy(&host, &spines_addr, sizeof(struct sockaddr_in));
+    }
+
+    address = ntohl(host.sin_addr.s_addr);
+    port    = ntohs(host.sin_port);
+
+#if 0
+
+    /* check if daemon address is a local address: use unix IPC */
+
+    if (address == local_addr || address == ((127 << 24) | (0 << 16) | (0 << 8) | 1)) {
+
+      printf("HELLO WORLD: Using unix sockets!\n");
+
+      memset(&unix_ctrl_sk_addr, 0, sizeof(unix_ctrl_sk_addr));
+      memset(&unix_sk_addr,      0, sizeof(unix_sk_addr));
+
+      unix_ctrl_sk_addr.sun_family = AF_UNIX;
+      unix_sk_addr.sun_family      = AF_UNIX;
+
+      sprintf(unix_ctrl_sk_addr.sun_path, "%s/%hu", SPINES_UNIX_SOCKET_DIR, (unsigned short) (port + SESS_CTRL_PORT));
+      sprintf(unix_sk_addr.sun_path,      "%s/%hu", SPINES_UNIX_SOCKET_DIR, (unsigned short) (port + SESS_PORT));
+
+      ctrl_sk_addr = (struct sockaddr*) &unix_ctrl_sk_addr;
+      sk_addr      = (struct sockaddr*) &unix_sk_addr;
+
+      ctrl_sk_addr_len = sizeof(unix_ctrl_sk_addr);
+      sk_addr_len      = sizeof(unix_sk_addr);
+      
+      ctrl_sk = socket(AF_UNIX, SOCK_STREAM, 0);
+      sk      = socket(AF_UNIX, SOCK_STREAM, 0);
+
+      if (sk < 0 || ctrl_sk < 0) {
+	  Alarm( PRINT, "spines_socket: unable to create unix socket %d %d %d '%s'\n", sk, ctrl_sk, errno, strerror(errno));
+	  return(-1);
+      }
+
+    } else {  /* daemon is remote */
+
+#endif
+
+      memset(&ctrl_host, 0, sizeof(ctrl_host));
+      memset(&host, 0, sizeof(host));
+
+      ctrl_host.sin_family = AF_INET;
+      host.sin_family      = AF_INET;
+
+      ctrl_host.sin_port = htons((int16)(port + SESS_CTRL_PORT));
+      host.sin_port      = htons((int16)(port + SESS_PORT));
+
+      ctrl_host.sin_addr.s_addr = htonl( address );
+      host.sin_addr.s_addr = htonl( address );
+
+      ctrl_sk_addr  = (struct sockaddr*) &ctrl_host;
+      sk_addr       = (struct sockaddr*) &host;
+
+      ctrl_sk_addr_len = sizeof(ctrl_host);
+      sk_addr_len      = sizeof(host);
+
+      ctrl_sk = socket(AF_INET, SOCK_STREAM, 0);        
+      sk      = socket(AF_INET, SOCK_STREAM, 0);
+
+      ret  = setsockopt(sk,      IPPROTO_TCP, TCP_NODELAY, (val = 1, &val), sizeof(val));
+      ret += setsockopt(ctrl_sk, IPPROTO_TCP, TCP_NODELAY, (val = 1, &val), sizeof(val));
+      
+      if (sk < 0 || ctrl_sk < 0 || ret < 0) {
+	Alarm(PRINT, "spines_socket(): Failed to create and/or set socket option TCP_NODELAY\n");
+	close(sk);
+	close(ctrl_sk);
+	/* errno set by OS level call */
+	return(-1);
+      }
+
+#if 0
+    }
+#endif
+
+    /* Increase the buffer on the socket used for sending and receiving Moon
+     * data. */
+    for(i=64; i <= 256; i+=8) {
 	val = 1024*i;
 
 	ret = setsockopt(sk, SOL_SOCKET, SO_SNDBUF, (void *)&val, sizeof(val));
@@ -345,74 +481,22 @@ int  spines_socket(int domain, int type, int protocol,
 	if(val < i*1024 ) break;
 	Alarm(DEBUG, "spines_socket: set rcvbuf %d, ret is %d\n", val, ret);
     }
+
     Alarm(DEBUG, "spines_socket: set sndbuf/rcvbuf to %d\n", 1024*(i-5));
-
-    ret = setsockopt(sk, IPPROTO_TCP, TCP_NODELAY, (char *)&val, sizeof(val));
-    ret += setsockopt(ctrl_sk, IPPROTO_TCP, TCP_NODELAY, (char *)&val, sizeof(val));
-
-    if (ret < 0) {
-	Alarm(PRINT, "spines_socket(): Failed to set socket option TCP_NODELAY\n");
-	close(sk);
-	close(ctrl_sk);
-	/* errno set by OS level call */
-	return(-1);
-    }
 
     u_sk = sk;
 
-    if(serv_addr != NULL) {
-	memcpy(&host, serv_addr, sizeof(struct sockaddr_in));
-    }
-    else if(init_flag == 1) {
-	memcpy(&host, &spines_addr, sizeof(struct sockaddr_in));
-    }
-    else {
-	/* No info about where the Spines server is. Try local machine */
-	gethostname(machine_name,sizeof(machine_name)); 
-	host_ptr = gethostbyname(machine_name);
-	
-	if(host_ptr == NULL) {
-	  Alarm(PRINT, "spines_socket(): could not get my default interface (my name is %s)\n", machine_name );
-	  close(sk);
-	  close(ctrl_sk);
-	  spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
-	  return(-1);
-	}
-	if(host_ptr->h_addrtype != AF_INET) {
-	    Alarm(PRINT, "spines_socket(): Sorry, cannot handle addr types other than IPv4\n");
-	    close(sk);
-	    close(ctrl_sk);
-	    spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
-	    return(-1);
-	}
-	
-	if(host_ptr->h_length != 4) {
-	    Alarm(PRINT, "spines_socket(): Bad IPv4 address length\n");
-	    close(sk);
-	    close(ctrl_sk);
-	    spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
-	    return(-1);
-	}
-	memcpy(&host.sin_addr.s_addr, host_ptr->h_addr, sizeof(struct in_addr));
-
-	host.sin_port   = htons((int16)DEFAULT_SPINES_PORT);
-    }
-
-    address = ntohl(host.sin_addr.s_addr);
-    port = ntohs(host.sin_port);
-
-    /* Create the control socket for receiving control information.
+    /* Connect the control socket for receiving control information.
        Required for receiving control information without interfering 
        with the regular flow of data packets in the regular spines socket 
        Never send any packet with this socket.  Only for receiving. */
-    host.sin_family = AF_INET;
-    host.sin_port   = htons((int16)(port+SESS_CTRL_PORT));
 
-    Alarm(PRINT, "spines_socket: Connecting to " IPF ":%hd!\r\n", IP_NET(host.sin_addr.s_addr), ntohs(host.sin_port));
+    Alarm(PRINT, "spines_socket: Connecting!\r\n");
 
-    ret = connect(ctrl_sk, (struct sockaddr *)&host, sizeof(host));
+    ret = connect(ctrl_sk, ctrl_sk_addr, ctrl_sk_addr_len);
+
     if( ret < 0) {
-      Alarm(PRINT, "spines_socket(): Can not initiate connection to Spines @ "IPF":%hd...\n", IP(address), port+SESS_CTRL_PORT);
+      Alarm(PRINT, "spines_socket(): Can not initiate ctrl connection to Spines!\r\n");
       close(sk);
       close(ctrl_sk);
       spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
@@ -432,12 +516,11 @@ int  spines_socket(int domain, int type, int protocol,
     }
 
     /* Create Spines socket, for sending/receiving data and sending control/commands */
-    host.sin_family = AF_INET;
-    host.sin_port   = htons((int16)(port+SESS_PORT));
 
-    ret = connect(sk, (struct sockaddr *)&host, sizeof(host));
+    ret = connect(sk, sk_addr, sk_addr_len);
+
     if( ret < 0) {
-	Alarm(PRINT, "spines_socket(): Can not initiate connection to Spines @ "IPF":%hd...\n",IP(address), port+SESS_PORT);
+        Alarm(PRINT, "spines_socket(): Can not initiate connection to Spines!\r\n");
 	spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
 	return(-1);
     }
@@ -457,7 +540,7 @@ int  spines_socket(int domain, int type, int protocol,
        * data. This code is similar to the code used to increase the size of
        * the tcp socket. TODO APRIL 23, 2009 Verify that the buffer should be
        * set this high. */
-      for(i=10; i <= 200; i+=5) {
+      for(i=64; i <= 256; i+=8) {
 	  val = 1024*i;
 
 	  ret = setsockopt(u_sk, SOL_SOCKET, SO_SNDBUF, (void *)&val, sizeof(val));
@@ -477,51 +560,20 @@ int  spines_socket(int domain, int type, int protocol,
 	  Alarm(DEBUG, "spines_socket: set rcvbuf %d, ret is %d\n", val, ret);
       }
       Alarm(DEBUG, "spines_socket: set u_sk sndbuf/rcvbuf to %d\n", 1024*(i-5));
-
-      memset((void*)&my_host, 0x0, sizeof(my_host));
-      my_host.sin_family = AF_INET;
-
-      gethostname(machine_name,sizeof(machine_name)); 
-      host_ptr = gethostbyname(machine_name);
-	
-      if(host_ptr == NULL) {
-	Alarm(PRINT, "5 spines_socket(): could not get my default interface (my name is %s)\n", machine_name );
-        close(sk);
-        close(ctrl_sk);
-        spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
-	return(-1);
-      }
-      if(host_ptr->h_addrtype != AF_INET) {
-	Alarm(PRINT, "spines_socket(): Sorry, cannot handle addr types other than IPv4\n");
-        close(sk);
-        close(ctrl_sk);
-        spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
-	return(-1);
-      }
-      
-      if(host_ptr->h_length != 4) {
-	Alarm(PRINT, "spines_socket(): Bad IPv4 address length\n");
-        close(sk);
-        close(ctrl_sk);
-        spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
-	return(-1);
-      }
-      
-      memcpy(&my_host.sin_addr.s_addr, host_ptr->h_addr, sizeof(struct in_addr));	
-      /* memcpy(&my_host.sin_addr.s_addr, &host.sin_addr.s_addr, sizeof(struct in_addr));*/      
     }
 
     *flag_var = link_prot;
+    *route_var = route_prot;
     *rnd_var = rnd_num;
     if((type == SOCK_DGRAM)&&(connect_flag == UDP_CONNECT)) {
-	*addr_var = ntohl(my_host.sin_addr.s_addr);
+        *addr_var = local_addr;
 	*port_var = udp_port;
     }
     else {
 	*addr_var = -1;
 	*port_var = -1;
     }
-    *total_len = (int32)(sizeof(udp_header) + 5*sizeof(int32));
+    *total_len = (int32)(sizeof(udp_header) + 6*sizeof(int32));
 
     u_hdr->source = 0;
     u_hdr->dest   = 0;
@@ -580,7 +632,7 @@ int  spines_socket(int domain, int type, int protocol,
 	tot_bytes += ret;
     }   
 
-    if(tot_bytes != sizeof(udp_header)+sizeof(int32)+5*sizeof(int32)) {
+    if(tot_bytes != sizeof(udp_header)+sizeof(int32)+6*sizeof(int32)) {
 	Alarm(PRINT, "spines_socket(2): Can not initiate connection to Spines...\n");
 	close(sk);
 	close(ctrl_sk);
@@ -652,7 +704,7 @@ int  spines_socket(int domain, int type, int protocol,
 	spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
 	return(-1);
     }
-    sess_id = *(int*)buf;
+    sess_id = *((int*)buf);
     v_local_port = *(int*)(buf + sizeof(sess_id));
 
 
@@ -660,7 +712,7 @@ int  spines_socket(int domain, int type, int protocol,
     stdmutex_grab(&data_mutex); {
       if(type == SOCK_DGRAM) {
 	all_clients[client].udp_sk              = u_sk;
-	all_clients[client].my_addr             = ntohl(my_host.sin_addr.s_addr);    
+	all_clients[client].my_addr             = local_addr;
 	all_clients[client].my_port             = udp_port;
 	all_clients[client].connect_flag        = connect_flag;
       }    
@@ -758,6 +810,57 @@ void spines_close(int s)
     if((type == SOCK_DGRAM)&&(connect_flag == UDP_CONNECT)) {
       close(tcp_sk);
     }
+}
+
+/***********************************************************/
+/* void spines_shutdown(int sk)                            */
+/*                                                         */
+/* Shuts down a Spines socket                              */
+/*                                                         */
+/* Arguments                                               */
+/*                                                         */
+/* sk: the socket defining the connection to Spines        */
+/*                                                         */
+/*                                                         */
+/* Return Value                                            */
+/*                                                         */
+/* NONE                                                    */
+/*                                                         */
+/***********************************************************/
+
+void spines_shutdown(int s)
+{
+    int client, type, tcp_sk, connect_flag;
+
+    stdmutex_grab(&data_mutex); {
+
+      client = spines_get_client(s);
+      if(client == -1) {
+	stdmutex_drop(&data_mutex);
+	return;
+      }
+      type = all_clients[client].type;
+      tcp_sk = all_clients[client].tcp_sk;
+      connect_flag = all_clients[client].connect_flag;
+
+    } stdmutex_drop(&data_mutex);
+
+#ifdef ARCH_PC_WIN95
+    shutdown(s, SD_BOTH);
+    shutdown(Control_sk[s%MAX_CTRL_SOCKETS], SD_BOTH);
+
+    if((type == SOCK_DGRAM)&&(connect_flag == UDP_CONNECT)) {
+      shutdown(tcp_sk, SD_BOTH);
+    }
+
+#else
+    shutdown(s, SHUT_RDWR);
+    shutdown(Control_sk[s%MAX_CTRL_SOCKETS], SHUT_RDWR);
+
+    if ((type == SOCK_DGRAM)&&(connect_flag == UDP_CONNECT)) {
+      shutdown(tcp_sk, SHUT_RDWR);
+    }
+#endif
 }
 
 
@@ -1069,6 +1172,7 @@ int  spines_recvfrom_internal(int s, void *buf, size_t len, int flags,
                * Since Force TCP is true and the received_bytes == 0
                * This means the conection was closed orderly -- Not an error
                */
+	      Alarm(PRINT, "spines_recvfrom(): recvd 0!\n");
               return(-1);
 
             } else if(received_bytes <= 0) {
@@ -1289,6 +1393,7 @@ int  spines_setsockopt(int s, int  level,  int  optname,
     int32 *type;
     int sk, ret, response_expected;
     int client, tcp_sk, udp_sk, my_type;
+    spines_nettime expiration;
 
     if( optname != SPINES_ADD_MEMBERSHIP &&
         optname != SPINES_DROP_MEMBERSHIP &&
@@ -1298,7 +1403,10 @@ int  spines_setsockopt(int s, int  level,  int  optname,
         optname != SPINES_TRACEROUTE &&
         optname != SPINES_EDISTANCE &&
         optname != SPINES_MEMBERSHIP &&
-        optname != SPINES_ADD_NEIGHBOR       ) {
+        optname != SPINES_ADD_NEIGHBOR &&       
+        optname != SPINES_SET_PRIORITY &&
+        optname != SPINES_SET_EXPIRATION &&
+        optname != SPINES_DISJOINT_PATHS ) {
 	return(-1);
     }
 
@@ -1436,7 +1544,41 @@ int  spines_setsockopt(int s, int  level,  int  optname,
 	    return(-1); 
         }
 	cmd->dest = ntohl(((struct sockaddr_in*)optval)->sin_addr.s_addr);
-    } else { 
+    } 
+    /* added for priority flooding */
+    else if (optname == SPINES_SET_PRIORITY) {
+        *type = PRIORITY_TYPE_MSG;
+        if(optlen < sizeof(int16u))  {
+            Alarm(PRINT, "return buffer space is too small\r\n");
+            spines_set_errno(SP_ERROR_INPUT_ERR);
+            return(-1);
+        }
+        cmd->dest = *((int16u*)(optval));
+    }
+    else if (optname == SPINES_SET_EXPIRATION) {
+        *type = EXPIRATION_TYPE_MSG;
+        if(optlen < 2*sizeof(int32u))  {
+            Alarm(PRINT, "return buffer space is too small\r\n");
+            spines_set_errno(SP_ERROR_INPUT_ERR);
+            return(-1);
+        }
+        expiration  = *((spines_nettime*)(optval));
+        cmd->source = expiration.sec;
+        cmd->dest   = expiration.usec;
+    }
+    /* end added for priority flooding */
+    /* added for K-paths */
+    else if (optname == SPINES_DISJOINT_PATHS) {
+        *type = DIS_PATHS_TYPE_MSG;
+        if(optlen < sizeof(int16u))  {
+            Alarm(PRINT, "return buffer space is too small\r\n");
+            spines_set_errno(SP_ERROR_INPUT_ERR);
+            return(-1);
+        }
+        cmd->dest = *((int16u*)(optval));
+    }    
+    /* end added for K-paths */
+    else { 
 	Alarm(PRINT, "spines_setsockopt(): Bad Option\n");
 	spines_set_errno(SP_ERROR_INPUT_ERR);
 	return(-1);
@@ -2049,6 +2191,68 @@ int spines_setlink(int sk, int remote_interf_id, int local_interf_id,
     return(0);  
 }
 
+/***********************************************************/
+/* int spines_dissemination(int sk, int paths,             */
+/*                             int overwrite_ip)           */
+/*                                                         */
+/* Sets the dissemination method of all sessions           */
+/*                                                         */
+/* Arguments                                               */
+/*                                                         */
+/* sk:               the Spines socket (SOCK_STREAM type)  */
+/* paths:            number of paths (0 for flooding)      */
+/* overwrite_ip:     ip address to use to overwrite mcast  */
+/*                                                         */
+/* Return Value                                            */
+/*                                                         */
+/* (int)  0 if success                                     */
+/*       -1 otherwise                                      */
+/*                                                         */
+/***********************************************************/
+int spines_setdissemination(int sk, int paths, int overwrite_ip)
+{
+    udp_header *u_hdr, *cmd;
+    char pkt[MAX_PACKET_SIZE];
+    int32 *total_len;
+    int32 *path;
+    int32 *type;
+    int32 *overwrite;
+    int ret;
+
+    total_len = (int32*)(pkt);
+    u_hdr = (udp_header*)(pkt+sizeof(int32));
+    type = (int32*)(pkt+sizeof(int32)+sizeof(udp_header));
+    cmd = (udp_header*)(pkt+sizeof(int32)+sizeof(udp_header)+sizeof(int32));
+    path = (int32*)(pkt+sizeof(int32)+2*sizeof(udp_header)+sizeof(int32));
+    overwrite = (int32*)(pkt+sizeof(int32)+2*sizeof(udp_header)+2*sizeof(int32));
+
+    *path = paths; 
+    *overwrite = overwrite_ip;
+    
+    *total_len = (int32)(2*sizeof(udp_header) + 3*sizeof(int32));   
+    
+    u_hdr->source = 0;
+    u_hdr->dest   = 0;
+    u_hdr->len    = 0;
+
+    *type = SETDISSEM_TYPE_MSG;
+
+    cmd->source    = 0;
+    cmd->dest      = 0;
+    cmd->dest_port = 0;
+    cmd->len       = 2*sizeof(int32);
+
+    ret = send(sk, pkt, *total_len+sizeof(int32), 0);
+    
+    if(ret != 2*sizeof(udp_header)+4*sizeof(int32)) {
+        Alarm(PRINT, "spines_setdissemination(): communications error with spines daemon\n");
+        spines_set_errno(SP_ERROR_DAEMON_COMM_ERR);
+        return(-1);
+    }
+
+    return(0);  
+}
+
 
 int spines_get_client(int sk) {
   int i;
@@ -2253,4 +2457,128 @@ int spines_getsockname(int sk, struct sockaddr *name, socklen_t *nlen)
   
 }
 
+#define MAX_MSG_LEN ((0x1 << 20) - 1)
 
+int  spines_sendmsg( int s, const spines_msg *msg, int flags )
+{
+        int  ret;
+        int  buf_len;
+        int  i;
+        char buf[ MAX_MSG_LEN ];
+
+        if ( ( int ) msg->msg_iovlen < 0 )
+        {
+                Alarm( DEBUG, "spines_sendmsg(): illegal msg_iovlen\n" );
+                spines_set_errno( SP_ERROR_INPUT_ERR );
+                assert( 0 );
+                return -1;
+        }
+
+        for ( i = 0, buf_len = 0; i < (int) msg->msg_iovlen; ++i )
+        {
+                if ( ( int ) msg->msg_iov[ i ].iov_len < 0 )
+                {
+                        Alarm( DEBUG, "spines_sendmsg(): illegal iov_len\n" );
+                        spines_set_errno( SP_ERROR_INPUT_ERR );
+                        assert( 0 );
+                        return -1;
+                }
+
+                if ( buf_len + ( int ) msg->msg_iov[ i ].iov_len > MAX_MSG_LEN )
+                {
+                        Alarm( DEBUG, "spines_sendmsg(): msg too big!\n" );
+                        spines_set_errno( SP_ERROR_INPUT_ERR );
+                        assert( 0 );
+                        return -1;
+                }
+
+                memcpy( buf + buf_len, msg->msg_iov[ i ].iov_base, msg->msg_iov[ i ].iov_len );
+                buf_len += ( int ) msg->msg_iov[ i ].iov_len;
+        }
+
+        if ( msg->msg_name == NULL )
+        {
+                ret = spines_send( s, buf, buf_len, flags );
+        }
+        else
+        {
+                ret = spines_sendto( s, buf, buf_len, flags, msg->msg_name, msg->msg_namelen );
+        }
+
+        return ret;
+}
+
+int  spines_recvmsg(int s, spines_msg *msg, int flags)
+{
+        int  ret;
+        int  buf_len;
+        int  adv_bytes;
+        int  i;
+        char buf[ MAX_MSG_LEN ];
+
+        if ( ( int ) msg->msg_iovlen < 0 )
+        {
+                Alarm( DEBUG, "spines_recvmsg(): illegal msg_iovlen\n" );
+                spines_set_errno( SP_ERROR_INPUT_ERR );
+                assert( 0 );
+                return -1;
+        }
+
+        for ( i = 0, buf_len = 0; i < (int) msg->msg_iovlen; ++i )
+        {
+                if ( ( int ) msg->msg_iov[ i ].iov_len < 0 )
+                {
+                        Alarm( DEBUG, "spines_recvmsg(): illegal iov_len\n" );
+                        spines_set_errno( SP_ERROR_INPUT_ERR );
+                        assert( 0 );
+                        return -1;
+                }
+
+                if ( buf_len + ( int ) msg->msg_iov[ i ].iov_len > MAX_MSG_LEN )
+                {
+                        Alarm( DEBUG, "spines_recvmsg(): msg too big!\n" );
+                        spines_set_errno( SP_ERROR_INPUT_ERR );
+                        assert( 0 );
+                        return -1;
+                }
+
+                buf_len += ( int ) msg->msg_iov[ i ].iov_len;
+        }
+
+        if ( msg->msg_name == NULL )
+        {
+                ret = spines_recv( s, buf, buf_len, flags );
+        }
+        else
+        {
+                ret = spines_recvfrom( s, buf, buf_len, flags, msg->msg_name, &msg->msg_namelen );
+        }
+
+        if ( ret > 0 )
+        {
+                assert( ret <= buf_len );
+
+                for ( i = 0, adv_bytes = 0; i < (int) msg->msg_iovlen && adv_bytes < ret; ++i )
+                {
+                        int cpy_bytes = ( int ) msg->msg_iov[ i ].iov_len;
+
+                        if ( adv_bytes + cpy_bytes >= ret )
+                        {
+                                cpy_bytes = ret - adv_bytes;
+                        }
+
+                        memcpy( msg->msg_iov[ i ].iov_base, buf + adv_bytes, cpy_bytes );
+                        adv_bytes += cpy_bytes;
+                }
+
+                if ( adv_bytes != ret )
+                {
+                        Alarm( DEBUG, "spines_recvmsg(): bug!\n" );
+                        spines_set_errno( SP_ERROR_INPUT_ERR );
+                        assert( 0 );
+                        return -1;
+                }
+        }
+
+        return ret;
+}

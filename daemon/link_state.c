@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2015 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -57,6 +57,7 @@
 #include "net_types.h"
 #include "hello.h"
 #include "kernel_routing.h"
+#include "multipath.h"
 #include "spines.h"
 
 #define MAX_RETR_DELAY 30
@@ -273,7 +274,7 @@ void *Edge_Process_state_cell(Node_ID source, Node_ID sender, char *pos, int32 t
   
   if ((edge = Get_Edge(nd_source->nid, nd_dest->nid)) == NULL) {
 
-    edge = Create_Edge(nd_source->nid, nd_dest->nid);
+    edge = Create_Edge(nd_source->nid, nd_dest->nid, -1);
 
     if (nd_source == This_Node) {
       /* TODO: figure out what to do with this situation (e.g. - just rely on remote hellos to create correct leg?) */
@@ -303,6 +304,9 @@ void *Edge_Process_state_cell(Node_ID source, Node_ID sender, char *pos, int32 t
     edge->age  = edge_cell->age;
     edge->cost = edge_cell->cost;
     edge->lts  = edge_cell->lts;
+
+    /* Clear the cache stored for the K-paths calculation */
+    MultiPath_Clear_Cache();
 
     return edge;
 
@@ -337,6 +341,7 @@ int int16u_sklcmp(const void *a1, const void *a2)
 /*                                                         */
 /* source: IP address of the source                        */
 /* dest:   IP address of the destination                   */
+/* cost:   starting cost of this edge                      */
 /*                                                         */
 /*                                                         */
 /* Return Value                                            */
@@ -345,7 +350,7 @@ int int16u_sklcmp(const void *a1, const void *a2)
 /*                                                         */
 /***********************************************************/
 
-Edge* Create_Edge(Node_ID src_id, Node_ID dst_id) 
+Edge* Create_Edge(Node_ID src_id, Node_ID dst_id, int16 cost) 
 {
   sp_time      now = E_get_time();
   Node        *src_nd;
@@ -393,7 +398,7 @@ Edge* Create_Edge(Node_ID src_id, Node_ID dst_id)
     
   edge->my_timestamp_sec    = (int32) now.sec;
   edge->my_timestamp_usec   = (int32) now.usec;	    
-  edge->cost                = -1;
+  edge->cost                = cost;
   edge->age                 = 0;
 
   edge->src                 = src_nd;

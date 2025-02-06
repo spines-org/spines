@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2015 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -113,6 +113,14 @@
 #define int32u u_int32_t
 #endif
 
+#ifndef int64
+#define int64 int64_t
+#endif
+
+#ifndef int64u
+#define int64u uint64_t
+#endif
+
 #ifndef long64
 #define long64 long long
 #endif
@@ -192,6 +200,14 @@ char *soch_strerror(int err);  /* forward declare this func from the arch.c file
 
 #ifndef int64_t
 #define int64_t __int64
+#endif
+
+#ifndef int64
+#define int64 int64_t
+#endif
+
+#ifndef int64u
+#define int64u unsigned __int64 /* TODO: verify this is correct syntax */
 #endif
 
 /* Declare functions from arch.c */

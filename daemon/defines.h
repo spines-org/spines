@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2015 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -288,6 +288,10 @@ struct	sockaddr_un {
 /* which type of time to use? (api.c) */
 #ifdef HAVE_SYS_TIME_H
 #  define USE_TIMEVAL
+#endif
+
+#ifndef UNUSED
+#define UNUSED(x) (void)(x)
 #endif
 
 /** end of login recorder definitions */

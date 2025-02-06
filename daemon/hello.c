@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2015 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -60,18 +60,32 @@
 #include "realtime_udp.h"
 #include "route.h"
 #include "state_flood.h"
+#include "multipath.h"
+#include "configuration.h"
 
 #include "spines.h"
+
+/* Configuration File Variables */
+extern char        Config_File_Found;
+extern stdhash     Node_Lookup_Addr_to_ID;
+extern int16u      My_ID;
+extern int32u      *Neighbor_Addrs[];
+extern int16u      *Neighbor_IDs[];
 
 /* Local variables */
 
 static const sp_time zero_timeout   = {     0,    0};
-static       sp_time cnt_timeout    = {     0,    75000};
-             sp_time hello_timeout  = {     0,    75000};
+/* Default Values */
+/*static       sp_time cnt_timeout    = {     0,    75000};
+             sp_time hello_timeout  = {     0,    75000};*/
+/* For simulating Internet rerouting */
+static       sp_time cnt_timeout    = {     0,    999999};
+             sp_time hello_timeout  = {     0,    999999};
 static       sp_time ad_timeout     = {     6,    0};
 
 int          hello_cnt_start        = (int) (0.5 + 0.7 * DEAD_LINK_CNT); 
-int          stable_delay_flag      = 1;
+/* int          stable_delay_flag      = 1; */ /* DT */
+int          stable_delay_flag      = 0;
 double       stable_timeout         = 0.0;
 
 void Flip_hello_pkt( hello_packet *hello_pkt )
@@ -132,8 +146,12 @@ static void Dead_Leg(int linkid, void *dummy)
   sp_time t;
     
   if ((lk = Links[linkid]) == NULL || lk->link_type != CONTROL_LINK) {
-    Alarm(EXIT, "Dead_Leg: invalid control link!\r\n");
+    Alarm(DEBUG, "Dead_Leg: invalid control link!\r\n");
+    return;
   }
+
+  if (lk->leg->hellos_out < DEAD_LINK_CNT)
+    return;
 
   t = E_sub_time(E_get_time(), lk->leg->last_recv_hello);
 
@@ -169,7 +187,7 @@ void Send_Hello(int linkid, void *dummy)
   if (lk->leg->hellos_out > 1) {
     dead_timeout = E_sub_time(E_get_time(), lk->leg->last_recv_hello);  /* just tmp used for following print */
 
-    Alarm(PRINT, "Send_Hello: sent %d hellos (" IPF " -> " IPF ") with no response; it's been %.6f seconds since last receipt\n", 
+    Alarm(DEBUG, "Send_Hello: sent %d hellos (" IPF " -> " IPF ") with no response; it's been %.6f seconds since last receipt\n", 
 	  lk->leg->hellos_out + 1, IP(lk->leg->local_interf->net_addr), IP(lk->leg->remote_interf->net_addr), dead_timeout.sec + dead_timeout.usec / 1.0e6);
   }
 
@@ -298,7 +316,7 @@ void Send_Hello_Ping(int dummy_int, void* dummy)
 
     if (leg->status == DISCONNECTED_LEG) {
 
-      Alarm(PRINT, "Send_Hello_Ping: pinging on edge (" IPF " -> " IPF "); leg (" IPF " -> " IPF "); net (" IPF " -> " IPF")\r\n",
+      Alarm(DEBUG, "Send_Hello_Ping: pinging on edge (" IPF " -> " IPF "); leg (" IPF " -> " IPF "); net (" IPF " -> " IPF")\r\n",
 	    IP(leg->edge->src_id), IP(leg->edge->dst_id), 
 	    IP(leg->local_interf->iid), IP(leg->remote_interf->iid),
 	    IP(leg->local_interf->net_addr), IP(leg->remote_interf->net_addr));
@@ -418,7 +436,7 @@ void Net_Send_Hello_Ping(channel chan, Network_Address addr)
 /* lk: link on which hello message was recvd               */
 /* buf: a pointer to the message itself                    */
 /* remaining bytes: length of the message in the buffer    */
-/* type: first byt in the actual packet received, giving   */
+/* type: first byte in the actual packet received, giving  */
 /*       the type of the message, endianess, etc.          */
 /*                                                         */
 /***********************************************************/
@@ -431,7 +449,10 @@ void Process_hello_packet(Link *lk, packet_header *pack_hdr, char *buf, int rema
   sp_time       now         = E_get_time();
   hello_packet *pkt         = (hello_packet*) buf;
   int           update_cost = 0;
+  int16u        ngbr_id;
   int32         rtt_int;
+  stdit         it;
+  Edge_Key      key;
 
   if (remaining_bytes != sizeof(hello_packet)) {
     Alarm(EXIT, "Process_hello_packet: Wrong # of bytes for hello: %d\r\n", remaining_bytes);
@@ -447,17 +468,22 @@ void Process_hello_packet(Link *lk, packet_header *pack_hdr, char *buf, int rema
 
     if (leg->other_side_ctrl_link_id == 0) {                     /* other side initalizing his session link id */
 
-      Alarm(PRINT, "Process_hello_packet: sender ("IPF") initializing ctrl id to 0x%x!\n", 
+      Alarm(DEBUG, "Process_hello_packet: sender ("IPF") initializing ctrl id to 0x%x!\n", 
 	    IP(leg->remote_interf->net_addr), pack_hdr->ctrl_link_id);
 
       leg->other_side_ctrl_link_id = pack_hdr->ctrl_link_id;
       
     } else {                                                     /* other side previously set his session link id */ 
-      Alarm(PRINT, "Process_hello_packet: sender's ("IPF") ctrl id 0x%x doesn't match expected ctrl id 0x%x! Dropping!\n", 
+      Alarm(DEBUG, "Process_hello_packet: sender's ("IPF") ctrl id 0x%x doesn't match expected ctrl id 0x%x! Dropping!\n", 
 	    IP(leg->remote_interf->net_addr), pack_hdr->ctrl_link_id, leg->other_side_ctrl_link_id);
+      Disconnect_Network_Leg(leg);
+      Send_Hello( Create_Link(leg, CONTROL_LINK), NULL );
       return;
     }
   }
+
+  /* Dano Debugging */
+  /* Alarm(PRINT, "Process_hello_packet from "IPF"\n", IP(leg->remote_interf->net_addr)); */
 
   Check_Link_Loss(leg, pack_hdr->seq_no);
 
@@ -606,6 +632,26 @@ void Process_hello_packet(Link *lk, packet_header *pack_hdr, char *buf, int rema
       Create_Link(leg, RELIABLE_UDP_LINK);
       Create_Link(leg, REALTIME_UDP_LINK);
 
+      if (Config_File_Found == 1) {
+        stdhash_find(&Node_Lookup_Addr_to_ID, &it, &(leg->remote_interf->net_addr));
+        if (!stdhash_is_end(&Node_Lookup_Addr_to_ID,  &it)) {
+            ngbr_id = *(int16u *)stdhash_it_val(&it);
+
+            if (Directed_Edges == 0 && My_ID > ngbr_id) {
+                key.src_id = ngbr_id;
+                key.dst_id = My_ID;
+            }
+            else {
+                key.src_id = My_ID;
+                key.dst_id = ngbr_id;
+            }
+
+            stdskl_find(&Sorted_Edges, &it, &key);
+            if (!stdskl_is_end(&Sorted_Edges, &it))
+                Create_Link(leg, INTRUSION_TOL_LINK);
+        }
+      }
+
       lk->r_data->flags                            = CONNECTED_LINK;
       leg->links[RELIABLE_UDP_LINK]->r_data->flags = CONNECTED_LINK;
 
@@ -663,6 +709,8 @@ void Process_hello_ping(packet_header *pack_hdr, Network_Address from_addr,
 	    IP((*leg)->remote_interf->net_addr), stable_timeout, nowf - last_conn, nowf, last_conn);
       return;
     }
+  
+    Alarm(DEBUG, "Process_hello_packet from "IPF"\n", IP((*leg)->remote_interf->net_addr));
 
 #ifdef SPINES_WIRELESS
     if (Wireless_monitor && (*leg)->w_data.rssi < Wireless_ts) {  /* signal not strong enough */

@@ -208,7 +208,6 @@ int	DL_send( channel chan, int32 address, int16 port, sys_scatter *scat )
 #endif	/* ARCH_SCATTER_NONE */
 	
 	struct  sockaddr_in	soc_addr;
-	struct timeval 		select_delay = { 0, 10000 };
 	int			ret;
 	int			total_len;
 	int			i;

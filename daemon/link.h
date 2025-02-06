@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2015 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -57,10 +57,25 @@ typedef enum
   RESERVED0_LINK,      /* MN */
   RESERVED1_LINK,      /* TCP */
   RESERVED2_LINK,      /* SC2 */
+  INTRUSION_TOL_LINK,  /* Low-Level Intrusion-Tolerant Reliable UDP Link */
 
   MAX_LINKS_4_EDGE,
 
 } Link_Type;
+
+typedef enum {
+    LINK_DEAD,
+    LINK_LIVE,
+    LINK_LOSSY,
+} Link_Status;
+
+typedef enum {
+    EMPTY,
+    NEW_UNSENT,
+    NEW_SENT,
+    RESTAMPED_UNSENT,
+    RESTAMPED_SENT,
+} Message_Sending_Status;
 
 #define MAX_NEIGHBORS        256
 #define MAX_LOCAL_INTERFACES 5
@@ -104,11 +119,19 @@ typedef enum
 
 #define MAX_BUFF_LINK    50
 #define MAX_REORDER      10
+#define MAX_SEND_ON_LINK 250 /* default used to be 100 */
+#define LINK_START_SEQ   1   /* test wrap-around case: (2147483648-90) */
+#define MAX_PING_HIST    5
+#define HISTORY_SIZE     10
 
 #define MAX_BUCKET       500
 #define RT_RETRANSM_TOK  5   /* 1/5 = 20% max retransmissions */
 
 #define BWTH_BUCKET      536064 /* 64K + 1.472K for one packet*/
+
+#include <openssl/dh.h>
+#include <openssl/pem.h>
+#include <openssl/hmac.h>
 
 #include "stdutil/stddefines.h"
 #include "stdutil/stdit.h"
@@ -251,6 +274,97 @@ typedef struct Realtime_Data_d {
     int num_retransm;
     int bucket;
 } Realtime_Data;
+
+typedef struct IT_Recv_Cell_d {
+    int flags; /* RECVD, NACK, EMPTY */
+    sp_time nack_expire; /* time until a nack should be sent */
+    char *pkt; /* holds pkt if ordered delivery is turned on*/
+    int16u pkt_len; /* len of stored pkt if ordered delivery */
+    /* char *msg;
+    int16u msg_len; */
+} IT_Recv_Cell;
+
+typedef struct IT_Buffer_Cell_d {
+    sys_scatter *pkt; /* all the fragments of the message that fit into this packet */
+    int16u data_len;
+    sp_time timestamp;
+    unsigned char resent;
+    unsigned char nacked;
+} IT_Buffer_Cell;
+
+typedef struct IT_Ping_Cell_d {
+    int64u ping_seq;
+    int64u ping_nonce;
+    sp_time ping_sent;    
+    unsigned char answered;
+} IT_Ping_Cell;
+
+typedef struct Dissem_Fair_Queue_d {
+    int32u dissemination;
+    int (*callback) (struct Node_d*, int);
+    struct Dissem_Fair_Queue_d *next;
+} Dissem_Fair_Queue;
+
+typedef struct Int_Tol_Data_d {
+    /* outbound data structures */
+    IT_Buffer_Cell          outgoing[MAX_SEND_ON_LINK];
+    int64u                  out_nonce[MAX_SEND_ON_LINK];
+    int64u                  out_nonce_digest[MAX_SEND_ON_LINK];
+    int64u                  out_head_seq;
+    int64u                  out_tail_seq;
+    int32u                  my_incarnation;
+    sys_scatter            *out_message;
+    unsigned char           out_frag_idx;   /* next fragment to process */
+    unsigned char           out_frag_total;
+    /* inbound data structures */
+    IT_Recv_Cell            incoming[MAX_SEND_ON_LINK];
+    int64u                  in_nonce[MAX_SEND_ON_LINK];
+    int64u                  aru_nonce_digest;
+    int64u                  in_head_seq;
+    int64u                  in_tail_seq;
+    int32u                  incoming_msg_count;
+    int32u                  ngbr_incarnation;
+    sp_time                 incarnation_response;
+    sys_scatter            *in_message;
+    unsigned char           in_frag_idx; /* next fragment to receive */
+    unsigned char           in_frag_total;
+    /* TCP Fairness variables */
+    int64u                  loss_detected_aru;
+    int64u                  tcp_head_seq;
+    float                   cwnd;
+    int16u                  ssthresh;
+    unsigned char           loss_detected;
+    /* RTT variables */
+    double                  rtt;
+    IT_Ping_Cell            ping_history[MAX_PING_HIST];
+    int64u                  next_ping_seq;
+    int64u                  last_pong_seq_recv;
+    sp_time                 pong_freq;
+    sp_time                 it_nack_timeout;
+    sp_time                 it_initial_nack_timeout;
+    sp_time                 it_reliable_timeout;
+    /* Reroute & Link Status Change variables */
+    unsigned char           link_status;  /* 0 = dead, 1 = live, 2 = lossy */
+    int32u                  loss_history_retransmissions[HISTORY_SIZE+1];
+    int32u                  loss_history_unique_packets[HISTORY_SIZE+1];
+    double                  loss_history_decay[HISTORY_SIZE+1];
+    /* Crypto Variables */
+    HMAC_CTX                hmac_ctx;
+    unsigned char          *dh_key;
+    unsigned char           dh_established;
+    unsigned char           dh_key_computed; /* 0, 1, or 2 */
+    /* 0 if neither half present, 1 if only local half present, 2 if both halves present */
+    DH                     *dh_local;
+    sys_scatter             dh_pkt;
+    /* leaky bucket variables */
+    sp_time                 last_filled;
+    int64                   bucket;
+    unsigned char           needed_tokens;
+    /* Callback Function variables */
+    Dissem_Fair_Queue       dissem_head;
+    Dissem_Fair_Queue      *dissem_tail;
+    unsigned char           in_dissem_queue[RESERVED_ROUTING_BITS >> ROUTING_BITS_SHIFT];
+} Int_Tol_Data;
 
 typedef struct Link_d {
 

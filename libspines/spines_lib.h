@@ -29,16 +29,38 @@
  *
  */
 
+
 #ifndef SPINES_LIB_H
 #define SPINES_LIB_H
 
 #ifndef ARCH_PC_WIN95
 #include <sys/types.h>
 #include <sys/socket.h>
+typedef struct iovec  spines_iovec;
+typedef struct msghdr spines_msg;
 #endif
 
 #ifdef ARCH_PC_WIN95
 #include <winsock2.h>
+
+typedef struct
+{
+        void  *iov_base;
+        size_t iov_len;
+
+} spines_iovec;
+
+typedef struct
+{
+             void           *msg_name;        /* optional address */
+             socklen_t       msg_namelen;     /* size of address */
+             spines_iovec   *msg_iov;         /* scatter/gather array */
+             size_t          msg_iovlen;      /* # elements in msg_iov */
+             void           *msg_control;     /* ancillary data */
+             socklen_t       msg_controllen;  /* ancillary data buffer len */
+             int             msg_flags;       /* flags on received message */
+
+} spines_msg;
 #endif
 
 #ifdef __cplusplus
@@ -61,6 +83,7 @@ extern "C" {
 #define     RESERVED_LINKS1         0x00000003 /* MN */
 #define     RESERVED_LINKS2         0x00000004 /* SC2 */
 #define     TCP_IP_LINKS            0x00000005 
+#define     INTRUSION_TOL_LINKS     0x00000008 /* DT */
 #define     RESERVED_LINKS_BITS     0x0000000f
 
 #define     UDP_CONNECT             0x00000010
@@ -88,6 +111,10 @@ extern "C" {
 #define     SPINES_TRACEROUTE       61
 #define     SPINES_EDISTANCE        62
 #define     SPINES_MEMBERSHIP       63
+
+#define     SPINES_SET_PRIORITY     71
+#define     SPINES_SET_EXPIRATION   72
+#define     SPINES_DISJOINT_PATHS   73
 
 #define     DEFAULT_SPINES_PORT     8100
 
@@ -134,12 +161,20 @@ typedef struct spines_trace_d {
     int cost[MAX_COUNT];
 } spines_trace;
 
+typedef struct spines_nettime_d {
+    int sec;
+    int usec;
+} spines_nettime;
+
+
+
 /* PUBLIC INTERFACE */
 
 int  spines_init(const struct sockaddr *serv_addr);
 int  spines_socket(int domain, int type, int protocol, 
 		   const struct sockaddr *serv_addr);
 void spines_close(int s);
+void spines_shutdown(int s);
 int  spines_bind(int sockfd, struct sockaddr *my_addr, socklen_t addrlen);
 int  spines_send(int s, const void *msg, size_t len, int flags);
 int  spines_recv(int s, void *buf, size_t len, int flags);
@@ -156,6 +191,9 @@ int  spines_setsockopt(int s, int  level,  int  optname,  void  *optval,
 int  spines_ioctl(int s, int  level,  int  optname,  void  *optval,
 		  socklen_t optlen);
 int  spines_getsockname(int sk, struct sockaddr *name, socklen_t *nlen);
+
+int  spines_sendmsg(int s, const spines_msg *msg, int flags);
+int  spines_recvmsg(int s, spines_msg *msg, int flags);
 
 /* Enhanced recvfrom function that returns the destination address -- this
  * corresponds to the multicast group to which the packet was sent This is a
@@ -176,7 +214,7 @@ int spines_recvfrom_internal(int s, void *buf, size_t len, int flags,
 
 int spines_setlink(int sk, int remote_interf_id, int local_interf_id,
                    int bandwidth, int latency, float loss, float burst);
-
+int spines_setdissemination(int sk, int paths, int overwrite_ip);
 int spines_get_client(int sk);
 
 #ifdef __cplusplus

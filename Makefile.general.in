@@ -24,8 +24,8 @@ include_dirs=../stdutil/include ../libspread-util/include ../libspines ../daemon
 link_dirs=../stdutil/lib ../libspread-util/lib ../libspines $(top_srcdir)/stdutil/lib $(top_srcdir)/libspread-util/lib $(top_srcdir)/libspines
 libs=../stdutil/lib/libstdutil.a ../libspread-util/lib/libspread-util.a ../libspines/libspines.a
 
-CFLAGS+=@CFLAGS@ $(LOCAL_CFLAGS) $(addprefix -I, $(include_dirs))
+CFLAGS+=@CFLAGS@ $(LOCAL_CFLAGS) $(addprefix -I, $(include_dirs)) 
 LDFLAGS+=@LDFLAGS@ $(addprefix -L, $(link_dirs))
-LIBS+=@LIBS@ $(libs) #$(addprefix -l, $(libs))
+LIBS+=$(libs) @LIBS@ #$(addprefix -l, $(libs))
 EXEEXT=@EXEEXT@
 WIRELESS_SUPPORT=@WIRELESS_SUPPORT@

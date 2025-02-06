@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2015 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -44,10 +44,13 @@
 #include "spu_events.h"
 #include "stdutil/stdhash.h"
 
+#define ext_route
+#include "route.h"
+#undef ext_route
+
 #include "net_types.h"
 #include "node.h"
 #include "link.h"
-#include "route.h"
 #include "objects.h"
 #include "state_flood.h"
 #include "link_state.h"
@@ -56,6 +59,9 @@
 #include "udp.h"
 #include "reliable_udp.h"
 #include "realtime_udp.h"
+#include "intrusion_tol_udp.h"
+#include "priority_flood.h"
+#include "reliable_flood.h"
 
 #include "spines.h"
 
@@ -90,6 +96,7 @@ static Routing_Regime          *Current_Routing = NULL;
 
 static int                      Schedule_Set_Route = 0;
 static const sp_time            Reroute_Timeout    = { 0, 100 };
+/* static Min_Weight_Belly         Reg_Route_Pkt; */
 
 #define NUM_ROUTING_COMPUTE_DURATIONS 20
 
@@ -248,12 +255,12 @@ static double RR_Init(Routing_Regime *rr)
       rt = &rr->Routes[i * num_nodes + j];
 
       if (i != j) {
-	rt->cost      = -1;
-	rt->distance  = -1;
+	    rt->cost      = -1;
+	    rt->distance  = -1;
 	
       } else {
-	rt->cost      = 0;
-	rt->distance  = 0;
+	    rt->cost      = 0;
+	    rt->distance  = 0;
       }
 
       rt->forwarder   = NULL;
@@ -272,8 +279,8 @@ static double RR_Init(Routing_Regime *rr)
       edge = *(Edge**) stdhash_it_val(&inner_it);
 
       if (edge->cost < 0) {
-	assert(edge->cost == -1);
-	continue;
+	    assert(edge->cost == -1);
+	    continue;
       }
       
       src_index       = RR_Get_Node_Index(rr, edge->src->nid, 1);
@@ -726,12 +733,34 @@ void Discard_Mcast_Neighbors(Group_ID mcast_address)
 {
   RR_Discard_Mcast_Neighbors(Current_Routing, mcast_address);
 }
-  
+
+/*********************************************************************
+ * Callback function for lower levels to send a packet with regular routing
+ *********************************************************************/
+
+/* int Reg_Routing_Send_One(Node *next_hop, int mode)
+{
+    int ret, pkt_len = 0;
+
+    if (Reg_Route_Pkt.buff == NULL || Reg_Route_Pkt.data_len == 0)
+        return 0;
+
+    pkt_len = Reg_Route_Pkt.data_len;
+    ret = Forward_Data(next_hop, Reg_Route_Pkt.buff, Reg_Route_Pkt.data_len, mode);
+    Reg_Route_Pkt.buff     = NULL;
+    Reg_Route_Pkt.data_len = 0;
+
+    if (ret == BUFF_OK || ret == BUFF_EMPTY)
+        return pkt_len;
+
+    return 0;
+}*/
+
 /*********************************************************************
  * Forward a data packet using a protocol
  *********************************************************************/
 
-static int Forward_Data(Node *next_hop, char *buff, int16u data_len, int mode)
+int Forward_Data(Node *next_hop, sys_scatter *scat, int mode)
 {
   int ret = -1;
 
@@ -742,15 +771,19 @@ static int Forward_Data(Node *next_hop, char *buff, int16u data_len, int mode)
   switch (mode) {
 
   case UDP_LINK:
-    ret = Forward_UDP_Data(next_hop, buff, data_len);
+    ret = Forward_UDP_Data(next_hop, scat);
     break;
 
   case RELIABLE_UDP_LINK:
-    ret = Forward_Rel_UDP_Data(next_hop, buff, data_len, 0);
+    ret = Forward_Rel_UDP_Data(next_hop, scat, 0);
     break;
 
   case REALTIME_UDP_LINK:
-    ret = Forward_RT_UDP_Data(next_hop, buff, data_len);
+    ret = Forward_RT_UDP_Data(next_hop, scat);
+    break;
+
+  case INTRUSION_TOL_LINK:
+    ret = Forward_Intru_Tol_Data(next_hop, scat);
     break;
 
   case CONTROL_LINK:
@@ -769,15 +802,59 @@ static int Forward_Data(Node *next_hop, char *buff, int16u data_len, int mode)
   return ret;
 }
 
+
+/*********************************************************************
+ * Request Resources from the lower level to send a packet.
+ *********************************************************************/
+
+int Request_Resources(int dissemination, Node* next_hop, int mode, 
+                            int (*callback)(Node* next_hop, int mode))
+{
+    int ret = 0;
+
+    /* Check if callback is NULL */
+    /* if ( ) */
+
+    switch(mode) {
+        
+        case UDP_LINK:
+            ret = Request_Resources_UDP(next_hop, callback);
+            break;
+
+        case RELIABLE_UDP_LINK:
+            ret = Request_Resources_Rel_UDP(next_hop, callback);
+            break;
+
+        case REALTIME_UDP_LINK:
+            ret = Request_Resources_RT_UDP(next_hop, callback);
+            break;
+
+        case INTRUSION_TOL_LINK:
+            ret = Request_Resources_IT(dissemination, next_hop, callback);
+            break;
+
+        case CONTROL_LINK:
+        case RESERVED0_LINK:
+        case RESERVED1_LINK:
+        case RESERVED2_LINK:
+        case MAX_LINKS_4_EDGE:
+        default:
+            Alarm(EXIT, "Request_Resources: Unrecognized link type 0x%x!\r\n", mode);
+            break;
+    }
+
+    return ret;
+}
+
 /*********************************************************************
  * Deliver and Forward a data packet as appropriate.
  *********************************************************************/
 
-int Deliver_and_Forward_Data(char *buff, int16u data_len, int mode, Link *src_lnk)
+int Deliver_and_Forward_Data(sys_scatter *scat, int mode, Link *src_lnk)
 {
   int             forwarded = 0;
   int             ret = NO_ROUTE;
-  udp_header     *hdr = (udp_header*) buff;
+  udp_header     *hdr = (udp_header*) scat->elements[1].buf;
   int             routing = (int) hdr->routing << ROUTING_BITS_SHIFT;
   Routing_Regime *rr;
   Node           *next_hop;
@@ -786,7 +863,10 @@ int Deliver_and_Forward_Data(char *buff, int16u data_len, int mode, Link *src_ln
   Group_State    *gstate;
 
   if (hdr->ttl <= 0) {
-    Alarm(EXIT, "Deliver_and_Forward_Data: Non-positive TTL before decrement?!\r\n");
+    /* printf("src_port = %u, dst_port = %u, routing = %d\n", hdr->source_port, 
+                hdr->dest_port, routing); */
+    Alarm(PRINT, "Deliver_and_Forward_Data: Non-positive TTL before decrement?!\r\n");
+    return ret;
   }
 
   --hdr->ttl;
@@ -794,73 +874,150 @@ int Deliver_and_Forward_Data(char *buff, int16u data_len, int mode, Link *src_ln
   switch (routing) {
 
   case MIN_WEIGHT_ROUTING:
+    rr = Current_Routing;
+    assert(rr != NULL);
+
+    if (!Is_mcast_addr(hdr->dest) && !Is_acast_addr(hdr->dest)) {        /* point-to-point traffic */
+  
+        if (hdr->dest != My_Address && hdr->ttl > 0 && 
+            (next_hop = RR_Get_Next_Hop(rr, hdr->source, hdr->dest)) != NULL) {
+                assert(next_hop != This_Node);
+                /* if (Reg_Route_Pkt.buff != NULL)
+                    printf("SENT TOO FAST\n");
+                Reg_Route_Pkt.data_len = data_len;
+                Reg_Route_Pkt.buff = buff;
+                Request_Resources(MIN_WEIGHT_ROUTING >> ROUTING_BITS_SHIFT, next_hop, mode, &Reg_Routing_Send_One); */
+                ret = Forward_Data(next_hop, scat, mode);
+                Alarm(DEBUG, "Deliver_and_Forward_Data: Forwarding unicast traffic to " IPF " %d!\r\n", 
+                    IP(next_hop->nid), ret);
+        }
+    } else {                                                             /* multicast traffic */
+
+        if (hdr->ttl > 0 && (neighbors = RR_Get_Mcast_Neighbors(rr, hdr->source, hdr->dest)) != NULL) {
+
+            for (stdhash_begin(neighbors, &ngb_it); !stdhash_is_end(neighbors, &ngb_it); 
+                stdhash_it_next(&ngb_it)) {
+              next_hop = *(Node**) stdhash_it_val(&ngb_it);
+	          assert(next_hop != This_Node);
+
+	          if (Is_Connected_Neighbor2(next_hop)) {  /* might have disconnected since that routing regime */
+                  /* Reg_Route_Pkt.data_len = data_len;
+                  Reg_Route_Pkt.buff = buff;
+                  Request_Resources(MIN_WEIGHT_ROUTING >> ROUTING_BITS_SHIFT, next_hop, mode, &Reg_Routing_Send_One); */
+	              ret = Forward_Data(next_hop, scat, mode);
+	              forwarded = 1;
+	              Alarm(DEBUG, "Deliver_and_Forward_Data: Forwarding multicast traffic to " IPF " %d!\r\n", 
+                      IP(next_hop->nid), ret);
+	          }
+            }
+        } else {
+            Alarm(DEBUG, "Deliver_and_Forward_Data: Not forwarding multicast traffic!\r\n");
+        }
+    }
     break;
 
   case BEST_EFFORT_FLOOD_ROUTING:
-    Alarm(PRINT, "Deliver_and_Forward_Data: Best Effort Flood Routing not yet implemented! Ignoring!\r\n");
-    goto END;
+    ret = Priority_Flood_Disseminate(src_lnk, scat, mode);
+    if (ret == NO_ROUTE) 
+        goto END;
+    break;
 
   case RELIABLE_FLOOD_ROUTING:
-    Alarm(PRINT, "Deliver_and_Forward_Data: Reliable Flood Routing not yet implemented! Ignoring!\r\n");
-    goto END;
+    ret = Reliable_Flood_Disseminate(src_lnk, scat, mode);
+    if (ret == NO_ROUTE) 
+        goto END;
+    break;
 
   default:
     Alarm(PRINT, "Deliver_and_Forward_Data: Unknown routing (%d) requested! Ignoring!\r\n", routing);
     goto END;
   }
 
-  /* MIN_WEIGHT_ROUTING (Floyd-Warshall) */
-
-  rr = Current_Routing;
-  assert(rr != NULL);
-
-  if (!Is_mcast_addr(hdr->dest) && !Is_acast_addr(hdr->dest)) {            /* point-to-point traffic */
+  /* COMMON FUNCTIONALITY --> DELIVER_UDP TO CLIENTS */
+  if (!Is_mcast_addr(hdr->dest) && !Is_acast_addr(hdr->dest)) {        /* point-to-point traffic */
 
     if (hdr->dest == My_Address) {
-      ret = Deliver_UDP_Data(buff, data_len, 0);
+      ret = Deliver_UDP_Data(scat, routing);
       Alarm(DEBUG, "Deliver_and_Forward_Data: Delivering unicast traffic locally! %d\r\n", ret);
-
-    } else if (hdr->ttl > 0 && (next_hop = RR_Get_Next_Hop(rr, hdr->source, hdr->dest)) != NULL) {
-      assert(next_hop != This_Node);
-      ret = Forward_Data(next_hop, buff, data_len, mode);
-      Alarm(DEBUG, "Deliver_and_Forward_Data: Forwarding unicast traffic to " IPF " %d!\r\n", IP(next_hop->nid), ret);
 
     } else {
       Alarm(DEBUG, "Deliver_and_Forward_Data: Swallowing unicast traffic!\r\n");
     }
 
-  } else {                                                                 /* multicast traffic */
+  } else {                                                             /* multicast traffic */
 
     if ((gstate = (Group_State*) Find_State(&All_Groups_by_Node, My_Address, hdr->dest)) != NULL &&
 	(gstate->status & ACTIVE_GROUP)) {                                 /* i'm an active member of the group */
-      ret = Deliver_UDP_Data(buff, data_len, 0);
+      ret = Deliver_UDP_Data(scat, routing);
       forwarded = 1;
       Alarm(DEBUG, "Deliver_and_Forward_Data: Delivering multicast traffic locally %d!\r\n", ret);
     }
-            
-    if (hdr->ttl > 0 && (neighbors = RR_Get_Mcast_Neighbors(rr, hdr->source, hdr->dest)) != NULL) {
-
-      for (stdhash_begin(neighbors, &ngb_it); !stdhash_is_end(neighbors, &ngb_it); stdhash_it_next(&ngb_it)) {
-
-	next_hop = *(Node**) stdhash_it_val(&ngb_it);
-	assert(next_hop != This_Node);
-
-	if (Is_Connected_Neighbor2(next_hop)) {  /* we might have disconnected since that routing regime */
-	  ret = Forward_Data(next_hop, buff, data_len, mode);
-	  forwarded = 1;
-	  Alarm(DEBUG, "Deliver_and_Forward_Data: Forwarding multicast traffic to " IPF " %d!\r\n", IP(next_hop->nid), ret);
-	}
-      }
-
-    } else {
-      Alarm(DEBUG, "Deliver_and_Forward_Data: Not forwarding multicast traffic!\r\n");
-    }
-
     if (!forwarded && src_lnk != NULL) {
-      Alarm(PRINT, "Deliver_and_Foward_Data: Blackhole for multicast!!!\n");
+        Alarm(DEBUG, "Deliver_and_Foward_Data: Blackhole for multicast!!!\n");
     }
   }
 
  END:
   return ret;
+}
+
+int Fill_Packet_Header( char* hdr, int routing, int16u num_paths ) {
+   
+    switch(routing) {
+        case BEST_EFFORT_FLOOD_ROUTING:
+            return Fill_Packet_Header_Best_Effort_Flood(hdr);
+            break;
+        case RELIABLE_FLOOD_ROUTING:
+            return Fill_Packet_Header_Reliable_Flood(hdr,num_paths);
+            break;
+        default:
+            return 0;
+    }
+}
+
+
+/***********************************************************/
+/* void RR_Pre_Conf_Setup()                                */
+/*                                                         */
+/* Setup configuration file defaults for Regular Routing   */
+/*                                                         */
+/* Return: NONE                                            */
+/*                                                         */
+/***********************************************************/
+void     RR_Pre_Conf_Setup() 
+{
+    Conf_RR.Crypto = RR_CRYPTO;
+}
+
+/***********************************************************/
+/* void RR_Post_Conf_Setup()                               */
+/*                                                         */
+/* Sets up timers and data structures after reading from   */
+/* the configuration file for Priority Flooding            */
+/*                                                         */
+/* Return: NONE                                            */
+/*                                                         */
+/***********************************************************/
+void     RR_Post_Conf_Setup()
+{
+    
+}
+
+/***********************************************************/
+/* int RR_Conf_hton(unsigned char *buff)                   */
+/*                                                         */
+/* Converts host storage of configuration parameters into  */
+/* network format and writes to buff.                      */
+/*                                                         */
+/* Return: # of bytes written                              */
+/*                                                         */
+/***********************************************************/
+int      RR_Conf_hton(unsigned char *buff)
+{
+    unsigned char *write = (unsigned char*)buff;
+
+    *(unsigned char*)write = Conf_RR.Crypto;
+        write += sizeof(unsigned char);
+
+    return sizeof(CONF_RR);
 }

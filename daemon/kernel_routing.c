@@ -16,9 +16,9 @@
  * License.
  *
  * The Creators of Spines are:
- *  Yair Amir, Claudiu Danilov and John Schultz.
+ *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2013 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2015 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -191,7 +191,7 @@ void KR_Init()
  * Figure out the routing mcast tree for a anycast/multicast group,  
  * and update routing table if different than previous entry 
  */
-void KR_Set_Group_Route(Group_ID group_destination, void *dummy)
+void KR_Set_Group_Route(int group_destination, void *dummy)
 {
     Node *nd;
     stdhash *neighbors;
