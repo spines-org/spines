@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2016 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2017 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -443,17 +443,18 @@ int16 Create_Link(Network_Leg *leg,
             E_queue(Loss_Calculation_Event, (int)lk->link_id, NULL, loss_calc_timeout);
         }
         else { /* (Conf_IT_Link.Crypto == 1) { */
-            E_queue(Key_Exchange_IT, (int)lk->link_id, NULL, zero_timeout);
             it_data->dh_local = PEM_read_DHparams(fopen("keys/dhparam.pem", "r"), NULL, NULL, NULL);
+            EVP_CIPHER_CTX_init(&it_data->encrypt_ctx);
+            EVP_CIPHER_CTX_init(&it_data->decrypt_ctx);
             HMAC_CTX_init(&(it_data->hmac_ctx));
         }
 
-        it_data->dissem_head.dissemination = RESERVED_ROUTING_BITS >> ROUTING_BITS_SHIFT;
+        it_data->dissem_head.dissemination = (RESERVED_ROUTING_BITS >> ROUTING_BITS_SHIFT);
         it_data->dissem_head.callback = NULL;
         it_data->dissem_head.next = NULL;
         it_data->dissem_tail = &it_data->dissem_head;
 
-        for (i = 0; i < RESERVED_ROUTING_BITS >> ROUTING_BITS_SHIFT; i++)
+        for (i = 0; i < (RESERVED_ROUTING_BITS >> ROUTING_BITS_SHIFT); i++)
             it_data->in_dissem_queue[i] = 0;
 
         /* TODO: THIS SHOULD GO AWAY WITH LEAKY BUCKET */
@@ -462,6 +463,9 @@ int16 Create_Link(Network_Leg *leg,
         /* end TODO */
 
         lk->prot_data = it_data;
+
+        if (Conf_IT_Link.Crypto == 1)
+            Key_Exchange_IT((int)lk->link_id, NULL);
   }
 
   {

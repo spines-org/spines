@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2016 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2017 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -237,7 +237,7 @@ void Init_Priority_Flooding()
 
     Bytes_Since_Checkpoint = 0;
     Time_Since_Checkpoint = now;
-    /* E_queue( Priority_Garbage_Collect, 0, NULL, prio_garb_coll_timeout); */
+    E_queue( Priority_Garbage_Collect, 0, NULL, prio_garb_coll_timeout);
     /* E_queue( Suicide_Control, 0, NULL, prio_suicide_timeout); */
     Alarm(DEBUG, "Created Flood Best Effort Data Structures\n");
 
@@ -670,8 +670,7 @@ int Priority_Flood_Disseminate(Link *src_link, sys_scatter *scat, int mode)
                     * we can successfully send a message to the lower level */
                     while( (pldata->norm_head.next != NULL ||
                         pldata->urgent_head.next != NULL) &&
-                        Request_Resources(IT_PRIORITY_ROUTING >> 
-                            ROUTING_BITS_SHIFT, nd, mode, 
+                           Request_Resources((IT_PRIORITY_ROUTING >> ROUTING_BITS_SHIFT), nd, mode, 
                             &Priority_Flood_Send_One));
                 }
 
@@ -1061,6 +1060,7 @@ void Cleanup_prio_flood_ds(int ngbr_index, int src_id,
 void Priority_Garbage_Collect (int dummy1, void* dummy2) 
 {
     int32u i;
+    int32u gc_count, tot_count, tot_nnodes;
     stdit it;
     Prio_Flood_Value *fbv_ptr;
     sp_time now;
@@ -1068,25 +1068,30 @@ void Priority_Garbage_Collect (int dummy1, void* dummy2)
     UNUSED(dummy1);
     UNUSED(dummy2);
 
+    gc_count = 0;
+    tot_count = 0;
+    tot_nnodes = 0;
     now = E_get_time();
 
     for (i = 1; i <= MAX_NODES; i++) {
         stdhash_begin(&Belly[i], &it);
+        tot_nnodes += stdhash_load_lvl(&Belly[i]);
         while (!stdhash_is_end(&Belly[i], &it)) {
             fbv_ptr = ((Prio_Flood_Value *)stdhash_it_val(&it));
+            tot_count++;
             if (E_compare_time(fbv_ptr->expire, now) <= 0) {
-                /* printf("\tdeleting msg from %d with seq = %u, "
-                        "expire = %d.%d\n", i, 
-                        fbv_ptr->seq_num, fbv_ptr->expire.sec, 
-                        fbv_ptr->expire.usec); */
                 Cleanup_prio_flood_ds(0, i, fbv_ptr, EXPIRED_MSG);
                 stdhash_erase(&Belly[i], &it);
+                gc_count++;
                 continue;
             }
             stdhash_it_next(&it);
         }
     }
 
+    Alarm(DEBUG, "Priority Garbage Collect: Finished, erased %u of %u items, "
+            "%u remain, sum hash load = %u\n", gc_count, tot_count, 
+            tot_count - gc_count, tot_nnodes);
     E_queue(Priority_Garbage_Collect, 0, NULL, prio_garb_coll_timeout);
 }
 

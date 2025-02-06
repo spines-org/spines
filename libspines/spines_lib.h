@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2016 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2017 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -88,6 +88,7 @@ extern "C" {
 #define     MIN_WEIGHT_ROUTING      0x00000000
 #define     IT_PRIORITY_ROUTING     0x00000100
 #define     IT_RELIABLE_ROUTING     0x00000200
+#define     SOURCE_BASED_ROUTING    0x00000300
 #define     RESERVED_ROUTING_BITS   0x00000f00
 #define     ROUTING_BITS_SHIFT      8
 
@@ -114,6 +115,7 @@ extern "C" {
 #define     SPINES_TRACEROUTE       61
 #define     SPINES_EDISTANCE        62
 #define     SPINES_MEMBERSHIP       63
+#define     SPINES_SET_DELIVERY     64
 
 #define     SPINES_SET_PRIORITY     71
 #define     SPINES_SET_EXPIRATION   72

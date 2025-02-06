@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2016 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2017 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -112,20 +112,25 @@ void Flip_pack_hdr(packet_header *pack_hdr)
   pack_hdr->seq_no	  = Flip_int16(pack_hdr->seq_no);
 }
 
-void Flip_rel_tail(char *buff, int ack_len)
+int Flip_rel_tail(char *buff, int ack_len)
 {
-  reliable_tail *r_tail;
-  int i;
-  int32 *nack;
+  reliable_tail *r_tail = (reliable_tail*) buff;
+  int32         *nack;
+  int            i;
+
+  if (ack_len < (int) sizeof(reliable_tail))
+    return -1;
     
-  r_tail = (reliable_tail*)buff;
   r_tail->seq_no          = Flip_int32(r_tail->seq_no);
   r_tail->cummulative_ack = Flip_int32(r_tail->cummulative_ack);
 
-  for(i=sizeof(reliable_tail); i<ack_len; i+=sizeof(int32)) {
-    nack = (int32*)(buff+i);
+  for (i = sizeof(reliable_tail); i + sizeof(int32) <= ack_len; i += sizeof(int32))
+  {
+    nack = (int32*) (buff + i);
     *nack = Flip_int32(*nack);
   }
+
+  return i != ack_len;
 }
 
 void Init_Network(void) 
@@ -777,13 +782,18 @@ void Init_My_Node(void)
 /*                                                         */
 /* Return Value                                            */
 /*                                                         */
-/* Number of received bytes                                */
+/* Number of bytes received from network if msg is         */
+/* processed, 0 if it is dropped at this level, negative   */
+/* on OS error.                                            */
 /*                                                         */
 /***********************************************************/
 
 int Read_UDP(Interface *local_interf, channel sk, int mode, sys_scatter *scat)
 {
+  int   ret = 0;
   int	received_bytes;
+  int   stripped_bytes;
+  int   remaining_bytes;
   packet_header *pack_hdr;
   sp_time now = {0, 0};
   sp_time diff;
@@ -796,47 +806,103 @@ int Read_UDP(Interface *local_interf, channel sk, int mode, sys_scatter *scat)
   stdit delay_it;
   long long tokens;
   int total_pkt_bytes;
-  int32 type;
+  int32 pack_type;
 
-  int32u     remote_addr;
-  int16u     remote_port;
+  int32u     remote_addr = 0;
+  int16u     remote_port = 0;
   Interface *remote_interf;
+
+  if (scat->num_elements != 2 || scat->elements[0].len != sizeof(packet_header) || scat->elements[1].len != sizeof(packet_body))
+      Alarm(EXIT, "Read_UDP: unexpected recv scat layout!\n");
 
   received_bytes = DL_recvfrom(sk, scat, (int*) &remote_addr, (unsigned short*) &remote_port);
 
-  if (received_bytes < 0) {
-    Alarm(EXIT, "Read_UDP: unexpected error on socket %d; errno = %d : %s\r\n", received_bytes, errno, strerror(errno));
-
-  } else if (received_bytes < (int) sizeof(packet_header)) {
-    Alarm(PRINT, "Read_UDP: too small a packet received %d bytes! Ignoring!\r\n", received_bytes);
-    return -1;
+  if (received_bytes < 0)
+  {
+      Alarmp(SPLOG_ERROR, (sock_errno == EINTR || sock_errno == EAGAIN || sock_errno == EWOULDBLOCK ? NETWORK : EXIT),
+            "Read_UDP: unexpected error on socket %d, local interf = " IPF ":%d, err = %d, errno = %d : '%s', sock_errno = %d : '%s'!\n",
+            sk, IP(local_interf->net_addr), Port + mode, received_bytes, errno, strerror(errno), sock_errno, sock_strerror(sock_errno));
+      ret = -1;
+      goto FAIL;
   }
 
-  /*Alarm(PRINT, "Read_UDP: Recvd %d bytes from " IPF ":%d on interface " IPF " (addr = " IPF ")\r\n",
+  if (received_bytes < (int) sizeof(packet_header))
+  {
+      Alarmp(SPLOG_INFO, NETWORK, "Read_UDP: too small packet of %d bytes received on socket %d, local interf = " IPF ":%d from " IPF ":%d! Dropping!\n",
+            received_bytes, sk, IP(local_interf->net_addr), Port + mode, IP(remote_addr), (int) remote_port);
+      goto FAIL;
+  }
+
+  if (received_bytes > (int) (sizeof(packet_header) + sizeof(packet_body)))
+  {
+      Alarmp(SPLOG_INFO, NETWORK, "Read_UDP: partial receive of too big packet of %d bytes received on socket %d, local interf = " IPF ":%d from " IPF ":%d! Dropping!\n",
+            received_bytes, sk, IP(local_interf->net_addr), Port + mode, IP(remote_addr), (int) remote_port);
+      goto FAIL;
+  }
+
+  if (remote_port != Port + mode)
+  {
+      Alarmp(SPLOG_INFO, NETWORK, "Read_UDP: recvd a msg on port %d from an unequal remote port %d! Dropping!\n", Port + mode, (int) remote_port);
+      goto FAIL;
+  }
+
+  /* NOTE: trim scatter to reflect received size (restored at bottom) */
+  
+  scat->elements[1].len = received_bytes - sizeof(packet_header);
+
+  /*Alarm(PRINT, "Read_UDP: Recvd %d bytes from " IPF ":%d on interface " IPF " (addr = " IPF ")\n",
 	received_bytes, IP(remote_addr), (int) remote_port, IP(local_interf->iid), IP(local_interf->net_addr)); */
 
-  pack_hdr = (packet_header *)scat->elements[0].buf;
-  type = pack_hdr->type;
+  /* NOTE: Authenticating and decrypting the message upon receipt will
+   * mess with the built-in latency generator slightly (e.g. - packet
+   * authentication may pass/fail differently than if done later). */
 
-  if(!Same_endian(type)) {
-    Flip_pack_hdr(pack_hdr);
-    if(pack_hdr->ack_len >= sizeof(reliable_tail)) {
-      /* The packet has a reliable tail */
-      Flip_rel_tail(scat->elements[1].buf + pack_hdr->data_len, pack_hdr->ack_len);
-    }
+  if (mode == INTRUSION_TOL_LINK && Conf_IT_Link.Crypto)
+  {
+      stripped_bytes = Preprocess_intru_tol_packet(scat, received_bytes, local_interf, remote_addr, remote_port);
+
+      if (stripped_bytes < 0 || stripped_bytes < (int) sizeof(packet_header) || stripped_bytes > received_bytes)  /* NOTE: we assume no compression */
+      {
+          Alarmp(SPLOG_INFO, NETWORK, "Read_UDP: socket %d, local interf = " IPF ":%d, remote interf = " IPF ":%d, recvd_size = %d, new_size = %d: IT link rejected unauthenticated msg! Dropping!\n",
+                sk, IP(local_interf->net_addr), Port + mode, IP(remote_addr), (int) remote_port, received_bytes, stripped_bytes);
+          goto FAIL;
+      }
+      
+      /* NOTE: trim scatter to reflect stripped size (restored at bottom) */
+      
+      scat->elements[1].len = stripped_bytes - sizeof(packet_header);
+  }
+  else
+      stripped_bytes = received_bytes;
+  
+  pack_hdr        = (packet_header *) scat->elements[0].buf;
+  remaining_bytes = stripped_bytes - sizeof(packet_header);
+  
+  if (!Same_endian(pack_hdr->type))
+      Flip_pack_hdr(pack_hdr);
+
+  pack_type = pack_hdr->type;
+  
+  if (Conf_IT_Link.Intrusion_Tolerance_Mode == 1 &&
+      !(Is_intru_tol_data(pack_type) || Is_intru_tol_ack(pack_type) || Is_intru_tol_ping(pack_type) || Is_diffie_hellman(pack_type)))
+  {
+      Alarmp(SPLOG_INFO, NETWORK, "Read_UDP: Invalid pack_type 0x%x for Intrusion Tolerance Mode! Dropping!\n", pack_type);
+      goto FAIL;
   }
 
-  if (Conf_IT_Link.Intrusion_Tolerance_Mode == 1) {
-    if ( !(Is_intru_tol_data(type) || Is_intru_tol_ack(type) || Is_intru_tol_ping(type) || Is_diffie_hellman(type)) ) {
-        Alarm(PRINT, "Invalid type 0x%x for Intrusion Tolerance Mode\r\n", type);
-        return -1;
-    }
+  if (remaining_bytes != (int) pack_hdr->data_len + (int) pack_hdr->ack_len)
+  {
+      Alarmp(SPLOG_INFO, NETWORK, "Read_UDP: socket %d, local interf = " IPF ":%d, remote interf = " IPF ":%d, strip_size = %d: remaining bytes (%d) != data_len (%d) + ack_len (%d)! Dropping!\n",
+            sk, IP(local_interf->net_addr), Port + mode, IP(remote_addr), (int) remote_port, stripped_bytes, remaining_bytes, (int) pack_hdr->data_len, (int) pack_hdr->ack_len);
+      goto FAIL;
   }
 
-  if (Num_Discovery_Addresses != 0 && pack_hdr->sender_id == My_Address) {
-    /* I can hear my own discovery packets.  Discard */
-    return(0);
-  }
+  if (!Same_endian(pack_type) && pack_hdr->ack_len >= sizeof(reliable_tail))             /* TODO: this should probably be moved to a more specific spot? */
+      if (Flip_rel_tail(scat->elements[1].buf + pack_hdr->data_len, pack_hdr->ack_len))  /* the packet has a reliable tail */
+          goto FAIL;
+
+  if (Num_Discovery_Addresses != 0 && pack_hdr->sender_id == My_Address)    
+      goto FAIL;  /* I can hear my own discovery packets.  Discard */  /* TODO: should we have a network based filter like this one? Or make it more general / broader? */
 
   if (Accept_Monitor == 1 && (remote_interf = Get_Interface_by_Addr(remote_addr)) != NULL) {
     Network_Leg_ID lid;
@@ -852,7 +918,7 @@ int Read_UDP(Interface *local_interf, channel sk, int mode, sys_scatter *scat)
       lkp = (Lk_Param*)stdhash_it_val(&it);
 	   
        /*dt debugging */
-      /* Alarm(PRINT, "mode = %d   UDP_LINK = %d\r\n", mode, UDP_LINK);
+      /* Alarm(PRINT, "mode = %d   UDP_LINK = %d\n", mode, UDP_LINK);
 
       if (mode == UDP_LINK) 
       Alarm(PRINT, "loss: %d; burst: %d; was_loss %d; test: %5.3f; chance: %5.3f\n",
@@ -886,8 +952,8 @@ int Read_UDP(Interface *local_interf, channel sk, int mode, sys_scatter *scat)
 	total_pkt_bytes += 64; 
 
 	if(lkp->bucket <= MAX_PACKET_SIZE) {
-	  Alarm(DEBUG, "Dropping message: "IPF" -> "IPF"\n", IP(pack_hdr->sender_id), IP(My_Address));
-	  return(0);
+	  Alarm(DEBUG, "Read_UDP: Dropping message: "IPF" -> "IPF"\n", IP(pack_hdr->sender_id), IP(My_Address));
+          goto FAIL;
 	}
 	else {
 	  lkp->bucket -= total_pkt_bytes*8;
@@ -926,7 +992,7 @@ int Read_UDP(Interface *local_interf, channel sk, int mode, sys_scatter *scat)
 
     if (lkp == NULL || (lkp->delay.sec == 0 && lkp->delay.usec == 0)) {
 
-      Prot_process_scat(scat, received_bytes, local_interf, mode, type, remote_addr, remote_port);
+      Prot_process_scat(scat, stripped_bytes, local_interf, mode, pack_type, remote_addr, remote_port);
 
     } else {
 
@@ -942,8 +1008,8 @@ int Read_UDP(Interface *local_interf, channel sk, int mode, sys_scatter *scat)
       dpkt.header        = scat->elements[0].buf;
       dpkt.header_len    = scat->elements[0].len;
       dpkt.buff          = scat->elements[1].buf;
-      dpkt.buf_len       = received_bytes - scat->elements[0].len;
-      dpkt.type          = type;
+      dpkt.buf_len       = stripped_bytes - scat->elements[0].len;
+      dpkt.type          = pack_type;
       dpkt.schedule_time = E_add_time(now, lkp->delay);
       dpkt.local_interf  = local_interf;
       dpkt.mode          = mode;
@@ -951,7 +1017,7 @@ int Read_UDP(Interface *local_interf, channel sk, int mode, sys_scatter *scat)
       dpkt.remote_port   = remote_port;
 	
       if (stdhash_insert(&Delay_Queue, &delay_it, &Delay_Index, &dpkt) != 0) {
-	Alarm(EXIT, "Read_UDP: Couldn't queue delayed packet!\r\n");
+	Alarm(EXIT, "Read_UDP: Couldn't queue delayed packet!\n");
       }
 
       scat->elements[0].buf = (char*) new_ref_cnt(PACK_HEAD_OBJ);
@@ -967,15 +1033,18 @@ int Read_UDP(Interface *local_interf, channel sk, int mode, sys_scatter *scat)
       lkp->was_loss = 0;
     }
 
-  } else {
-    received_bytes = 0;
+    ret = received_bytes;
 
+  } else {
     if (lkp != NULL) {
       lkp->was_loss = 1;
     }
   }
 
-  return received_bytes;
+FAIL:
+  scat->elements[1].len = sizeof(packet_body);
+  
+  return ret;
 }
 
 void Up_Down_Net(int dummy_int, void *dummy_p)
@@ -1014,7 +1083,7 @@ void Proc_Delayed_Pkt(int idx, void *dummy_p)
   diff = E_sub_time(now, dpkt->schedule_time);
 
   if (diff.usec > 5000 || diff.sec > 0) {
-    Alarm(DEBUG, "\r\n\r\nDelay error: %d.%06d sec\r\n\r\n", diff.sec, diff.usec);
+    Alarm(DEBUG, "\n\nDelay error: %d.%06d sec\n\n", diff.sec, diff.usec);
   }
 
   scat.num_elements    = 2;

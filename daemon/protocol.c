@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2016 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2017 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -415,6 +415,10 @@ int16u Dissemination_Header_Size(int dissemination)
             size += sizeof(fragment_header);
             break;
 
+        case SOURCE_BASED_ROUTING:
+            size += MultiPath_Bitmask_Size;
+            break;
+
         default:
             Alarm(EXIT, "Dissemination_Header_Size: invalid dissemination "
                     "protocol 0x%x\r\n", dissemination);
@@ -445,6 +449,8 @@ int16u Link_Header_Size(int mode)
         case INTRUSION_TOL_LINK:
             size += sizeof(intru_tol_pkt_tail);
             size += sizeof(int64u);
+            size += Cipher_Blk_Len;  /* maximum of PKCS padding */
+            size += Cipher_Blk_Len;  /* IV */
             size += HMAC_Key_Len;
             break;
         

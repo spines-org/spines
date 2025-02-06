@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2016 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2017 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -30,6 +30,7 @@
  */
 
 #include <stdlib.h>
+#include <string.h>
 
 #ifdef ARCH_PC_WIN95
 #  include <winsock2.h>
@@ -122,31 +123,53 @@ void Copy_udp_header(udp_header *from_udp_hdr, udp_header *to_udp_hdr)
 
 void Process_udp_data_packet(Link *lk, sys_scatter *scat, int32u type, int mode)
 {
+  int32u routing, data_len, ack_len;
+  packet_header *phdr;
+  udp_header *hdr;
+
   /* NOTE: lk can be NULL -> self delivery */
 
   /* The first element in the scat is the spines header */
 
   if (scat->num_elements != 2) {
-    Alarm(PRINT, "Proces_udp_data_packet: Dropping packet because "
+    Alarm(PRINT, "Process_udp_data_packet: Dropping packet because "
         "scat->num_elements == %d instead of 2\r\n", scat->num_elements);
     return;
   }
 
-  udp_header *hdr = (udp_header*) scat->elements[1].buf;
-    
+  if (scat->elements[1].len < sizeof(udp_header))
+  {
+    Alarmp(SPLOG_WARNING, PRINT, "Process_udp_data_packet: Dropping packet because packet too small!\n");
+    return;
+  }
+  
+  phdr = (packet_header*) scat->elements[0].buf;
+  hdr = (udp_header*) scat->elements[1].buf;
+
   if (!Same_endian(type)) {
     Flip_udp_hdr(hdr);
   }
 
-  /* if (hdr->len + sizeof(udp_header) != data_len) {
-    Alarm(PRINT, "Process_udp_data_packet: Packed data not available yet!\r\n");
-    return;
-  } */
+  /* ADJUSTING ACK_LEN */
+  routing = (hdr->routing << ROUTING_BITS_SHIFT);
+  data_len = phdr->data_len;
+  ack_len  = phdr->ack_len - Dissemination_Header_Size(routing);
+
+   /* REG ROUTING HACK */
+  scat->elements[1].len = ((packet_header*)scat->elements[0].buf)->data_len;
+
+  scat->elements[2].buf = new_ref_cnt(PACK_BODY_OBJ);
+  memcpy(scat->elements[2].buf, scat->elements[1].buf + data_len + ack_len, 
+            Dissemination_Header_Size(routing));
+  scat->elements[2].len = Dissemination_Header_Size(routing);
+  scat->num_elements++;
+
+  Deliver_and_Forward_Data(scat, mode, lk);
 
   /* REG ROUTING HACK */
-  scat->elements[1].len = ((packet_header*)scat->elements[0].buf)->data_len;
-  Deliver_and_Forward_Data(scat, mode, lk);
-  /* REG ROUTING HACK */
+  dec_ref_cnt(scat->elements[2].buf);
+  scat->num_elements--;
+
   scat->elements[1].len = sizeof(packet_body);
 }
 
@@ -168,15 +191,17 @@ int Forward_UDP_Data(Node *next_hop, sys_scatter *scat)
 {
   Link          *lk;
   packet_header *hdr;
-  int           ret, i;
+  udp_header    *uhdr;
+  int           ret, routing;
+  /* int           i;
   unsigned char *path = NULL;
-  unsigned char temp_path_index;
+  unsigned char temp_path_index; */
 
-  if (scat->num_elements != 2) {
+  /* if (scat->num_elements != 2) {
     Alarm(PRINT, "Forward_UDP_Data: Malformed sys_scatter: num_elements == %d\r\n",
                     scat->num_elements);
     return BUFF_DROP;
-  }
+  } */
 
   if (next_hop == This_Node) {
     Process_udp_data_packet(NULL, scat, UDP_DATA_TYPE, UDP_LINK);
@@ -187,7 +212,7 @@ int Forward_UDP_Data(Node *next_hop, sys_scatter *scat)
     return BUFF_DROP;
   }
 
-  if (Path_Stamp_Debug == 1) {
+  /* if (Path_Stamp_Debug == 1) {
     path = ((unsigned char *)scat->elements[1].buf) + sizeof(udp_header) + 16;
     temp_path_index = 8;
     for (i = 0; i < 8; i++) {
@@ -196,9 +221,11 @@ int Forward_UDP_Data(Node *next_hop, sys_scatter *scat)
     }
     if (temp_path_index != 8)
       path[temp_path_index] = (unsigned char) My_ID;
-  }
+  } */
 
   hdr = (packet_header*) scat->elements[0].buf;
+  uhdr = (udp_header *) scat->elements[1].buf;
+  routing = (uhdr->routing << ROUTING_BITS_SHIFT);
 
   hdr->type             = UDP_DATA_TYPE;
   hdr->type             = Set_endian(hdr->type);
@@ -206,7 +233,7 @@ int Forward_UDP_Data(Node *next_hop, sys_scatter *scat)
   hdr->sender_id        = My_Address;
   hdr->ctrl_link_id     = lk->leg->ctrl_link_id;
   hdr->data_len         = scat->elements[1].len;
-  hdr->ack_len          = 0;
+  hdr->ack_len          = 0 + Dissemination_Header_Size(routing);
   hdr->seq_no           = Set_Loss_SeqNo(lk->leg);
 
   if(network_flag == 1) {

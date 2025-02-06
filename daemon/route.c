@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2016 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2017 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -735,26 +735,65 @@ void Discard_Mcast_Neighbors(Group_ID mcast_address)
 }
 
 /*********************************************************************
- * Callback function for lower levels to send a packet with regular routing
+ * Forward message to all neighbors that are marked to get this message
+ *  on the bitmask
  *********************************************************************/
 
-/* int Reg_Routing_Send_One(Node *next_hop, int mode)
+int Source_Based_Disseminate(Link *src_link, sys_scatter *scat, int mode)
 {
-    int ret, pkt_len = 0;
+    int32u i, last_hop_ip;
+    stdit it;
+    udp_header *hdr;
+    Node *nd;
+    unsigned char *routing_mask, *path;
 
-    if (Reg_Route_Pkt.buff == NULL || Reg_Route_Pkt.data_len == 0)
-        return 0;
+    hdr = (udp_header *)scat->elements[1].buf;
+    routing_mask = (unsigned char*)scat->elements[scat->num_elements-1].buf;
 
-    pkt_len = Reg_Route_Pkt.data_len;
-    ret = Forward_Data(next_hop, Reg_Route_Pkt.buff, Reg_Route_Pkt.data_len, mode);
-    Reg_Route_Pkt.buff     = NULL;
-    Reg_Route_Pkt.data_len = 0;
+    if (src_link == NULL)
+        last_hop_ip = My_Address;
+    else
+        last_hop_ip = src_link->leg->remote_interf->net_addr;
 
-    if (ret == BUFF_OK || ret == BUFF_EMPTY)
-        return pkt_len;
+    /* If we are doing Path stamping, do it now */
+    if (Path_Stamp_Debug == 1) {
+        path = ((unsigned char *) scat->elements[1].buf) + sizeof(udp_header) + 16;
+        for (i = 0; i < 8; i++) {
+            if (path[i] == 0) {
+                path[i] = (unsigned char) My_ID;
+                break;
+            }
+        }
+    }
 
-    return 0;
-}*/
+    /* Loop through all neighbors, sending to those that are marked on
+     *  the bitmask */
+    for (i = 1; i <= Degree[My_ID]; i++) {
+
+        /* If this is the neighbor that sent me the message, or this neighbor is
+         *   creator of the message, or I'm the destination, or this neighbor is
+         *   not set to receive this message, just do nothing */
+        if ( (Neighbor_Addrs[My_ID][i] == last_hop_ip) ||
+             (Neighbor_Addrs[My_ID][i] == hdr->source) ||
+             (My_Address == hdr->dest) ||
+             (!MultiPath_Neighbor_On_Path(routing_mask, i)) )
+        {
+            continue;
+        }
+
+        /* We send the message to this neighbor, grab the Node object for
+         * this neigbor and forward data */
+        stdhash_find(&All_Nodes, &it, &Neighbor_Addrs[My_ID][i]);
+        if (stdhash_is_end(&All_Nodes, &it))
+            continue;
+
+        /* Forward the data to this node */
+        nd = *((Node **)stdhash_it_val(&it)); 
+        Forward_Data(nd, scat, mode);
+    }
+
+    return BUFF_OK;
+}
 
 /*********************************************************************
  * Forward a data packet using a protocol
@@ -853,7 +892,7 @@ int Deliver_and_Forward_Data(sys_scatter *scat, int mode, Link *src_lnk)
   int             forwarded = 0;
   int             ret = NO_ROUTE;
   udp_header     *hdr = (udp_header*) scat->elements[1].buf;
-  int             routing = (int) hdr->routing << ROUTING_BITS_SHIFT;
+  int             routing = ((int) hdr->routing << ROUTING_BITS_SHIFT);
   Routing_Regime *rr;
   Node           *next_hop;
   stdhash        *neighbors;
@@ -880,11 +919,6 @@ int Deliver_and_Forward_Data(sys_scatter *scat, int mode, Link *src_lnk)
         if (hdr->dest != My_Address && hdr->ttl > 0 && 
             (next_hop = RR_Get_Next_Hop(rr, hdr->source, hdr->dest)) != NULL) {
                 assert(next_hop != This_Node);
-                /* if (Reg_Route_Pkt.buff != NULL)
-                    printf("SENT TOO FAST\n");
-                Reg_Route_Pkt.data_len = data_len;
-                Reg_Route_Pkt.buff = buff;
-                Request_Resources(MIN_WEIGHT_ROUTING >> ROUTING_BITS_SHIFT, next_hop, mode, &Reg_Routing_Send_One); */
                 ret = Forward_Data(next_hop, scat, mode);
                 Alarm(DEBUG, "Deliver_and_Forward_Data: Forwarding unicast traffic to " IPF " %d!\r\n", 
                     IP(next_hop->nid), ret);
@@ -899,9 +933,6 @@ int Deliver_and_Forward_Data(sys_scatter *scat, int mode, Link *src_lnk)
 	          assert(next_hop != This_Node);
 
 	          if (Is_Connected_Neighbor2(next_hop)) {  /* might have disconnected since that routing regime */
-                  /* Reg_Route_Pkt.data_len = data_len;
-                  Reg_Route_Pkt.buff = buff;
-                  Request_Resources(MIN_WEIGHT_ROUTING >> ROUTING_BITS_SHIFT, next_hop, mode, &Reg_Routing_Send_One); */
 	              ret = Forward_Data(next_hop, scat, mode);
 	              forwarded = 1;
 	              Alarm(DEBUG, "Deliver_and_Forward_Data: Forwarding multicast traffic to " IPF " %d!\r\n", 
@@ -912,6 +943,12 @@ int Deliver_and_Forward_Data(sys_scatter *scat, int mode, Link *src_lnk)
             Alarm(DEBUG, "Deliver_and_Forward_Data: Not forwarding multicast traffic!\r\n");
         }
     }
+    break;
+
+  case SOURCE_BASED_ROUTING:
+    ret = Source_Based_Disseminate(src_lnk, scat, mode);
+    if (ret == NO_ROUTE)
+        goto END;
     break;
 
   case IT_PRIORITY_ROUTING:
@@ -929,6 +966,20 @@ int Deliver_and_Forward_Data(sys_scatter *scat, int mode, Link *src_lnk)
   default:
     Alarm(PRINT, "Deliver_and_Forward_Data: Unknown routing (%d) requested! Ignoring!\r\n", routing);
     goto END;
+  }
+
+  /* IT Site Multicast: If this message is destined for me (daemon/site) and is marked
+   * for Site Multicast (Port range 65280 to 65535), change the destination address to 
+   * the multicast group that will be delivered to all clients connected to this daemon 
+   * that have joined this group */
+  if (hdr->dest == My_Address && 
+        (routing == IT_RELIABLE_ROUTING || routing == IT_PRIORITY_ROUTING) && 
+        hdr->dest_port >= 0xFF00 && hdr->dest_port <= 0xFFFF) 
+  {
+    Alarm(DEBUG,"hdr->source = "IPF", hdr->source_port = %d, hdr->dest = "IPF", hdr->dest_port = %d\n", 
+            IP(hdr->source), hdr->source_port, IP(hdr->dest), hdr->dest_port);
+    hdr->dest = 0xFEFF0000 | (hdr->dest_port & 0x00FF);
+    Alarm(DEBUG, "  converted to "IPF"\n", IP(hdr->dest));
   }
 
   /* COMMON FUNCTIONALITY --> DELIVER_UDP TO CLIENTS */

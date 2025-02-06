@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2016 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2017 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -567,8 +567,33 @@ int main( int argc, char *argv[] )
       t2 = E_get_time();
 
       if(ret <= 0) {
-	printf("Disconnected by spines...\n");
-	exit(0);
+	    printf("Disconnected by spines...\n");
+	    exit(0);
+        /* sk = spines_socket(PF_SPINES, SOCK_DGRAM, Protocol, NULL);
+        if(sk <= 0) {
+            printf("error socket...\n");
+            exit(0);
+        }
+    
+        name.sin_family = AF_INET;
+        name.sin_addr.s_addr = INADDR_ANY;
+        name.sin_port = htons(recvPort);	
+    
+        if(spines_bind(sk, (struct sockaddr *)&name, sizeof(name) ) < 0) {
+            perror("err: bind");
+            exit(1);
+        }
+    
+        if(Group_Address != -1) {
+            mreq.imr_multiaddr.s_addr = htonl(Group_Address);
+            mreq.imr_interface.s_addr = htonl(INADDR_ANY);
+      
+            if(spines_setsockopt(sk, IPPROTO_IP, SPINES_ADD_MEMBERSHIP, (void *)&mreq, sizeof(mreq)) < 0) {
+	        printf("Mcast: problem in setsockopt to join multicast address");
+	        exit(0);
+            }	    
+        }
+        continue; */
       }
       if(ret != Num_bytes) {
 	printf("corrupted packet... ret: %d; msg_size: %d\n", ret, Num_bytes);
@@ -579,6 +604,9 @@ int main( int argc, char *argv[] )
 
       if (ntohl(f_pkt->seq_num) == -1)
         break;
+
+      /* if (ntohl(f_pkt->seq_num) == 1000)
+        sleep(10); */
 
       if (first_pkt_flag) {
 	start = E_get_time();       /* we calc start time as local clock when first packet arrives */
@@ -903,7 +931,7 @@ static  void    Usage(int argc, char *argv[])
       Protocol |= tmp;
       argc--; argv++;
     } else if ( !strncmp( *argv, "-D", 2 ) ) {
-        if(sscanf(argv[1], "%d", (int*)&tmp ) < 1 || (tmp < 0) || (tmp > 2)) {
+        if(sscanf(argv[1], "%d", (int*)&tmp ) < 1 || (tmp < 0) || (tmp > 3)) {
             Alarm(EXIT, "Bad Dissemination %d specified through -D option!\r\n", tmp);
         }
         Protocol |= (tmp << ROUTING_BITS_SHIFT);
@@ -933,7 +961,7 @@ static  void    Usage(int argc, char *argv[])
 	      "\t[-n <rounds>     ] : number of packets\n"
 	      "\t[-f <filename>   ] : file where to save statistics\n"
 	      "\t[-P <0, 1, 2, 8> ] : overlay links (0: UDP; 1: Reliable; 2: Realtime; 8: Intrusion-Tolerant)\n"
-	      "\t[-D <0, 1, 2>    ] : dissemination alg (0: Min Weight; 1: IT Priority; 2: IT Reliable)\n"
+	      "\t[-D <0, 1, 2, 3> ] : dissemination alg (0: Min Weight; 1: IT Priority; 2: IT Reliable, 3: Source Based)\n"
           "\t[-S <0, 1>       ] : session semantics (0: Reliable STREAM; 1: Reliable DGRAM no backpressure)\n"
 	      "\t[-k              ] : number of node-disjoint paths to route on (only valid for D = 1 and D = 2),\n"
                                     "\t                     \tdefault is MAX_INT (for flooding)\n"

@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2016 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2017 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -32,6 +32,10 @@
 #define ext_intru_tol_udp
 #include "intrusion_tol_udp.h"
 #undef  ext_intru_tol_udp
+
+#include <string.h>
+
+#include "security.h"
 
 /* For printing 64 bit numbers */
 #define __STDC_FORMAT_MACROS
@@ -56,9 +60,11 @@ extern int32u   *Neighbor_Addrs[];
 
 extern unsigned char Conf_Hash[];
 
+static unsigned char IT_Crypt_Buf[100000];
+
 /* Local constants */
 static const sp_time zero_timeout  = {0, 0};
-unsigned char processed[RESERVED_ROUTING_BITS > ROUTING_BITS_SHIFT];
+unsigned char processed[(RESERVED_ROUTING_BITS >> ROUTING_BITS_SHIFT)];
 
 /* Internal functions called from this link protocol */
 void Assign_Resources_IT(Node *next_hop);
@@ -82,6 +88,145 @@ int Add_IT_Nacks(Int_Tol_Data *itdata, intru_tol_pkt_tail *itt,
 
 /* Functions for flipping headers */
 
+/***********************************************************/
+/***********************************************************/
+
+static int IT_Link_Send(Link *lk, sys_scatter *scat)
+{
+    Int_Tol_Data *itdata = (Int_Tol_Data*) lk->prot_data;
+    int           ret    = BUFF_DROP;
+    sys_scatter   msg;
+    int           len;
+    
+    if (Conf_IT_Link.Crypto)
+    {
+        if (itdata->dh_key_computed != 2)
+        {
+            Alarm(PRINT, "IT_Link_Send: No DH key computed with neighbor yet! status: %d, neighbor "IPF"\r\n", itdata->dh_key_computed, IP(lk->leg->remote_interf->net_addr));
+            goto FAIL;
+        }
+
+        if ((len = Sec_lock_msg(scat, IT_Crypt_Buf, (int) sizeof(IT_Crypt_Buf), &itdata->encrypt_ctx, &itdata->hmac_ctx)) < 0)
+        {
+            Alarm(PRINT, "IT_Link_Send: Sec_lock_msg failed!\n");
+            goto FAIL;
+        }
+
+        msg.num_elements    = 1;
+        msg.elements[0].buf = (char*) IT_Crypt_Buf;
+        msg.elements[0].len = len;
+        scat = &msg;
+    }
+
+    ret = Link_Send(lk, scat);
+
+FAIL:
+    return ret;
+}
+
+/***********************************************************/
+/***********************************************************/
+
+static void DH_established(Link *lk)
+{
+    Int_Tol_Data *itdata = (Int_Tol_Data*) lk->prot_data;
+    
+    if (Conf_IT_Link.Crypto == 1 && itdata != NULL && itdata->dh_established == 0)
+    {
+        itdata->dh_established = 1;
+        
+        if (itdata->dh_pkt.elements[0].buf != NULL)
+        {
+            dec_ref_cnt(itdata->dh_pkt.elements[0].buf);
+            itdata->dh_pkt.elements[0].buf = NULL;
+            itdata->dh_pkt.elements[0].len = 0;
+        }
+        
+        if (itdata->dh_pkt.elements[1].buf != NULL)
+        {
+            dec_ref_cnt(itdata->dh_pkt.elements[1].buf);
+            itdata->dh_pkt.elements[1].buf = NULL;
+            itdata->dh_pkt.elements[1].len = 0;
+        }
+        /* HANDSHAKE HAS FINISHED, RESTARTING NORMAL RELIABLE TIMEOUT EVENT */
+        if (!E_in_queue(Reliable_IT_Timeout, (int)(lk->link_id), NULL))
+            E_queue(Reliable_IT_Timeout, (int)(lk->link_id), NULL, zero_timeout);
+    }
+}
+
+/*********************************************************************
+ If using crypto on intrusion tolerant links, then try to authenticate
+ and decrypt the message first, including stripping crypto fields.  If
+ that succeeds, return the decrypted and authenticated message.  If
+ that fails or we don't have a DH key yet, but the msg looks like it
+ might be a DH msg, then return that msg unchanged for further
+ processing.  Otherwise, reject the message.
+
+ Returns (new) msg size if processing should continue, negative if msg
+ should be dropped.
+**********************************************************************/
+
+int Preprocess_intru_tol_packet(sys_scatter *scat, int received_bytes, Interface *local_interf, Network_Address src_addr, int16u src_port)
+{
+    int            ret = -1;
+    packet_header *pack_hdr  = (packet_header*) scat->elements[0].buf;
+    int32          pack_type = (Same_endian(pack_hdr->type) ? pack_hdr->type : Flip_int32(pack_hdr->type));  /* NOTE: might be invalid or encrypted data at this point */
+    Interface     *remote_interf;
+    Network_Leg   *leg;
+    Link          *lk;
+    Int_Tol_Data  *itdata;
+
+    assert(received_bytes >= 0);
+    
+    /* look up link */
+    
+    if ((remote_interf = Get_Interface_by_Addr(src_addr))                   == NULL ||
+        (leg = Get_Network_Leg(local_interf->iid, remote_interf->iid)) == NULL ||
+        (lk = leg->links[INTRUSION_TOL_LINK])                        == NULL ||
+        (itdata = (Int_Tol_Data*) lk->prot_data)                     == NULL)
+    {
+        Alarmp(SPLOG_INFO, NETWORK, "Preprocess_intru_tol_packet:%d: dropping msg from unexpected src!\n", __LINE__);
+        goto END;
+    }
+
+    /* if we have DH key for link, then try authenicating + decrypting msg; should fail for DH msgs */
+    
+    if (itdata->dh_key_computed == 2 && (ret = Sec_unlock_msg(scat, IT_Crypt_Buf, sizeof(IT_Crypt_Buf), &itdata->decrypt_ctx, &itdata->hmac_ctx)) >= 0)
+    {
+        unsigned char *src     = IT_Crypt_Buf;
+        unsigned char *src_end = IT_Crypt_Buf + ret;
+        int            i;
+        
+        /* success, DH handshake completed, copy decrypted msg back into scat and trim it down to stripped size */
+
+        DH_established(lk);
+        
+        for (i = 0; i < scat->num_elements; src += scat->elements[i].len, ++i)
+        {
+            if (src + scat->elements[i].len > src_end)
+                scat->elements[i].len = src_end - src;
+            
+            memcpy(scat->elements[i].buf, src, scat->elements[i].len);
+        }
+        
+        goto END;
+    }
+
+    /* otherwise, if it looks like it might be a DH packet, then let it pass for further processing */
+
+    if (Is_diffie_hellman(pack_type))
+    {
+        ret = received_bytes;
+        goto END;
+    }
+
+    /* otherwise reject it */
+    
+    Alarmp(SPLOG_INFO, NETWORK, "Preprocess_intru_tol_packet:%d: dropping unauthenticated msg from " IPF "!\n", __LINE__, IP(src_addr));
+
+END:
+    return ret;
+}
 
 /***********************************************************/
 /* void IT_Link_Pre_Conf_Setup()                           */
@@ -94,6 +239,7 @@ int Add_IT_Nacks(Int_Tol_Data *itdata, intru_tol_pkt_tail *itt,
 void IT_Link_Pre_Conf_Setup() {
     
     Conf_IT_Link.Crypto                     = IT_CRYPTO;
+    Conf_IT_Link.Encrypt                    = IT_ENCRYPT;
     Conf_IT_Link.Ordered_Delivery           = ORDERED_DELIVERY;
     Conf_IT_Link.Reintroduce_Messages       = REINTRODUCE_MSGS;
     Conf_IT_Link.TCP_Fairness               = TCP_FAIRNESS;
@@ -247,6 +393,8 @@ int IT_Link_Conf_hton(unsigned char *buff)
     
     *(unsigned char*)write = Conf_IT_Link.Crypto; 
         write += sizeof(unsigned char);
+    *(unsigned char*) write = Conf_IT_Link.Encrypt;
+        write += sizeof(unsigned char);
     *(unsigned char*)write = Conf_IT_Link.Ordered_Delivery;
         write += sizeof(unsigned char);
     *(unsigned char*)write = Conf_IT_Link.Reintroduce_Messages;
@@ -305,7 +453,7 @@ int IT_Link_Conf_hton(unsigned char *buff)
     *(int32u*)write = htonl(Conf_IT_Link.Ping_Threshold);
         write += sizeof(int32u);
 
-    return sizeof(CONF_IT_LINK);
+    return write - buff;
 }
 
 /***********************************************************/
@@ -336,8 +484,6 @@ void Process_intru_tol_data_packet(Link *lk, sys_scatter *scat,
     int ret;
     Int_Tol_Data *itdata;
     intru_tol_pkt_tail *itt;
-    unsigned char hash_ret[HMAC_Key_Len];
-    unsigned int hash_len;
     int16u data_len, ack_len;
     packet_header *phdr;
 
@@ -349,11 +495,17 @@ void Process_intru_tol_data_packet(Link *lk, sys_scatter *scat,
         return;
     }
 
+    if (scat->elements[1].len < sizeof(intru_tol_pkt_tail))
+    {
+        Alarmp(SPLOG_WARNING, PRINT, "Process_intru_tol_data_packet: packet too small!\n");
+        return;
+    }
+
     phdr = (packet_header*) scat->elements[0].buf;
     data_len = phdr->data_len;
     ack_len = phdr->ack_len;
 
-    /* Check Endianness */
+    /* TODO: Check Endianness */
     if (!Same_endian(type)) {
         /* Check if Priority_Flooding and flip Prio_Flood_Hdr? */
         /* Flip pkt_tail */
@@ -379,39 +531,6 @@ void Process_intru_tol_data_packet(Link *lk, sys_scatter *scat,
     if (itt->aru_incarnation != itdata->my_incarnation) {
         Alarm(DEBUG, "my_inc don't match - "IPF"\n", IP(lk->leg->remote_interf->net_addr));
         return;
-    }
-
-    if (Conf_IT_Link.Crypto == 1) {
-        if (itdata->dh_key_computed != 2)
-            return;
-        /* Verify the MAC on this message */
-        /* We think that we don't need to flip anything to verify */
-        /* IDEA: It would be better to MAC both this data packet AND
-         *      Spines Header and then verify the MAC over those 
-         *      things in protocol.c where it gets messages */
-        if (ack_len < HMAC_Key_Len) {
-            Alarm(PRINT, "Process_intru_tol_data_pkt: ack_len invalid\r\n");
-            return;
-        }
-        ack_len -= HMAC_Key_Len;
-        HMAC_Init_ex(&(itdata->hmac_ctx), NULL, HMAC_Key_Len, NULL, NULL);
-        HMAC_Update(&(itdata->hmac_ctx), (unsigned char*)phdr, sizeof(packet_header));
-        HMAC_Update(&(itdata->hmac_ctx), (unsigned char*)scat->elements[1].buf, data_len + ack_len);
-        HMAC_Final(&(itdata->hmac_ctx), 
-                (unsigned char*)hash_ret, &hash_len);
-
-        /* Should we add a check that hash_len == HMAC_Key_Len? */
-
-        /*
-        if (HMAC(EVP_sha256(), itdata->dh_key, HMAC_Key_Len, (unsigned char*)buff_p, 
-                data_len + ack_len, hash_ret, &hash_len) == NULL)
-        {
-            Alarm(EXIT, "Process_intru_tol_data_pkt: HMAC failure\r\n");
-        }*/
-        if (memcmp(hash_ret, (unsigned char*)(scat->elements[1].buf) + data_len + ack_len, HMAC_Key_Len) != 0) {
-            Alarm(PRINT, "Process_intru_tol_data_pkt: HMAC mismatch\r\n");
-            return;
-        }
     }
 
     ret = Process_IT_Ack(lk->link_id, scat->elements[1].buf, data_len, ack_len);
@@ -446,8 +565,6 @@ void Process_intru_tol_ack_packet(Link *lk, sys_scatter *scat,
     int ret;
     Int_Tol_Data *itdata;
     intru_tol_pkt_tail *itt;
-    unsigned char hash_ret[HMAC_Key_Len];
-    unsigned int hash_len;
     int16u ack_len, data_len;
     packet_header *phdr;
 
@@ -457,6 +574,12 @@ void Process_intru_tol_ack_packet(Link *lk, sys_scatter *scat,
         return;
     }
 
+   if (scat->elements[1].len < sizeof(intru_tol_pkt_tail))
+    {
+        Alarmp(SPLOG_WARNING, PRINT, "Process_intru_tol_ack_packet: packet too small!\n");
+        return;
+    }
+   
     phdr = (packet_header*) scat->elements[0].buf;
     data_len = phdr->data_len;
     ack_len = phdr->ack_len;
@@ -482,35 +605,8 @@ void Process_intru_tol_ack_packet(Link *lk, sys_scatter *scat,
     if (itt->aru_incarnation != itdata->my_incarnation) 
         return;
 
-    if (Conf_IT_Link.Crypto == 1) {
-        if (itdata->dh_key_computed != 2)
-            return;
-        if (ack_len < HMAC_Key_Len) {
-            Alarm(PRINT, "Process_intru_tol_ack_pkt: ack_len invalid\r\n");
-            return;
-        }
-        ack_len -= HMAC_Key_Len;
-
-        HMAC_Init_ex(&(itdata->hmac_ctx), NULL, HMAC_Key_Len, NULL, NULL);
-        HMAC_Update(&(itdata->hmac_ctx), (unsigned char*)phdr, sizeof(packet_header));
-        HMAC_Update(&(itdata->hmac_ctx), (unsigned char*)scat->elements[1].buf, data_len + ack_len);
-        HMAC_Final(&(itdata->hmac_ctx), 
-                (unsigned char*)hash_ret, &hash_len);
-
-        /*if (HMAC(EVP_sha256(), itdata->dh_key, HMAC_Key_Len, (unsigned char*)buff_p, 
-                data_len + ack_len, hash_ret, &hash_len) == NULL)
-        {
-            Alarm(EXIT, "Process_intru_tol_ack_pkt: HMAC failure\r\n");
-        }*/
-        if (memcmp(hash_ret, scat->elements[1].buf + data_len + ack_len, HMAC_Key_Len) != 0) {
-            Alarm(PRINT, "Process_intru_tol_ack_pkt: HMAC mismatch\r\n");
-            return;
-        }
-    } 
-
     ret = Process_IT_Ack(lk->link_id, scat->elements[1].buf, data_len, ack_len);
 }
-
 
 /***********************************************************/
 /* void Process_intru_tol_ping (Link *lk,                  */
@@ -543,8 +639,6 @@ void Process_intru_tol_ping(Link *lk, sys_scatter *scat,
     intru_tol_ping *ping; 
     long unsigned temp;
     sp_time diff_rtt, now, delta;
-    unsigned char hash_ret[HMAC_Key_Len];
-    unsigned int hash_len;
     int16u data_len, ack_len;
     packet_header *phdr;
 
@@ -560,14 +654,16 @@ void Process_intru_tol_ping(Link *lk, sys_scatter *scat,
     
     now = E_get_time();
 
+    if (scat->elements[1].len < sizeof(intru_tol_ping) || data_len != sizeof(intru_tol_ping)) {
+        Alarm(DEBUG, "Process_intru_tol_ping: invalid ping size\r\n");
+        return;
+    }
+
     /* Check Endianness */
     if (!Same_endian(type)) {
         /* Flip ping */
     }
-    if (data_len != sizeof(intru_tol_ping)) {
-        Alarm(DEBUG, "Process_intru_tol_ping: invalid ping size\r\n");
-        return;
-    }
+
     itdata = (Int_Tol_Data*) lk->prot_data;
     if (itdata == NULL) {
         Alarm(DEBUG, "Process_intru_tol_ping:" 
@@ -591,51 +687,6 @@ void Process_intru_tol_ping(Link *lk, sys_scatter *scat,
     if (ping->ping_type == PING && 
             E_compare_time(itdata->pong_freq, now) > 0) {
         return;
-    }
-
-    /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
-    /*     Verify HMAC / Signature      */
-    /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
-    if (Conf_IT_Link.Crypto == 1) {
-        if (itdata->dh_key_computed != 2)
-            return;
-        if (ack_len < HMAC_Key_Len) {
-            Alarm(PRINT, "Process_intru_tol_ping: ack_len invalid\r\n");
-            return;
-        }
-        ack_len -= HMAC_Key_Len;
-
-        HMAC_Init_ex(&(itdata->hmac_ctx), NULL, HMAC_Key_Len, NULL, NULL);
-        HMAC_Update(&(itdata->hmac_ctx), (unsigned char*)phdr, sizeof(packet_header));
-        HMAC_Update(&(itdata->hmac_ctx), (unsigned char*)scat->elements[1].buf, data_len);
-        HMAC_Final(&(itdata->hmac_ctx), 
-                (unsigned char*)hash_ret, &hash_len);
-
-        /*if (HMAC(EVP_sha256(), itdata->dh_key, HMAC_Key_Len, (unsigned char*)buff_p, 
-                data_len + ack_len, hash_ret, &hash_len) == NULL)
-        {
-            Alarm(EXIT, "Process_intru_tol_ping: HMAC failure\r\n");
-        }*/
-        if (memcmp(hash_ret, scat->elements[1].buf + data_len, HMAC_Key_Len) != 0) {
-            Alarm(PRINT, "Process_intru_tol_ping: HMAC mismatch\r\n");
-            return;
-        }
-        if (itdata->dh_established == 0) {
-            itdata->dh_established = 1;
-            if (itdata->dh_pkt.elements[0].buf != NULL) {
-                dec_ref_cnt(itdata->dh_pkt.elements[0].buf);
-                itdata->dh_pkt.elements[0].buf = NULL;
-                itdata->dh_pkt.elements[0].len = 0;
-            }
-            if (itdata->dh_pkt.elements[1].buf != NULL) {
-                dec_ref_cnt(itdata->dh_pkt.elements[1].buf);
-                itdata->dh_pkt.elements[1].buf = NULL;
-                itdata->dh_pkt.elements[1].len = 0;
-            }
-            /* HANDSHAKE HAS FINISHED, RESTARTING NORMAL RELIABLE TIMEOUT EVENT */
-            if (!E_in_queue(Reliable_IT_Timeout, (int)(lk->link_id), NULL))
-                E_queue(Reliable_IT_Timeout, (int)(lk->link_id), NULL, zero_timeout);
-        }
     }
 
     /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
@@ -764,7 +815,7 @@ void Process_DH_IT(Link *lk, sys_scatter *scat,
     int bn_size, ret;
     unsigned int sign_len;
     BIGNUM *bn;
-    char *read_ptr;
+    char *read_ptr, *end_ptr;
     stdit it;
     int32u src, dst, my_inc, ngbr_inc, src_id;
     sp_time now = E_get_time();
@@ -801,13 +852,26 @@ void Process_DH_IT(Link *lk, sys_scatter *scat,
     }
 
     read_ptr = scat->elements[1].buf;
+    end_ptr  = scat->elements[1].buf + data_len;
 
+    if (data_len > scat->elements[1].len || read_ptr + sizeof(Interface_ID) > end_ptr)
+    {
+        Alarm(PRINT, "Process_DH_IT:%d: packet too small!\n", __LINE__);
+        return;
+    }
+    
     src = *(Interface_ID*)read_ptr;
     if (src != lk->leg->remote_interf->iid) {
         Alarm(PRINT, "Process_DH_IT: bogus src = %d\r\n", src);
         return;
     }
     read_ptr += sizeof(Interface_ID);
+    
+    if (read_ptr + sizeof(Interface_ID) > end_ptr)
+    {
+        Alarm(PRINT, "Process_DH_IT:%d: packet too small!\n", __LINE__);
+        return;
+    }
     
     dst = *(Interface_ID*)read_ptr;
     if (dst != lk->leg->local_interf->iid) {
@@ -816,6 +880,12 @@ void Process_DH_IT(Link *lk, sys_scatter *scat,
     }
     read_ptr += sizeof(Interface_ID);
 
+    if (read_ptr + sizeof(int32u) > end_ptr)
+    {
+        Alarm(PRINT, "Process_DH_IT:%d: packet too small!\n", __LINE__);
+        return;
+    }
+    
     ngbr_inc = *(int32u*)read_ptr;
     if (ngbr_inc <= itdata->ngbr_incarnation) {
         Alarm(PRINT, "Process_DH_IT: bad ngbr_incarnation --> packet = %d, stored = %d \r\n", 
@@ -824,6 +894,12 @@ void Process_DH_IT(Link *lk, sys_scatter *scat,
     }
     read_ptr += sizeof(int32u);
 
+    if (read_ptr + sizeof(int32u) > end_ptr)
+    {
+        Alarm(PRINT, "Process_DH_IT:%d: packet too small!\n", __LINE__);
+        return;
+    }
+    
     my_inc = *(int32u*)read_ptr;
     if (my_inc > itdata->my_incarnation) {
         Alarm(PRINT, "Process_DH_IT: bad my_incaration = %d\r\n", my_inc);
@@ -831,14 +907,32 @@ void Process_DH_IT(Link *lk, sys_scatter *scat,
     }
     read_ptr += sizeof(int32u);
 
+    if (read_ptr + sizeof(int16u) > end_ptr)
+    {
+        Alarm(PRINT, "Process_DH_IT:%d: packet too small!\n", __LINE__);       
+        return;
+    }
+    
     bn_size = *(int16u*)read_ptr;
     read_ptr += sizeof(int16u);
 
+    if (read_ptr + bn_size > end_ptr)
+    {
+        Alarm(PRINT, "Process_DH_IT:%d: packet too small!\n", __LINE__);
+        return;
+    }
+    
     bn = BN_new();
     BN_bin2bn((unsigned char*)read_ptr, bn_size, bn);
     read_ptr += bn_size;
 
     /* Check this neighbors configuration file hash against ours */
+    if (read_ptr + HMAC_Key_Len > end_ptr)
+    {
+        Alarm(PRINT, "Process_DH_IT:%d: packet too small!\n", __LINE__);
+        return;
+    }
+    
     if (memcmp(read_ptr, Conf_Hash, HMAC_Key_Len) != 0) {
         Alarm(PRINT, "Process_DH_IT: hash of config files do not match!\r\n");
         return;
@@ -847,9 +941,16 @@ void Process_DH_IT(Link *lk, sys_scatter *scat,
 
     /* Verify the RSA signature */
     sign_len = data_len - (unsigned int)(read_ptr - scat->elements[1].buf);
-    if (sign_len != Signature_Len) {
-        Alarm(PRINT, "Process_DH_IT: sign_len (%d) != Key_Len (%d)\r\n",
-                        sign_len, Signature_Len);
+    
+    if (sign_len != Signature_Len || sign_len > data_len) {
+        Alarm(PRINT, "Process_DH_IT: sign_len (%d) != Key_Len (%d), data_len = %d\n",
+              sign_len, Signature_Len, data_len);
+        return;
+    }
+
+    if (read_ptr + sign_len > end_ptr)
+    {
+        Alarm(PRINT, "Process_DH_IT:%d: packet too small!\n", __LINE__);
         return;
     }
 
@@ -891,16 +992,12 @@ void Process_DH_IT(Link *lk, sys_scatter *scat,
     }
 
     /* Possibly send response, maybe just set state flag */
-    if (itdata->dh_key_computed == 0) {
-        Alarm(PRINT, "Process_DH_IT: Dropping packet because our half of key"
-            " is not yet computed\r\n");
-        return;
-    }
-    else if (itdata->dh_key_computed == 1) {
+    
+    if (itdata->dh_key_computed == 1) {
         if (!E_in_queue(Send_IT_DH, lk->link_id, NULL))
             Alarm(EXIT, "Process_DH_IT: send event should be queued\r\n");
     }
-    else { /*itdata->dh_key_computed == 2 */
+    else {
         itdata->dh_key_computed = 0;
         Key_Exchange_IT(lk->link_id, NULL);
     }
@@ -909,6 +1006,7 @@ void Process_DH_IT(Link *lk, sys_scatter *scat,
     ret = DH_compute_key(itdata->dh_key, bn, itdata->dh_local);
     if (ret < 0)
         Alarm(EXIT, "Process_DH_IT: DH_compute_key failed with ret = -%d\r\n", ret);
+    
     itdata->dh_key_computed = 2;
 
     E_queue(Ping_IT_Timeout, (int)lk->link_id, NULL, it_ping_timeout);
@@ -917,9 +1015,12 @@ void Process_DH_IT(Link *lk, sys_scatter *scat,
     /* clean up allocated memory from this function */
     BN_clear_free(bn);
 
-    /* Initialize HMAC_CTX struct for this link */
-    HMAC_Init_ex(&(itdata->hmac_ctx), itdata->dh_key, HMAC_Key_Len, EVP_sha256(), NULL);
-    
+    /* Initialize crypto ctx's for this link */
+
+    EVP_EncryptInit_ex(&itdata->encrypt_ctx, EVP_aes_128_cbc(), NULL, itdata->dh_key, NULL);
+    EVP_DecryptInit_ex(&itdata->decrypt_ctx, EVP_aes_128_cbc(), NULL, itdata->dh_key, NULL);
+    HMAC_Init_ex(&itdata->hmac_ctx, itdata->dh_key, HMAC_Key_Len, EVP_sha256(), NULL);
+
     Incarnation_Change(lk->link_id, ngbr_inc, mode);
 }
 
@@ -1094,6 +1195,7 @@ int Full_Link_IT (Node *next_hop)
     if ( (itdata->out_head_seq - itdata->out_tail_seq) < MAX_SEND_ON_LINK)
         return 0;
 
+    Alarm(DEBUG, "Link is full toward "IPF"\n", IP(next_hop->nid));
     return 1;
 }
 
@@ -1271,7 +1373,7 @@ int Request_Resources_IT(int dissem, Node *next_hop,
     Int_Tol_Data *itdata;
     Dissem_Fair_Queue *dfq;
 
-    if (dissem < 0 || dissem > RESERVED_ROUTING_BITS >> ROUTING_BITS_SHIFT) {
+    if (dissem < 0 || dissem > (RESERVED_ROUTING_BITS >> ROUTING_BITS_SHIFT)) {
         Alarm(PRINT, "Request_Resources_IT(): invalid dissemination - %d\r\n",
                     dissem);
         return 0;
@@ -1586,7 +1688,6 @@ int Build_Message_From_Fragments_IT(sys_scatter *scat, char *buff, int16u data_l
     return ret;
 }
 
-
 /***********************************************************/
 /* int Send_IT_Data_Msg(int link_id, int64u seq)           */
 /*                                                         */
@@ -1611,8 +1712,7 @@ int Send_IT_Data_Msg(int link_id, int64u seq)
     Int_Tol_Data *itdata;
     sys_scatter *link_scat;
     packet_header *hdr;
-    unsigned int hash_len;
-    int32u index, i;
+    int32u index;
     int data_len, ack_len, ret;
     intru_tol_pkt_tail *itt;
     sp_time now;
@@ -1653,7 +1753,7 @@ int Send_IT_Data_Msg(int link_id, int64u seq)
     link_scat->elements[link_scat->num_elements].buf = (char*)new_ref_cnt(PACK_BODY_OBJ);
     
     /* set up the packet_tail for the IT protocol */ 
-    itt       = (intru_tol_pkt_tail*)(link_scat->elements[link_scat->num_elements].buf);
+    itt                  = (intru_tol_pkt_tail*)(link_scat->elements[link_scat->num_elements].buf);
     itt->link_seq        = seq;
     itt->seq_nonce       = itdata->out_nonce[index];
     itt->aru             = itdata->in_tail_seq - 1;
@@ -1664,8 +1764,8 @@ int Send_IT_Data_Msg(int link_id, int64u seq)
     /* Add NACKs to the end of this message */
     ack_len              = Add_IT_Nacks(itdata, itt, data_len);
 
-    /* Update the length of the tail element, HMAC_Len is 0 if crypto is off */
-    link_scat->elements[link_scat->num_elements].len = ack_len + HMAC_Key_Len;
+    /* Update the length of the tail element */
+    link_scat->elements[link_scat->num_elements].len = ack_len;
     link_scat->num_elements++;
      
     /* set up the spines_header for the packet */
@@ -1678,57 +1778,20 @@ int Send_IT_Data_Msg(int link_id, int64u seq)
     /* hdr.sender_id        = My_Address; */
     hdr->ctrl_link_id     = lk->leg->ctrl_link_id; 
     /* hdr.data_len         = data_len; */
-    hdr->ack_len         = ack_len + HMAC_Key_Len;
+    hdr->ack_len         = ack_len;
     /* hdr.seq_no           = Set_Loss_SeqNo(lk->leg); */
     /* hdr.seq_no           = 0; */
-
-    if (Conf_IT_Link.Crypto == 1) {
-        if (itdata->dh_key_computed != 2) {
-            Alarm(PRINT, "Send_IT_Data_Msg: No DH key computed with neighbor yet!\r\n");
-            
-            /* get rid of the intrusion_tolerant link tail that was added */
-            dec_ref_cnt(link_scat->elements[ link_scat->num_elements - 1 ].buf);
-            link_scat->num_elements--;
-
-            return BUFF_DROP;
-        }
-
-        HMAC_Init_ex(&(itdata->hmac_ctx), NULL, HMAC_Key_Len, NULL, NULL);
-
-        for (i = 0; i < link_scat->num_elements; i++) {
-            if (i != link_scat->num_elements - 1)
-                HMAC_Update(&(itdata->hmac_ctx), 
-                            (unsigned char*)(link_scat->elements[i].buf), 
-                            link_scat->elements[i].len);
-            else
-                HMAC_Update(&(itdata->hmac_ctx), 
-                            (unsigned char*)(link_scat->elements[i].buf), 
-                            link_scat->elements[i].len - HMAC_Key_Len);
-        }
-        HMAC_Final(&(itdata->hmac_ctx), 
-                    (unsigned char*)(link_scat->elements[link_scat->num_elements - 1].buf) + 
-                        link_scat->elements[link_scat->num_elements - 1].len - HMAC_Key_Len, 
-                    &hash_len);
-
-        /* hash_ret = HMAC(EVP_sha256(), itdata->dh_key, HMAC_Key_Len, 
-                        (unsigned char*) scat.elements[1].buf, 
-                        scat.elements[1].len - HMAC_Key_Len,
-                        (unsigned char*)(scat.elements[1].buf + scat.elements[1].len - HMAC_Key_Len),
-                        &hash_len);
-        
-        if (hash_ret == NULL)
-            Alarm(EXIT, "Send_IT_Data_Msg: Hash Failure\r\n"); */
-    }
    
     /* printf("\tlen = %d\n", data_len); */
-    ret = Link_Send(lk, link_scat);
+    ret = IT_Link_Send(lk, link_scat);
 
     /* get rid of the intrusion_tolerant link tail that was added */
     dec_ref_cnt(link_scat->elements[ link_scat->num_elements - 1 ].buf);
     link_scat->num_elements--;
     
-    if (ret < 0) {
-        Alarm(PRINT, "Send_IT_Data_Msg: Link_Send returned an error for seq %d\r\n", seq);
+    if (ret < 0 || ret == BUFF_DROP)
+    {
+        Alarm(PRINT, "Send_IT_Data_Msg: IT_Link_Send returned an error for seq %d\r\n", seq);
         return BUFF_DROP;
     }
     /* else
@@ -1749,7 +1812,6 @@ int Send_IT_Data_Msg(int link_id, int64u seq)
   
     return BUFF_EMPTY;
 }
-
 
 /***********************************************************/
 /* int Send_IT_Ack(int link_id)                            */
@@ -1777,7 +1839,6 @@ int Send_IT_Ack(int link_id)
     int ret;
     int32u ack_len;
     /* unsigned char *hash_ret; */
-    unsigned int hash_len;
     intru_tol_pkt_tail *itt;
 
     if (network_flag != 1) {
@@ -1826,31 +1887,10 @@ int Send_IT_Ack(int link_id)
     /* hdr.seq_no           = Set_Loss_SeqNo(lk->leg); */
     hdr.seq_no           = 0;
 
-    if (Conf_IT_Link.Crypto == 1) {
-        if (itdata->dh_key_computed != 2)
-            return BUFF_DROP;
-        scat.elements[1].len += HMAC_Key_Len;
-        hdr.ack_len += HMAC_Key_Len;
-
-        HMAC_Init_ex(&(itdata->hmac_ctx), NULL, HMAC_Key_Len, NULL, NULL);
-        HMAC_Update(&(itdata->hmac_ctx), (unsigned char*)&hdr, sizeof(packet_header));
-        HMAC_Update(&(itdata->hmac_ctx), (unsigned char*)&body, scat.elements[1].len - HMAC_Key_Len);
-        HMAC_Final(&(itdata->hmac_ctx), 
-                (unsigned char*)(scat.elements[1].buf + scat.elements[1].len - HMAC_Key_Len), &hash_len);
-
-        /* hash_ret = HMAC(EVP_sha256(), itdata->dh_key, HMAC_Key_Len, 
-                        (unsigned char*) scat.elements[1].buf, 
-                        scat.elements[1].len - HMAC_Key_Len,
-                        (unsigned char*)(scat.elements[1].buf + scat.elements[1].len - HMAC_Key_Len),
-                        &hash_len);
-        if (hash_ret == NULL)
-            Alarm(EXIT, "Send_IT_Ack: Hash Failure\r\n"); */
-    }
-
-    ret = Link_Send(lk, &scat);
-    if (ret < 0) {
+    ret = IT_Link_Send(lk, &scat);
+    
+    if (ret < 0 || ret == BUFF_DROP)
         return BUFF_DROP;
-    }
   
     return BUFF_EMPTY;
 }
@@ -1880,8 +1920,6 @@ int Send_IT_Ping(int link_id, char *buff)
     packet_header hdr;
     Int_Tol_Data *itdata;
     int ret;
-    /* unsigned char *hash_ret; */
-    unsigned int hash_len;
 
     if (network_flag != 1) {
         return BUFF_DROP;
@@ -1917,30 +1955,10 @@ int Send_IT_Ping(int link_id, char *buff)
     /* hdr.seq_no           = Set_Loss_SeqNo(lk->leg); */
     hdr.seq_no           = 0;
 
-    if (Conf_IT_Link.Crypto == 1) {
-        if (itdata->dh_key_computed != 2)
-            return BUFF_DROP;
-        scat.elements[1].len += HMAC_Key_Len;
-        hdr.ack_len += HMAC_Key_Len;
-
-        HMAC_Init_ex(&(itdata->hmac_ctx), NULL, HMAC_Key_Len, NULL, NULL);
-        HMAC_Update(&(itdata->hmac_ctx), (unsigned char*)&hdr, sizeof(packet_header));
-        HMAC_Update(&(itdata->hmac_ctx), (unsigned char*)buff, scat.elements[1].len - HMAC_Key_Len);
-        HMAC_Final(&(itdata->hmac_ctx), 
-                (unsigned char*)(scat.elements[1].buf + scat.elements[1].len - HMAC_Key_Len), &hash_len);
-
-        /* hash_ret = HMAC(EVP_sha256(), itdata->dh_key, HMAC_Key_Len, 
-                        (unsigned char*) scat.elements[1].buf, 
-                        scat.elements[1].len - HMAC_Key_Len,
-                        (unsigned char*)(scat.elements[1].buf + scat.elements[1].len - HMAC_Key_Len),
-                        &hash_len);
-        if (hash_ret == NULL)
-            Alarm(EXIT, "Send_IT_Ping: Hash Failure\r\n"); */
-    }
-    ret = Link_Send(lk, &scat);
-    if (ret < 0) {
+    ret = IT_Link_Send(lk, &scat);
+    
+    if (ret < 0 || ret == BUFF_DROP)
         return BUFF_DROP;
-    }
   
     return BUFF_EMPTY;
 }
@@ -2734,13 +2752,11 @@ void Handle_IT_Retransm(int link_id, void *dummy)
 /* size (in bytes) of total flood ack tail                 */
 /*                                                         */
 /***********************************************************/
-int Add_IT_Nacks (Int_Tol_Data *itdata, intru_tol_pkt_tail *itt,
-                     int16u buff_len)
+int Add_IT_Nacks (Int_Tol_Data *itdata, intru_tol_pkt_tail *itt, int16u buff_len)
 {
 
     int64u i;
-    int32u ack_len, index;
-    int16u total_size_avail;
+    int total_size_avail, ack_len, index;
     char *p_nack;
     sp_time now;
 
@@ -2750,14 +2766,16 @@ int Add_IT_Nacks (Int_Tol_Data *itdata, intru_tol_pkt_tail *itt,
      *      header) minus the space used up by the data, fragment headers,
      *      dissemination headers/signatures, the software udp header,
      *      and the HMAC */
-    total_size_avail = sizeof(packet_body) - buff_len - HMAC_Key_Len;
-    ack_len = sizeof(intru_tol_pkt_tail);
+    
+    total_size_avail = (int)sizeof(packet_body) - (int)buff_len - 2 * (int)Cipher_Blk_Len - (int)HMAC_Key_Len;
+    ack_len          = sizeof(intru_tol_pkt_tail);
 
     /* Add NACKs to the intru_tol_pkt tail */
+    
     p_nack = (char*)itt;
     p_nack += ack_len;
 
-    if (total_size_avail - ack_len < sizeof(int64u))
+    if (total_size_avail - ack_len < (int) sizeof(int64u))
         Alarm(EXIT, "Add_IT_Nacks: No space for any IT Nacks on this "
                         "packet -> Bad packing\r\n");
 
@@ -2766,19 +2784,20 @@ int Add_IT_Nacks (Int_Tol_Data *itdata, intru_tol_pkt_tail *itt,
                itdata->in_head_seq);
     printf("\tnacks = "); */
 
-    for( i = itdata->in_tail_seq; i < itdata->in_head_seq; i++) {
-        index = i % MAX_SEND_ON_LINK;
+    for( i = itdata->in_tail_seq; i < itdata->in_head_seq; i++)
+    {
+        index = (int) (i % MAX_SEND_ON_LINK);
+        
         if( ack_len + sizeof(int64u) > total_size_avail )
             break;
+        
         if(itdata->incoming[index].flags == NACK_CELL &&
               E_compare_time(itdata->incoming[index].nack_expire, now) <= 0)
         {
-            *((int64u*)p_nack) = i;
+            *(int64u*) p_nack = i;
             p_nack += sizeof(int64u);
             ack_len += sizeof(int64u);
-            itdata->incoming[index].nack_expire =
-                                E_add_time(now, itdata->it_nack_timeout);
-            /* printf("%lu, ", i); */
+            itdata->incoming[index].nack_expire = E_add_time(now, itdata->it_nack_timeout);
         }
     }
 
@@ -2897,6 +2916,8 @@ void Key_Exchange_IT(int link_id, void *dummy)
 
     UNUSED(dummy);
 
+    Alarm(PRINT, "Key Exchange!! lk = %x\n", Links[link_id]);
+
     /* Getting Link and intrusion tolerant data from link_id */
     lk = Links[link_id];
     if (lk == NULL) {
@@ -2910,8 +2931,17 @@ void Key_Exchange_IT(int link_id, void *dummy)
         E_queue(Key_Exchange_IT, link_id, NULL, it_dh_timeout);
         return;
     }
-   
-    /* Generate the secret/public parts of our DH key */
+  
+    if (E_in_queue(Key_Exchange_IT, link_id, NULL)) {
+        Alarm(PRINT, "Dequeuing Key Exchange with %x\n", lk);
+        E_dequeue(Key_Exchange_IT, link_id, NULL);
+    }
+
+    /* Generate the secret/public parts for DH exchange */
+    /* NOTE: this only generates a random # and exponentiates it the
+     * first time, otherwise it reuses the existing ones, which should
+     * be safe */
+    
     if (DH_generate_key(itdata->dh_local) == 0)
         Alarm(EXIT, "Key_Exchange_IT: DH_generate_Key failed\r\n");
 

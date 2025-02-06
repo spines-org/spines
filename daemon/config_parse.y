@@ -19,7 +19,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2016 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2017 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -303,8 +303,9 @@ static  int 	get_parsed_proc_info( char *name, proc *p )
 %start Config
 %token OPENBRACE CLOSEBRACE EQUALS COLON BANG
 %token DEBUGFLAGS CRYPTO SIGLENBITS MPBITMASKSIZE DIRECTEDEDGES PATHSTAMPDEBUG UNIXDOMAINPATH
+%token REMOTECONNECTIONS
 %token RRCRYPTO
-%token ITCRYPTO ORDEREDDELIVERY REINTRODUCEMSGS TCPFAIRNESS SESSIONBLOCKING MSGPERSAA
+%token ITCRYPTO ITENCRYPT ORDEREDDELIVERY REINTRODUCEMSGS TCPFAIRNESS SESSIONBLOCKING MSGPERSAA
 %token SENDBATCHSIZE ITMODE RELIABLETIMEOUTFACTOR NACKTIMEOUTFACTOR INITNACKTOFACTOR 
 %token ACKTO PINGTO DHTO INCARNATIONTO MINRTTMS ITDEFAULTRTT
 %token PRIOCRYPTO DEFAULTPRIO MAXMESSSTORED MINBELLYSIZE
@@ -333,8 +334,10 @@ ParamStruct	:
     |   DIRECTEDEDGES EQUALS SP_BOOL { Conf_set_directed_edges($3.boolean); }
     |   PATHSTAMPDEBUG EQUALS SP_BOOL { Conf_set_path_stamp_debug($3.boolean); }
     |   UNIXDOMAINPATH EQUALS STRING { Conf_set_unix_domain_path($3.string); }
+    |   REMOTECONNECTIONS EQUALS SP_BOOL { Conf_set_remote_connections($3.boolean); }
 
     |   ITCRYPTO EQUALS SP_BOOL { Conf_set_IT_crypto($3.boolean); }
+    |   ITENCRYPT EQUALS SP_BOOL { Conf_set_IT_encrypt($3.boolean); }
     |   ORDEREDDELIVERY EQUALS SP_BOOL { Conf_set_IT_ordered_delivery($3.boolean); }
     |   REINTRODUCEMSGS EQUALS SP_BOOL { Conf_set_IT_reintroduce_messages($3.boolean); }
     |   TCPFAIRNESS EQUALS SP_BOOL { Conf_set_IT_tcp_fairness($3.boolean); }

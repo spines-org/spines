@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2016 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2017 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -66,7 +66,7 @@ extern int16u      *Neighbor_IDs[];
 /* Local constants */
 static const sp_time zero_timeout = {0, 0};
 static const sp_time one_sec_timeout = {1, 0};
-static const sp_time thirty_sec_timeout = {30, 0};
+static const sp_time thirty_sec_timeout = {10, 0};
 
 /* Global variables local to this file */
 unsigned char RF_State_Change;
@@ -360,7 +360,7 @@ void Init_Reliable_Flooding()
         Rel_Stats[i].num_received = 0;
     }
     rel_elapsed_for_stats = E_get_time();
-    /* E_queue(Reliable_Flood_Print_Stats, 0, NULL, thirty_sec_timeout); */
+    //E_queue(Reliable_Flood_Print_Stats, 0, NULL, thirty_sec_timeout);
 
     Alarm(DEBUG, "Created Reliable Flood Data Structures\n");
 }
@@ -844,8 +844,8 @@ int Reliable_Flood_Disseminate(Link *src_link, sys_scatter *scat, int mode)
             nd = *((Node **)stdhash_it_val(&it));
             while ((rfldata->norm_head.next != NULL ||
                     rfldata->urgent_head.next != NULL) &&
-                    Request_Resources(IT_RELIABLE_ROUTING >>
-                        ROUTING_BITS_SHIFT, nd, mode, 
+                   Request_Resources((IT_RELIABLE_ROUTING >>
+                                      ROUTING_BITS_SHIFT), nd, mode, 
                         &Reliable_Flood_Send_One));
             if (rfldata->unsent_state_count == old_count && 
                     rfldata->saa_trigger >= Conf_Rel.SAA_Threshold)
@@ -2022,7 +2022,7 @@ void Reliable_Flood_E2E_Event  (int mode, void *ngbr_data)
 
     rfldata->e2e_ready = 1;
     Alarm(DEBUG, "E2E requesting resources to "IPF"\n", IP(nd->nid));
-    ret = Request_Resources(IT_RELIABLE_ROUTING >> ROUTING_BITS_SHIFT,
+    ret = Request_Resources((IT_RELIABLE_ROUTING >> ROUTING_BITS_SHIFT),
                         nd, mode, &Reliable_Flood_Send_One);
     if (ret == 0)
         E_queue(Reliable_Flood_E2E_Event, mode, ngbr_data, one_sec_timeout);
@@ -2078,7 +2078,7 @@ void Reliable_Flood_SAA_Event  (int mode, void *ngbr_data)
         return;
     nd = *((Node **)stdhash_it_val(&it));
 
-    Request_Resources(IT_RELIABLE_ROUTING >> ROUTING_BITS_SHIFT,
+    Request_Resources((IT_RELIABLE_ROUTING >> ROUTING_BITS_SHIFT),
                         nd, mode, &Reliable_Flood_Send_One);
 }
 
@@ -2239,7 +2239,7 @@ int Reliable_Flood_Send_E2E (Node *next_hop, int ngbr_index, int mode)
     hdr->frag_num = 0;
     hdr->frag_idx = 0;
     hdr->ttl = 255;
-    hdr->routing = IT_RELIABLE_ROUTING >> ROUTING_BITS_SHIFT;
+    hdr->routing = (IT_RELIABLE_ROUTING >> ROUTING_BITS_SHIFT);
 
     e2e = (rel_flood_e2e_ack*)(scat->elements[1].buf + sizeof(udp_header));
 
@@ -2644,7 +2644,7 @@ int Reliable_Flood_Send_Data( Node *next_hop, int ngbr_index, int mode )
             printf("mask = %016llx\n", *(long long unsigned int*)mask);
             printf("Next_Seq: ");
             for (ngbr = 1; ngbr <= Degree[My_ID]; ngbr++)
-                printf("  [%d] = %lu", ngbr, fb->next_seq[ngbr]);
+                printf("  [%d] = %lu", ngbr, (long unsigned) fb->next_seq[ngbr]);
             printf("\n");
         }
 
@@ -2811,7 +2811,7 @@ int Reliable_Flood_Send_SAA (Node *next_hop, int ngbr_index, int mode)
     hdr->frag_num = 0;
     hdr->frag_idx = 0;
     hdr->ttl = 255;
-    hdr->routing = IT_RELIABLE_ROUTING >> ROUTING_BITS_SHIFT;
+    hdr->routing = (IT_RELIABLE_ROUTING >> ROUTING_BITS_SHIFT);
 
     r_hdr = (rel_flood_header*) scat->elements[scat->num_elements-2].buf;
     r_hdr->src = 0;
@@ -3219,8 +3219,8 @@ void Reliable_Flood_Restamp( void )
                         if (rfldata->norm_head.next != NULL ||
                              rfldata->urgent_head.next != NULL) 
                         {
-                            Request_Resources(IT_RELIABLE_ROUTING >>
-                                ROUTING_BITS_SHIFT, nd, INTRUSION_TOL_LINK, 
+                            Request_Resources((IT_RELIABLE_ROUTING >>
+                                               ROUTING_BITS_SHIFT), nd, INTRUSION_TOL_LINK, 
                                 &Reliable_Flood_Send_One);
                         }
                     }
@@ -3696,7 +3696,7 @@ void Status_Change_Event (int mode, void *ngbr_data)
 
     rfldata->status_change_ready = 1;
     Alarm(DEBUG, "Status_Change requesting resources to "IPF"\n", IP(nd->nid));
-    ret = Request_Resources(IT_RELIABLE_ROUTING >> ROUTING_BITS_SHIFT,
+    ret = Request_Resources((IT_RELIABLE_ROUTING >> ROUTING_BITS_SHIFT),
                         nd, mode, &Reliable_Flood_Send_One);
     if (ret == 0)
         E_queue(Status_Change_Event, mode, ngbr_data, one_sec_timeout);
@@ -3796,7 +3796,7 @@ int Send_Status_Change (Node *next_hop, int ngbr_index, int mode)
     hdr->frag_num = 0;
     hdr->frag_idx = 0;
     hdr->ttl = 255;
-    hdr->routing = IT_RELIABLE_ROUTING >> ROUTING_BITS_SHIFT;
+    hdr->routing = (IT_RELIABLE_ROUTING >> ROUTING_BITS_SHIFT);
 
     sc = (status_change*)(scat->elements[1].buf + sizeof(udp_header));
 

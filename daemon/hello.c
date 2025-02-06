@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2016 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2017 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -454,8 +454,10 @@ void Process_hello_packet(Link *lk, packet_header *pack_hdr, char *buf, int rema
   stdit         it;
   Edge_Key      key;
 
-  if (remaining_bytes != sizeof(hello_packet)) {
-    Alarm(EXIT, "Process_hello_packet: Wrong # of bytes for hello: %d\r\n", remaining_bytes);
+  if (remaining_bytes != sizeof(hello_packet))
+  {
+    Alarmp(SPLOG_WARNING, PRINT, "Process_hello_packet: Wrong # of bytes for hello: %d\n", remaining_bytes);
+    return;
   }
 
   if (!Same_endian(type)) {
@@ -596,8 +598,8 @@ void Process_hello_packet(Link *lk, packet_header *pack_hdr, char *buf, int rema
 	if (Route_Weight == LATENCY_ROUTE || Route_Weight == AVERAGE_ROUTE) {
 
 	  update_cost = (c_data->reported_rtt == UNKNOWN || 
-			 (abs(c_data->reported_rtt - c_data->rtt) > 0.15 * c_data->reported_rtt &&
-			  abs(c_data->reported_rtt - c_data->rtt) >= 2));  /* 1 ms accuracy one-way*/
+			 (fabs(c_data->reported_rtt - c_data->rtt) > 0.15 * c_data->reported_rtt &&
+			  fabs(c_data->reported_rtt - c_data->rtt) >= 2));  /* 1 ms accuracy one-way*/
 	}
 
 	if (Route_Weight == LOSSRATE_ROUTE || Route_Weight == AVERAGE_ROUTE) {

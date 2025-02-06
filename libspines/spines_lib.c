@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2016 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2017 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -397,7 +397,7 @@ int  spines_socket(int domain, int type, int protocol,
     int32 *total_len;
     int32 *msg_type;
     size_t s_len;
-    int ret, sk, u_sk, ctrl_sk, s_ctrl_sk, client;
+    int val, ret, sk, u_sk, ctrl_sk, s_ctrl_sk, client;
     int32 *flag_var, *route_var, *sess_var, *rnd_var, *port_var, *addr_var;
     int udp_port, rnd_num, sess_id;
     int link_prot, route_prot, connect_flag, session_prot;
@@ -561,6 +561,21 @@ int  spines_socket(int domain, int type, int protocol,
 
     /* Increase buffer on the socket used for sending/receiving Spines data */
     Set_large_socket_buffers(sk);
+
+    /* Set TCP_NODELAY for AF_INET family */
+    if (sp_addr.family == AF_INET) {
+        val = 1;
+        ret = setsockopt(sk, IPPROTO_TCP, TCP_NODELAY, (char *)&val, sizeof(val));
+        ret += setsockopt(ctrl_sk, IPPROTO_TCP, TCP_NODELAY, (char *)&val, sizeof(val));
+        
+        if (ret < 0) {
+            Alarm(PRINT, "spines_socket(): Failed to set socket option TCP_NODELAY\n");
+            close(sk);
+            close(ctrl_sk);
+            /* errno set by OS level call */
+            return(-1);
+        }
+    }
 
     u_sk = sk;
 
@@ -1464,6 +1479,7 @@ int  spines_setsockopt(int s, int  level,  int  optname,
         optname != SPINES_EDISTANCE &&
         optname != SPINES_MEMBERSHIP &&
         optname != SPINES_ADD_NEIGHBOR &&       
+        optname != SPINES_SET_DELIVERY &&
         optname != SPINES_SET_PRIORITY &&
         optname != SPINES_SET_EXPIRATION &&
         optname != SPINES_DISJOINT_PATHS ) {
@@ -1605,6 +1621,17 @@ int  spines_setsockopt(int s, int  level,  int  optname,
         }
 	cmd->dest = ntohl(((struct sockaddr_in*)optval)->sin_addr.s_addr);
     } 
+    /* controls whether session drops messages (1) or close the connection (2) when
+     * session buffer towards a client fills */
+    else if (optname == SPINES_SET_DELIVERY) {
+        *type = DELIVERY_FLAG_MSG;
+         if(optlen < sizeof(int16u))  {
+            Alarm(PRINT, "return buffer space is too small\r\n");
+            spines_set_errno(SP_ERROR_INPUT_ERR);
+            return(-1);
+        }
+        cmd->dest = *((int16u*)(optval));
+    }
     /* added for priority flooding */
     else if (optname == SPINES_SET_PRIORITY) {
         *type = PRIORITY_TYPE_MSG;

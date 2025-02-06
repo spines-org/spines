@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2016 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2017 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -79,6 +79,7 @@
 #include "multicast.h"
 #include "kernel_routing.h"
 #include "configuration.h"
+#include "security.h"
 
 #ifdef	ARCH_PC_WIN95
 WSADATA		WSAData;
@@ -300,6 +301,8 @@ void E_exit_events_wrapper(int signum)
 void Immediate_Cleanup(int signum)
 {
     Session_Finish();
+    printf("Process Terminated with %d signal\n", signum);
+    exit(signum);
 }
 
 /***********************************************************/
@@ -327,7 +330,7 @@ int main(int argc, char* argv[])
 
     Alarm( PRINT, "/===========================================================================\\\n");
     Alarm( PRINT, "| Spines                                                                    |\n");
-    Alarm( PRINT, "| Copyright (c) 2003 - 2016 Johns Hopkins University                        |\n"); 
+    Alarm( PRINT, "| Copyright (c) 2003 - 2017 Johns Hopkins University                        |\n"); 
     Alarm( PRINT, "| All rights reserved.                                                      |\n");
     Alarm( PRINT, "|                                                                           |\n");
     Alarm( PRINT, "| Spines is licensed under the Spines Open-Source License.                  |\n");
@@ -350,18 +353,20 @@ int main(int argc, char* argv[])
     Alarm( PRINT, "| WWW:     www.spines.org      www.dsn.jhu.edu                              |\n");
     Alarm( PRINT, "| Contact: spines@spines.org                                                |\n");
     Alarm( PRINT, "|                                                                           |\n");
-    Alarm( PRINT, "| Version 5.1, Built May 17, 2016                                           |\n"); 
+    Alarm( PRINT, "| Version 5.2, Built May 17, 2017                                           |\n"); 
     Alarm( PRINT, "|                                                                           |\n");
     Alarm( PRINT, "| This product uses software developed by Spread Concepts LLC for use       |\n");
     Alarm( PRINT, "| in the Spread toolkit. For more information about Spread,                 |\n");
     Alarm( PRINT, "| see http://www.spread.org                                                 |\n");
     Alarm( PRINT, "\\===========================================================================/\n\n");
 
+    setlinebuf(stdout);
     Usage(argc, argv);
 
-    Alarm_set_types(PRINT|STATUS);
+    Alarm_set_types(PRINT|NETWORK|STATUS);
     /*Alarm_set_types(PRINT|DEBUG|STATUS);*/
     Alarm_set_priority(SPLOG_INFO);
+    Alarm_enable_timestamp_high_res(NULL);
 
     /* add the sigPIPE handler */
 #ifndef ARCH_PC_WIN95
@@ -407,6 +412,7 @@ int main(int argc, char* argv[])
         }
     }
 
+    Sec_init();
     E_init();
 
     now = E_get_time();
@@ -926,7 +932,7 @@ static  void    Usage(int argc, char *argv[])
 	}
     }
 
-    Alarm_enable_timestamp("%m/%d/%y %H:%M:%S");
+    /* Alarm_enable_timestamp("%m/%d/%y %H:%M:%S"); */
 
     if (Use_Log_File) {
 	Alarm_set_output(Log_Filename);

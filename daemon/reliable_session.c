@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2016 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2017 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -707,7 +707,6 @@ int Process_Reliable_Session_Packet(Session *ses)
     reliable_ses_tail *r_tail;
     int ret;
 
-
     r_data = ses->r_data;
     if(r_data == NULL) {
 	Alarm(EXIT, "Process_Reliable_Sess_Pkt: No reliable data struct !");
@@ -721,8 +720,10 @@ int Process_Reliable_Session_Packet(Session *ses)
     u_hdr->dest = ses->rel_otherside_addr;
     u_hdr->dest_port = ses->rel_otherside_port;
     u_hdr->ttl = SPINES_TTL_MAX;
+    /* Since this packet comes from the client's spines library, the
+     * routing field is already filled correctly - only newly created packets
+     * in the reliable session need to fill in the routing */
     /* u_hdr->routing = ses->routing_used; */
-
 
     /* Setting the reliability tail of the packet */
     r_tail = (reliable_ses_tail*)(ses->data+ses->read_len);
@@ -2231,6 +2232,7 @@ void Ses_Send_Ack(int sesid, void* dummy)
     u_hdr->dest_port = ses->rel_otherside_port;
     u_hdr->len = sizeof(rel_udp_pkt_add);
     u_hdr->ttl = SPINES_TTL_MAX;
+    u_hdr->routing = ses->routing_used;
 
     r_add = (rel_udp_pkt_add*)(send_buff + sizeof(udp_header));
     r_add->type = Set_endian(LINK_ACK_TYPE);

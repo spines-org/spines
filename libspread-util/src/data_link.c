@@ -63,6 +63,34 @@
 /* Local Functions */
 int	DL_send_internal( channel chan, int32 address, int16 port, sys_scatter *scat, int32 connected );
 
+static void set_large_socket_buffers(int s)
+{
+    int i, on, ret;
+    sockopt_len_t onlen;
+
+    for( i=10; i <= 2000; i+=5 )
+    {
+        on = 1024*i;
+
+        ret = setsockopt( s, SOL_SOCKET, SO_SNDBUF, (void *)&on, 4);
+        if (ret < 0 ) break;
+
+        ret = setsockopt( s, SOL_SOCKET, SO_RCVBUF, (void *)&on, 4);
+        if (ret < 0 ) break;
+
+        onlen = sizeof(on);
+        ret= getsockopt( s, SOL_SOCKET, SO_SNDBUF, (void *)&on, &onlen );
+        if( on < i*1024 ) break;
+        Alarmp( SPLOG_INFO, SESSION, "set_large_socket_buffers: set sndbuf %d, ret is %d\n", on, ret );
+
+        onlen = sizeof(on);
+        ret= getsockopt( s, SOL_SOCKET, SO_RCVBUF, (void *)&on, &onlen );
+        if( on < i*1024 ) break;
+        Alarmp( SPLOG_INFO, SESSION, "set_large_socket_buffers: set rcvbuf %d, ret is %d\n", on, ret );
+    }
+    Alarmp( SPLOG_INFO, SESSION, "set_large_socket_buffers: set sndbuf/rcvbuf to %d\n", 1024*(i-5) );
+}
+
 channel	DL_init_channel( int32 channel_type, int16 port, int32 mcast_address, int32 interface_address )
 {
 	channel			chan;
@@ -74,6 +102,8 @@ channel	DL_init_channel( int32 channel_type, int16 port, int32 mcast_address, in
 
 	if((chan = socket(AF_INET, SOCK_DGRAM, 0)) == -1)
 		Alarm( EXIT, "DL_init_channel: socket error for port %d\n", port );
+
+    set_large_socket_buffers(chan);
 
 	if ( channel_type & SEND_CHANNEL )
 	{
@@ -196,7 +226,7 @@ void    DL_close_channel(channel chan)
 
         if( -1 ==  close(chan))
         {
-                Alarm(EXIT, "DL_close_channel: error closing channel %d\n", chan);
+                Alarm(PRINT, "DL_close_channel: error closing channel %d\n", chan);
         }
 
 }

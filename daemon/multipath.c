@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2016 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2017 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -32,6 +32,8 @@
 #define ext_multipath
 #include "multipath.h"
 #undef ext_multipath
+
+#include <string.h>
 
 extern int16u *Neighbor_IDs[];
 
@@ -485,7 +487,7 @@ int MultiPath_Stamp_Bitmask(int16u dest_id, int16u k, unsigned char *mask)
 {
     int ret;
    
-    if (dest_id == 0 || dest_id > MAX_NODES) {
+    if ((dest_id == 0 && k > 0) || dest_id > MAX_NODES) {
         Alarm(PRINT, "Multipath_Stamp_Bitmask: invalid destination ID "
             "specified (%hu)\r\n", dest_id);
         return 0;
@@ -507,9 +509,9 @@ int MultiPath_Stamp_Bitmask(int16u dest_id, int16u k, unsigned char *mask)
         Alarm(DEBUG, "COMPUTING [%u,%u] for k = %u\r\n", My_ID, dest_id, k);
         ret = MultiPath_Compute(dest_id, k);
         if (ret == 0) {
-            Alarm(PRINT, "MultiPath_Stamp_Bitmask: Compute returned 0, "
+            Alarm(PRINT, "MultiPath_Stamp_Bitmask: Warning! Compute returned 0, "
                 "no paths found with current network conditions\r\n");
-            return 0;
+            /* return 0; */
         }
         else if (ret < k) {
             Alarm(PRINT, "MultiPath_Stamp_Bitmask: Requested K = %d, "

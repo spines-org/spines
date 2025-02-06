@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2016 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2017 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -43,10 +43,20 @@
 #include <stdio.h>
 #include <openssl/sha.h>
 
-#define HMAC_KEY_LEN 32
+#define CIPHER_BLK_LEN 16          /* AES-128-CBC */
+#define HMAC_KEY_LEN 32            /* SHA-2-256 */
 #define DH_PRIME_LEN_BITS 2048
-#define SIGNATURE_LEN_BITS  1024
+#define SIGNATURE_LEN_BITS  1024   /* RSA 1024 */
 #define PATH_STAMP_DEBUG 0
+#define REMOTE_CONNECTIONS 1
+
+#if (DH_PRIME_LEN_BITS % 8 != 0)
+#  error DH_PRIME_LEN_BITS must be a multiple of 8!
+#endif
+
+#if (SIGNATURE_LEN_BITS % 8 != 0)
+#  error SIGNATURE_LEN_BITS must be a multiple of 8!
+#endif
 
 #undef  ext
 #ifndef ext_configuration
@@ -56,6 +66,7 @@
 #endif
 
 /* Cryptography */
+ext int16u Cipher_Blk_Len;
 ext int16u HMAC_Key_Len;
 ext int16u DH_Key_Len;
 ext int16u Signature_Len;
@@ -63,6 +74,7 @@ ext int16u Signature_Len_Bits;
 ext EVP_PKEY *Pub_Keys[MAX_NODES + 1];
 ext EVP_PKEY *Priv_Key;
 ext unsigned char Path_Stamp_Debug;
+ext unsigned char Remote_Connections;
 
 ext int16u           temp_neighbor_id[MAX_NODES+1][MAX_NODES+1];
 ext Network_Address  temp_node_ip[MAX_NODES+1];
@@ -81,8 +93,10 @@ void        Conf_set_multipath_bitmask_size(int new_value);
 void        Conf_set_directed_edges(bool new_state);
 void        Conf_set_path_stamp_debug(bool new_state);
 void        Conf_set_unix_domain_path(char *new_prefix);
+void        Conf_set_remote_connections(bool new_state);
 
 void        Conf_set_IT_crypto(bool new_state);
+void        Conf_set_IT_encrypt(bool new_state);
 void        Conf_set_IT_ordered_delivery(bool new_state);
 void        Conf_set_IT_reintroduce_messages(bool new_state);
 void        Conf_set_IT_tcp_fairness(bool new_state);

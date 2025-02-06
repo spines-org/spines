@@ -106,10 +106,11 @@ install-libspread-util.so:	libspread-util.so
 	)
 
 clean:
-	rm -f *.lo *.o *.a *.sa *.dylib *.so $(TARGETS)
+	rm -f *.lo *.o *.a *.sa *.dylib *.so *.so.* $(TARGETS)
 	rm -f core core.*
 	rm -rf autom4te.cache
 	rm -rf ../lib/$(host)
+	rm -rf ../lib/*.a ../lib/*.sa ../lib/*.so ../lib/*.so.*
 
 distclean: clean
 	rm -f Makefile config.status config.h ../include/spu_system.h *~

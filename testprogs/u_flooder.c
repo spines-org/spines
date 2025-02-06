@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2016 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2017 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -51,6 +51,7 @@ static int  Num_bytes;
 static int  Rate;
 static int  Num_pkts;
 static char IP[80];
+static char SRC_IP[80];
 static char MCAST_IP[80];
 static char filename[80];
 static int  fileflag;
@@ -163,7 +164,10 @@ int main( int argc, char *argv[] )
     host.sin_port   = htons(sendPort);
     
     name.sin_family = AF_INET;
-    name.sin_addr.s_addr = INADDR_ANY;
+    if (Address != 0)
+        name.sin_addr.s_addr = htonl(Address);
+    else
+        name.sin_addr.s_addr = INADDR_ANY;
     name.sin_port = htons(recvPort);
     
     if(bind(sk, (struct sockaddr *)&name, sizeof(name) ) < 0) {
@@ -222,8 +226,11 @@ int main( int argc, char *argv[] )
     /* Bind to control the source port of sent packets, 
        so that we can go over to a NATed network */
     name.sin_family = AF_INET;
-    name.sin_addr.s_addr = INADDR_ANY;
-    name.sin_port = htons(recvPort);
+    if (Address != 0)
+        name.sin_addr.s_addr = htonl(Address);
+    else
+        name.sin_addr.s_addr = INADDR_ANY;
+    name.sin_port = htons(sendPort);
     
     if(bind(sk, (struct sockaddr *)&name, sizeof(name) ) < 0) {
       perror("err: bind");
@@ -373,7 +380,10 @@ int main( int argc, char *argv[] )
     }
     
     name.sin_family = AF_INET;
-    name.sin_addr.s_addr = INADDR_ANY;
+    if (Address != 0)
+        name.sin_addr.s_addr = htonl(Address);
+    else
+        name.sin_addr.s_addr = INADDR_ANY;
     name.sin_port = htons(recvPort);
 
     if(bind(sk, (struct sockaddr *)&name, sizeof(name) ) < 0) {
@@ -662,6 +672,7 @@ static  void    Usage(int argc, char *argv[])
   Reliable_Flag         = 0;
   Forwarder_Flag        = 0;
   strcpy(IP, "127.0.0.1");
+  strcpy(SRC_IP, "");
   strcpy(MCAST_IP, "");
   Group_Address         = 0;
   Realtime              = 0;
@@ -678,6 +689,11 @@ static  void    Usage(int argc, char *argv[])
       Realtime = 1;
     } else if( !strncmp( *argv, "-r", 2 ) ){
       sscanf(argv[1], "%d", (int*)&recvPort );
+      argc--; argv++;
+    } else if( !strncmp( *argv, "-i", 2 ) ){
+      sscanf(argv[1], "%s", SRC_IP );
+      sscanf(SRC_IP ,"%d.%d.%d.%d",&i1, &i2, &i3, &i4);
+      Address = ((i1 << 24 ) | (i2 << 16) | (i3 << 8) | i4);
       argc--; argv++;
     } else if( !strncmp( *argv, "-a", 2 ) ){
       sscanf(argv[1], "%s", IP );
@@ -713,6 +729,7 @@ static  void    Usage(int argc, char *argv[])
 	      "\t[-d <port number>] : to send packets on, default is 8400\n"
 	      "\t[-r <port number>] : to receive packets on, default is 8400\n"
 	      "\t[-a <address>    ] : address to send packets to\n"
+          "\t[-i <src_address>] : IP address of interface used to send/recv\n"
 	      "\t[-b <size>       ] : size of the packets (in bytes)\n"
 	      "\t[-R <rate>       ] : sending rate (in 1000's of bits per sec)\n"
 	      "\t[-n <rounds>     ] : number of packets\n"

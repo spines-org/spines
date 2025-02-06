@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2016 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2017 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -30,6 +30,7 @@
  */
 
 #include <stdlib.h>
+#include <string.h>
 
 #ifdef ARCH_PC_WIN95
 #  include <winsock2.h>
@@ -51,6 +52,7 @@
 #include "reliable_udp.h"
 #include "state_flood.h"
 #include "multicast.h"
+#include "protocol.h"
 
 /* Global vriables */
 
@@ -101,18 +103,26 @@ void Process_rel_udp_data_packet(Link *lk, sys_scatter *scat,
   udp_header     *hdr;
   reliable_tail  *r_tail;
   Reliable_Data  *r_data;
-  int             flag;
+  int             flag, routing;
   
   if (scat->num_elements != 2) {
-    Alarm(PRINT, "Proces_rel_udp_data_packet: Dropping packet because "
+    Alarm(PRINT, "Process_rel_udp_data_packet: Dropping packet because "
         "scat->num_elements == %d instead of 2\r\n", scat->num_elements);
     return;
   }
 
+  if (scat->elements[1].len < sizeof(udp_header))
+  {
+    Alarmp(SPLOG_WARNING, PRINT, "Process_rel_udp_data_packet: Dropping packet because too small!\n");
+    return;
+  }
+
   phdr     = (packet_header*) scat->elements[0].buf;
-  data_len = phdr->data_len; 
-  ack_len  = phdr->ack_len;
   hdr      = (udp_header*) scat->elements[1].buf;
+
+  routing  = (hdr->routing << ROUTING_BITS_SHIFT);
+  data_len = phdr->data_len; 
+  ack_len  = phdr->ack_len - Dissemination_Header_Size(routing);
   buff     = (char*) scat->elements[1].buf;
 
   if (!Same_endian(type)) {
@@ -161,8 +171,19 @@ void Process_rel_udp_data_packet(Link *lk, sys_scatter *scat,
 	    
   /* REG ROUTING HACK */
   scat->elements[1].len = phdr->data_len;
+
+  scat->elements[2].buf = new_ref_cnt(PACK_BODY_OBJ);
+  memcpy(scat->elements[2].buf, scat->elements[1].buf + data_len + ack_len,
+            Dissemination_Header_Size(routing));
+  scat->elements[2].len = Dissemination_Header_Size(routing);
+  scat->num_elements++;
+
   Deliver_and_Forward_Data(scat, mode, lk);
+
   /* REG ROUTING HACK */
+  dec_ref_cnt(scat->elements[2].buf);
+  scat->num_elements--;
+
   scat->elements[1].len = sizeof(packet_body);
 }
 
@@ -192,11 +213,11 @@ int Forward_Rel_UDP_Data(Node *next_hop, sys_scatter *scat, int32u type)
 {
     Link   *lk;
 
-    if (scat->num_elements !=  2) {
+    /* if (scat->num_elements !=  2) {
         Alarm(PRINT, "Forward_Rel_UDP_Data: Malformed sys_scatter: num_elements == %d\r\n",
                     scat->num_elements);
         return BUFF_DROP;
-    }
+    } */
 
     if (type & DATA_MASK) {
       Alarm(EXIT, "Forward_Rel_UDP_Data: Data type already set?!\r\n");

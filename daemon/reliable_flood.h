@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2016 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2017 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -58,7 +58,7 @@
 #include "multipath.h"
 
 /* MAX defines */
-#define MAX_MESS_PER_FLOW           500     /* low-bandwidth = 10*/
+#define MAX_MESS_PER_FLOW           1000    /* default = 500, low-bandwidth = 10*/
 
 #define HBH_ACK_TO                  100000  /* 100 ms */
 #define E2E_ACK_TO                  150000  /* 150 ms */

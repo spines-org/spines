@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2016 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2017 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -37,6 +37,7 @@
 #include "conf_body.h"
 #undef  ext_conf_body
 
+#include <string.h>
 
 #include "spu_alarm.h"
 #include "spu_memory.h"
@@ -102,11 +103,13 @@ void    Pre_Conf_Setup()
         }
     }
     temp_num_nodes = 0;
-   
+
+    Cipher_Blk_Len = CIPHER_BLK_LEN;
     HMAC_Key_Len = HMAC_KEY_LEN;
     DH_Key_Len = DH_PRIME_LEN_BITS / 8;
     Signature_Len_Bits = SIGNATURE_LEN_BITS;
     Path_Stamp_Debug = PATH_STAMP_DEBUG;
+    Remote_Connections = REMOTE_CONNECTIONS;
 
     IT_Link_Pre_Conf_Setup();
     RR_Pre_Conf_Setup();
@@ -154,6 +157,7 @@ void    Post_Conf_Setup()
             Alarm(EXIT, "Post_Conf_Setup: Key_Length mismatch\r\n");
     }
     else {
+        Cipher_Blk_Len = 0;
         HMAC_Key_Len = 0;
         DH_Key_Len = 0;
         Signature_Len = 0;
@@ -312,6 +316,7 @@ void Conf_set_all_crypto(bool new_state)
 {
     /* Crypto = new_state; */
     Conf_set_IT_crypto(new_state);
+    Conf_set_IT_encrypt(new_state);
     Conf_set_RR_crypto(new_state);
     Conf_set_Prio_crypto(new_state);
     Conf_set_Rel_crypto(new_state);
@@ -363,6 +368,11 @@ void Conf_set_unix_domain_path(char *new_prefix)
 #endif
 }
 
+void Conf_set_remote_connections(bool new_state)
+{
+    Remote_Connections = new_state;
+}
+
 void Conf_set_IT_crypto(bool new_state)
 {
     if (My_ID != 0)
@@ -373,7 +383,23 @@ void Conf_set_IT_crypto(bool new_state)
     if (Conf_IT_Link.Crypto != new_state)
         Alarm(PRINT, "Conf_set_IT_crypto: changed Crypto to %s\n", 
                         (new_state)?"TRUE":"FALSE");
-    Conf_IT_Link.Crypto = new_state;
+
+    if (!(Conf_IT_Link.Crypto = new_state))
+        Conf_set_IT_encrypt(0);
+}
+
+void Conf_set_IT_encrypt(bool new_state)
+{
+    if (My_ID != 0)
+        Alarm(EXIT, "Conf_set_IT_encrypt: Crypto settings cannot be altered "
+                "once hosts are loaded. Please move Crypto settings before "
+                "the host lists in the configuration file.\n");
+
+    if (Conf_IT_Link.Crypto != new_state)
+        Alarm(PRINT, "Conf_set_IT_crypto: changed Crypto to %s\n", ((new_state) ? "TRUE" : "FALSE"));
+    
+    if ((Conf_IT_Link.Encrypt = new_state))
+        Conf_set_IT_crypto(1);
 }
 
 void Conf_set_IT_ordered_delivery(bool new_state)
@@ -848,8 +874,7 @@ void    Conf_add_edge(int h1, int h2, int c)
 
 void    Conf_compute_hash()
 {
-    /* TODO: Change 2048 to a computed size at run-time*/
-    unsigned char buff[2048];
+    unsigned char buff[2048] = { 0 };
     int16u i, written = 0;
     stdit it;
     Edge_Key key;
@@ -876,6 +901,9 @@ void    Conf_compute_hash()
     *(unsigned char*)(buff + written) = Path_Stamp_Debug;
         written += sizeof(unsigned char);
 
+    *(unsigned char*)(buff + written) = Remote_Connections;
+        written += sizeof(unsigned char);
+
     /* Add Host List - Use the whole array (temp_node_ip) including blanks */
     for (i = 1; i <= MAX_NODES; i++) {
         *(Network_Address*)(buff + written) = temp_node_ip[i];
@@ -896,17 +924,17 @@ void    Conf_compute_hash()
         stdskl_it_next(&it);
     }
 
-    /* printf("BUFF =");
+    /*printf("BUFF =");
     for (i = 0; i < written; i++) 
         printf("%02x", buff[i]);
-    printf("\n"); */
+        printf("\n");*/
 
     SHA256(buff, written, Conf_Hash);
 
-    /* printf("HASH = ");
+    /*printf("HASH = ");
     for (i = 0; i < HMAC_Key_Len; i++) 
         printf("%02x", Conf_Hash[i]);
-    printf("\n"); */
+        printf("\n");*/
 }
 
 int Edge_Cmp(const void *l, const void *r)

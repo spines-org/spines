@@ -1,3 +1,20 @@
+Version 5.2 - May 17, 2017
+    * Added configuration option to encrypt messages sent on intrusion-tolerant data link
+    * Added configuration option to enable or disable remote client connections to daemons
+    * Hardened code (security-wise) that is responsible for receiving messages from other daemons
+    * Added site multicast for Intrusion-Tolerant Messaging (Priority and Reliable Messaging):
+        - Messages sent with a specific destination port, when received at the destination daemon,
+          are delivered to all clients of that daemon that have joined the multicast group
+    * Added session option to specify behavior when the buffer between a daemon and its client fills
+        - Default option maintains connection but drops new packets that do not fit
+        - Other option closes the client connection when the buffer overflows
+    * Initial separation of K-paths from Intrusion-Tolerant Messaging - *EXPERIMENTAL*
+    * Added high resolution timestamps to Alarm logging
+    * Some minor bug fixes, including:
+        - Specific erroneous client connections are now cleaned up and do not cause daemon to exit
+        - Multi-path routing now correctly delivers messages to local clients in a multicast group 
+          even if the destination daemon cannot be reached
+
 Version 5.1 - May 17, 2016
     * Added support for Inter-Process Communication (UNIX Domain Sockets)
         - Daemon binds to default filepath, non-default path can be specified on cmd line or in config file

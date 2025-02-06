@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2016 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2017 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -348,6 +348,8 @@ typedef struct Int_Tol_Data_d {
     int32u                  loss_history_unique_packets[HISTORY_SIZE+1];
     double                  loss_history_decay[HISTORY_SIZE+1];
     /* Crypto Variables */
+    EVP_CIPHER_CTX          encrypt_ctx;
+    EVP_CIPHER_CTX          decrypt_ctx;
     HMAC_CTX                hmac_ctx;
     unsigned char          *dh_key;
     unsigned char           dh_established;

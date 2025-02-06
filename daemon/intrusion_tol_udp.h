@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2016 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2017 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -79,6 +79,7 @@
 
 /* Parameters of Intrusion Tolerant Link */ 
 #define IT_CRYPTO                    0
+#define IT_ENCRYPT                   0
 #define ORDERED_DELIVERY             1
 #define REINTRODUCE_MSGS             0
 #define TCP_FAIRNESS                 1
@@ -109,6 +110,7 @@ static const sp_time it_bucket_to = {0, BUCKET_FILL_USEC};
 
 typedef struct CONF_IT_LINK_d {
     unsigned char Crypto;
+    unsigned char Encrypt;
     unsigned char Ordered_Delivery;
     unsigned char Reintroduce_Messages;
     unsigned char TCP_Fairness;
@@ -167,6 +169,9 @@ void IT_Link_Post_Conf_Setup();
 int  IT_Link_Conf_hton(unsigned char *buff);
 
 /* Functions that interact with higher level */
+
+int  Preprocess_intru_tol_packet(sys_scatter *scat, int received_bytes, Interface *local_interf, Network_Address src, int16u src_port);
+
 void Process_intru_tol_data_packet(Link *lk, sys_scatter *scat,
                     int32u type, int mode);
 void Process_intru_tol_ack_packet(Link *lk, sys_scatter *scat,

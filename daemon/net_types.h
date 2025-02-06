@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2016 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2017 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -134,10 +134,12 @@ typedef int16u         Link_State_LTS;  /* NOTE: must be an unsigned type: see L
 /* Spines ID Class Check */
 
 #ifndef Is_mcast_addr
-#  define  Is_mcast_addr(x) (((x) & 0xF0000000) == 0xE0000000)
-#  define  Is_acast_addr(x) (((x) & 0xF0000000) == 0xF0000000)
+#  define  Is_mcast_addr(x) ((((x) & 0xF0000000) == 0xE0000000) || (((x) & 0xFFFFFF00) == 0xFEFF0000))
+#  define  Is_acast_addr(x) ((((x) & 0xF0000000) == 0xF0000000) && (((x) & 0xFFFFFF00) != 0xFEFF0000))
 #  define  Is_node_addr(x)  (!Is_mcast_addr(x) && !Is_acast_addr(x))
 #endif
+/* #  define  Is_mcast_addr(x) (((x) & 0xF0000000) == 0xE0000000) */
+/* #  define  Is_acast_addr(x) (((x) & 0xF0000000) == 0xF0000000) */
 
 /* Generic union to hold different families of sockaddr structures */
 typedef union {
@@ -163,7 +165,7 @@ typedef	struct	dummy_packet_header {
     int16u          seq_no;        /* Sequence number of the packet for link loss_rate */
 } packet_header;
 
-typedef	char       packet_body[MAX_PACKET_SIZE-sizeof(packet_header)];
+typedef	char       packet_body[MAX_PACKET_SIZE - sizeof(packet_header)];
 
 /* elements are arranged in for tight packing + byte alignment issues */
 typedef	struct	dummy_udp_pkt_header {

@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2016 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2017 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -31,6 +31,7 @@
 
 #include "spines_lib.h"
 #include "net_types.h"
+#include "security.h"
 
 #ifndef SESSION_H
 #define SESSION_H
@@ -75,10 +76,11 @@
 #define TRACEROUTE_TYPE_MSG 21
 #define EDISTANCE_TYPE_MSG  22
 #define MEMBERSHIP_TYPE_MSG 23
-#define PRIORITY_TYPE_MSG   24
-#define EXPIRATION_TYPE_MSG 25
-#define DIS_PATHS_TYPE_MSG  26
-#define SETDISSEM_TYPE_MSG  27
+#define DELIVERY_FLAG_MSG   24
+#define PRIORITY_TYPE_MSG   25
+#define EXPIRATION_TYPE_MSG 26
+#define DIS_PATHS_TYPE_MSG  27
+#define SETDISSEM_TYPE_MSG  28
 
 #define SES_CLIENT_ON       1
 #define SES_CLIENT_OFF      2
@@ -102,11 +104,10 @@
 #define MAX_SPINES_MSG (MAX_PACKET_SIZE /* ethernet - IP - UDP */ - sizeof(packet_header) - (sizeof(udp_header) + sizeof(rel_udp_pkt_add) + sizeof(reliable_ses_tail) + sizeof(reliable_tail)))
 #endif
 
-/* Worst case is: packet_body - spines_hdr - udp_hdr - IT_link_tail - IT_link_ack - HMAC 
+/* Worst case is: packet_body - spines_hdr - udp_hdr - IT_link_tail - IT_link_ack - IT_link_IV - IT_link_PKCS_padding - IT_HMAC 
  *                                  - Prio_hdr - Bitmask (64-bit) - RSA_sig (1024-bit) */
 /* TODO: Make this dynamic to account for different size HMAC, bitmask, and signature from config file */
-#define MAX_SPINES_MSG (MAX_PACKET_SIZE /* ethernet - IP - UDP */ - sizeof(packet_header) - (sizeof(udp_header) + sizeof(intru_tol_pkt_tail) + sizeof(int64u) + 32 + sizeof(prio_flood_header) + 8 + 128))
-
+#define MAX_SPINES_MSG (MAX_PACKET_SIZE /* ethernet - IP - UDP */ - (sizeof(packet_header) + sizeof(udp_header) + sizeof(intru_tol_pkt_tail) + sizeof(int64u) + 2 * SECURITY_MAX_BLOCK_SIZE + SECURITY_MAX_HMAC_SIZE + sizeof(prio_flood_header) + 8 + 128))
 
 #define MAX_CTRL_SK_REQUESTS 10
 
@@ -134,6 +135,7 @@ typedef struct Session_d {
     int32  links_used;
     int32  routing_used;
     int32  session_semantics;
+    int    deliver_flag;
     int32  rnd_num;
     int32  udp_addr;
     int32  udp_port;

@@ -18,7 +18,7 @@
  * The Creators of Spines are:
  *  Yair Amir, Claudiu Danilov, John Schultz, Daniel Obenshain, and Thomas Tantillo.
  *
- * Copyright (c) 2003 - 2016 The Johns Hopkins University.
+ * Copyright (c) 2003 - 2017 The Johns Hopkins University.
  * All rights reserved.
  *
  * Major Contributor(s):
@@ -1173,7 +1173,10 @@ int Process_Ack(int16 linkid, char *buff, int16u ack_len, int32u type)
 	/* We also have NACKs here... */
 	/* Alarm(DEBUG, "We also have NACKs here...\n"); */
 	if(r_data->nack_len + ack_len > sizeof(packet_body))
-	    Alarm(EXIT, "WOW !!! a lot of nacks here.... definitely a bug\n");
+        {
+	    Alarmp(SPLOG_WARNING, PRINT, "WOW !!! a lot of nacks here.... definitely a bug\n");
+            return 0;
+        }
 
 	if(r_data->nack_buff == NULL) {
 	    if((r_data->nack_buff = (char*) new(PACK_BODY_OBJ))==NULL) {
