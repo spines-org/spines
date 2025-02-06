@@ -1,0 +1,53 @@
+Version 3.2 - May 15, 2009
+    * New package directory layout and organization.
+    * Mac OS X updated support.
+    * Win32 updated support.
+    * Updated Wireless code, so it is not compiled in unless -WIRELESS_SUPPORT option is enabled on the configure command line.
+    * SPINES_IP_TTL and SPINES_IP_MULTICAST_TTL time-to-live options on spines_setsockopt now available and supported.
+    * Added errno error reporting on client library errors.
+    * Upgraded to use StdUtil 1.1
+    * Several minor bug fixes.
+
+Version 3.1 - Mar 21, 2008
+
+    * Added spines_setsockopt() options to control Time-to-Live (ttl) value on overlay unicast/multicast/anycast packets.
+    * Added ability to retrieve overlay membership information through a spines_ioctl() call.
+    * Added ability to retrieve overlay network topology/distance/cost information through a spines_ioctl() call.
+    * Added ability to retrieve average network cost from any node to the members of a group through a spines_ioctl() call.
+    * Added wireless monitor capability to retrieve signal strength (RSSI) and other parameters in wireless environments.
+    * Several minor bug fixes. 
+
+Version 3.0 - May 31, 2007
+
+    * Added neighbor autodiscovery through IP-Multicast or broadcast.
+    * Added unicast kernel routing between daemons.
+    * Added kernel routing based on Multicast/Anycast group membership.
+    * Added Anycast group membership service.
+    * Added wireless option for setting different timers and behavior on wireless environments.
+    * Added multicast Loop option for setsockopt.
+    * Added endianess support for cross-platform deployments.
+    * Added SSL-based security on point-to-point communication between the daemons (experimental). 
+
+Version 2.2 - Dec 20, 2005
+
+    * Added support for creating custom topologies with dynamic link characteristics.
+    * Several minor bug fixes. 
+
+Version 2.1 - Jan 18, 2005
+
+    * Changed the API to closely resemble the regular socket interface.
+    * Added option for UDP communication between the applications and overlay nodes.
+    * New Real-Time link and routing protocol for use in time-sensitive applications such as VoIP.
+    * Added support for large data packets, up to 64KB for datagram communication and virtually unlimited for stream-based communication.
+    * Added end-to-end application flow control for stream-based communication. 
+
+Version 2.0 - Dec 14, 2003
+
+    * Added Multicast capabilities.
+    * Routing based on distance, latency or loss rate of the links.
+    * Stream based fairness option for the reliable link congestion control.
+    * Added setloss monitor command for setting loss and burstiness on overlay links. 
+
+Version 1.0 - Jan 17, 2003
+
+    * Initial release. 

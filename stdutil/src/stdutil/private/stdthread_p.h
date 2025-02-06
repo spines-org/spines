@@ -1,4 +1,4 @@
-/* Copyright (c) 2000-2006, The Johns Hopkins University
+/* Copyright (c) 2000-2009, The Johns Hopkins University
  * All rights reserved.
  *
  * The contents of this file are subject to a license (the ``License'').
@@ -22,7 +22,16 @@
 #ifndef stdthread_p_h_2000_05_18_12_57_48_jschultz_at_cnds_jhu_edu
 #define stdthread_p_h_2000_05_18_12_57_48_jschultz_at_cnds_jhu_edu
 
-#if defined(_WIN32)
+#if !defined(_REENTRANT)
+
+#  define STDTHREAD_FCN
+
+typedef int stdthread;
+typedef int stdthread_id;
+typedef int stdmutex_impl;
+typedef int stdcond_impl;
+
+#elif defined(_WIN32)
 #  include <windows.h>
 #  define STDTHREAD_FCN __stdcall
 
@@ -97,4 +106,4 @@ typedef struct stdmutex
 
 typedef stdcond_impl stdcond;
 
-# endif
+#endif

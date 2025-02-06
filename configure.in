@@ -1,4 +1,4 @@
-AC_INIT(Spines, 2.2)
+AC_INIT(Spines, 3.2)
 
 AC_CONFIG_AUX_DIR(buildtools)
 AC_CONFIG_HEADER(util/config.h)
@@ -78,6 +78,16 @@ AC_ARG_WITH(libs,
 	]	
 )
 
+AC_ARG_WITH(wireless,
+	[  --with-wireless             Enable Wireless support in Spines],
+	[
+		if test "x$withval" != "xno" ; then
+			WIRELESS_SUPPORT=1
+		fi
+	]	
+)
+AC_SUBST(WIRELESS_SUPPORT)
+
 # Checks for libraries.
  OLDLDFLAGS=$LDFLAGS
  LDFLAGS=
@@ -108,6 +118,9 @@ AC_FUNC_STRFTIME
 # Checks for header files.
 AC_CHECK_HEADERS(arpa/inet.h assert.h errno.h grp.h limits.h netdb.h netinet/in.h netinet/tcp.h process.h pthread.h pwd.h signal.h stdarg.h stdint.h stdio.h stdlib.h string.h sys/inttypes.h sys/ioctl.h sys/param.h sys/socket.h sys/sockio.h sys/stat.h sys/time.h sys/timeb.h sys/types.h sys/uio.h sys/un.h sys/filio.h time.h unistd.h windows.h winsock.h)
 
+# New checks to support wireless
+AC_CHECK_HEADERS(features.h netpacket/packet.h net/ethernet.h net/if_arp.h dlfcn.h)
+
 dnl    Checks for library functions.
 AC_CHECK_FUNCS(bcopy inet_aton inet_ntoa inet_ntop memmove setsid snprintf strerror lrand48)
 dnl    Checks for time functions
@@ -124,7 +137,7 @@ int main(void){char b[5];snprintf(b,5,"123456789");return(b[4]!='\0');}
 		[AC_MSG_RESULT(yes)], 
 		[
 			AC_MSG_RESULT(no)
-			AC_DEFINE(BROKEN_SNPRINTF)
+			AC_DEFINE(BROKEN_SNPRINTF, 1, Define if your snprintf is busted)
 			AC_MSG_WARN([****** Your snprintf() function is broken, complain to your vendor])
 		]
 	)
@@ -152,7 +165,7 @@ AC_CACHE_CHECK([for windows arch], ac_cv_arch_win, [
 	)
 ])
 if test "x$ac_cv_arch_win" = "xyes" ; then
-	AC_DEFINE(ARCH_PC_WIN95)
+	AC_DEFINE(ARCH_PC_WIN95, 1, Building on a Windows OS Platform)
 fi
 
 AC_CACHE_CHECK([for struct timezone type], ac_cv_have_struct_timezone, [
@@ -166,7 +179,7 @@ AC_CACHE_CHECK([for struct timezone type], ac_cv_have_struct_timezone, [
 	)
 ])
 if test "x$ac_cv_have_struct_timezone" = "xyes" ; then
-	AC_DEFINE(HAVE_STRUCT_TIMEZONE)
+	AC_DEFINE(HAVE_STRUCT_TIMEZONE, 1, struct timezone)
 fi
 
 AC_CACHE_CHECK([for struct sockopt_len_t type], ac_cv_have_sockopt_len_t, [
@@ -179,7 +192,7 @@ AC_CACHE_CHECK([for struct sockopt_len_t type], ac_cv_have_sockopt_len_t, [
 	)
 ])
 if test "x$ac_cv_have_sockopt_len_t" = "xyes" ; then
-	AC_DEFINE(HAVE_SOCKOPT_LEN_T)
+	AC_DEFINE(HAVE_SOCKOPT_LEN_T, 1, struct sockopt_len_t)
 fi
 
 AC_CACHE_CHECK([for struct msghdr type], ac_cv_have_struct_msghdr, [
@@ -192,7 +205,7 @@ AC_CACHE_CHECK([for struct msghdr type], ac_cv_have_struct_msghdr, [
 	)
 ])
 if test "x$ac_cv_have_struct_msghdr" = "xno" ; then
-	AC_DEFINE(ARCH_SCATTER_NONE)
+	AC_DEFINE(ARCH_SCATTER_NONE, 1, Platform does not support scatter/gather sendmsg)
 else
   have_scatter="no"
   AC_CACHE_CHECK([for struct msghdr accrights], ac_cv_have_struct_msghdr_acc, [
@@ -205,7 +218,7 @@ else
         )
   ])
   if test "x$ac_cv_have_struct_msghdr_acc" = "xyes" ; then
-	AC_DEFINE(ARCH_SCATTER_ACCRIGHTS)
+	AC_DEFINE(ARCH_SCATTER_ACCRIGHTS, 1, Platform supports sendmsg scatter/gather using accrights structure)
 	have_scatter="yes"
   fi
   if test "x$have_scatter" = "xno" ; then
@@ -219,7 +232,7 @@ else
             )
      	])
 	if test "x$ac_cv_have_struct_msghdr_ctl" = "xyes" ; then
-	    AC_DEFINE(ARCH_SCATTER_CONTROL)
+	    AC_DEFINE(ARCH_SCATTER_CONTROL, 1, Platform supports sendmsg scatter/gather using control structure)
             have_scatter="yes"
 	fi
   fi
@@ -237,7 +250,7 @@ AC_CACHE_CHECK([for u_int type], ac_cv_have_u_int, [
 	)
 ])
 if test "x$ac_cv_have_u_int" = "xyes" ; then
-	AC_DEFINE(HAVE_U_INT)
+	AC_DEFINE(HAVE_U_INT, 1, unsigned int type u_int)
 	have_u_int=1
 fi
 
@@ -250,7 +263,7 @@ AC_CACHE_CHECK([for intXX_t types], ac_cv_have_intxx_t, [
 	)
 ])
 if test "x$ac_cv_have_intxx_t" = "xyes" ; then
-	AC_DEFINE(HAVE_INTXX_T)
+	AC_DEFINE(HAVE_INTXX_T, 1, various intxx_t types)
 	have_intxx_t=1
 fi
 	
@@ -263,7 +276,7 @@ AC_CACHE_CHECK([for int64_t type], ac_cv_have_int64_t, [
 	)
 ])
 if test "x$ac_cv_have_int64_t" = "xyes" ; then
-	AC_DEFINE(HAVE_INT64_T)
+	AC_DEFINE(HAVE_INT64_T, 1, int64_t type)
 	have_int64_t=1
 fi
 	
@@ -276,7 +289,7 @@ AC_CACHE_CHECK([for u_intXX_t types], ac_cv_have_u_intxx_t, [
 	)
 ])
 if test "x$ac_cv_have_u_intxx_t" = "xyes" ; then
-	AC_DEFINE(HAVE_U_INTXX_T)
+	AC_DEFINE(HAVE_U_INTXX_T, 1, various unsigned intxx_t types)
 	have_u_intxx_t=1
 fi
 
@@ -289,7 +302,7 @@ AC_CACHE_CHECK([for u_int64_t types], ac_cv_have_u_int64_t, [
 	)
 ])
 if test "x$ac_cv_have_u_int64_t" = "xyes" ; then
-	AC_DEFINE(HAVE_U_INT64_T)
+	AC_DEFINE(HAVE_U_INT64_T, 1, unsigned int64_t)
 	have_u_int64_t=1
 fi
 
@@ -307,8 +320,8 @@ then
 			a = b = c = e = f = g = 1;
 		], 
 		[
-			AC_DEFINE(HAVE_U_INTXX_T)
-			AC_DEFINE(HAVE_INTXX_T)
+			AC_DEFINE(HAVE_U_INTXX_T, 1)
+			AC_DEFINE(HAVE_INTXX_T, 1)
 			AC_MSG_RESULT(yes)
 		],
 		[AC_MSG_RESULT(no)]
@@ -327,7 +340,7 @@ if test -z "$have_u_intxx_t" ; then
 		)
 	])
 	if test "x$ac_cv_have_uintxx_t" = "xyes" ; then
-		AC_DEFINE(HAVE_UINTXX_T)
+		AC_DEFINE(HAVE_UINTXX_T, 1, various unsigned intxx_t types)
 	fi
 fi
 
@@ -343,7 +356,7 @@ AC_CACHE_CHECK([for socklen_t], ac_cv_have_socklen_t, [
 	)
 ])
 if test "x$ac_cv_have_socklen_t" = "xyes" ; then
-	AC_DEFINE(HAVE_SOCKLEN_T)
+	AC_DEFINE(HAVE_SOCKLEN_T, 1, socklen_t type)
 fi
 
 AC_CACHE_CHECK([for size_t], ac_cv_have_size_t, [
@@ -357,7 +370,7 @@ AC_CACHE_CHECK([for size_t], ac_cv_have_size_t, [
 	)
 ])
 if test "x$ac_cv_have_size_t" = "xyes" ; then
-	AC_DEFINE(HAVE_SIZE_T)
+	AC_DEFINE(HAVE_SIZE_T, 1, size_t type)
 fi
 
 AC_CACHE_CHECK([for ssize_t], ac_cv_have_ssize_t, [
@@ -371,7 +384,7 @@ AC_CACHE_CHECK([for ssize_t], ac_cv_have_ssize_t, [
 	)
 ])
 if test "x$ac_cv_have_ssize_t" = "xyes" ; then
-	AC_DEFINE(HAVE_SSIZE_T)
+	AC_DEFINE(HAVE_SSIZE_T, 1, signed size_t type)
 fi
 
 AC_CACHE_CHECK([for clock_t], ac_cv_have_clock_t, [
@@ -385,7 +398,7 @@ AC_CACHE_CHECK([for clock_t], ac_cv_have_clock_t, [
 	)
 ])
 if test "x$ac_cv_have_clock_t" = "xyes" ; then
-	AC_DEFINE(HAVE_CLOCK_T)
+	AC_DEFINE(HAVE_CLOCK_T, 1, clock_t type)
 fi
 
 AC_CACHE_CHECK([for sa_family_t], ac_cv_have_sa_family_t, [
@@ -410,7 +423,7 @@ AC_CACHE_CHECK([for sa_family_t], ac_cv_have_sa_family_t, [
 	)
 ])
 if test "x$ac_cv_have_sa_family_t" = "xyes" ; then
-	AC_DEFINE(HAVE_SA_FAMILY_T)
+	AC_DEFINE(HAVE_SA_FAMILY_T, 1, sa_family_t type)
 fi
 
 
@@ -426,7 +439,7 @@ AC_CACHE_CHECK([for struct sockaddr_storage], ac_cv_have_struct_sockaddr_storage
 	)
 ])
 if test "x$ac_cv_have_struct_sockaddr_storage" = "xyes" ; then
-	AC_DEFINE(HAVE_STRUCT_SOCKADDR_STORAGE)
+	AC_DEFINE(HAVE_STRUCT_SOCKADDR_STORAGE, 1, struct sockaddr_storage type)
 fi
 
 AC_CACHE_CHECK([for struct sockaddr_in6], ac_cv_have_struct_sockaddr_in6, [
@@ -441,7 +454,7 @@ AC_CACHE_CHECK([for struct sockaddr_in6], ac_cv_have_struct_sockaddr_in6, [
 	)
 ])
 if test "x$ac_cv_have_struct_sockaddr_in6" = "xyes" ; then
-	AC_DEFINE(HAVE_STRUCT_SOCKADDR_IN6)
+	AC_DEFINE(HAVE_STRUCT_SOCKADDR_IN6, 1, struct sockaddr_in6 type)
 fi
 
 AC_CACHE_CHECK([for struct in6_addr], ac_cv_have_struct_in6_addr, [
@@ -456,7 +469,7 @@ AC_CACHE_CHECK([for struct in6_addr], ac_cv_have_struct_in6_addr, [
 	)
 ])
 if test "x$ac_cv_have_struct_in6_addr" = "xyes" ; then
-	AC_DEFINE(HAVE_STRUCT_IN6_ADDR)
+	AC_DEFINE(HAVE_STRUCT_IN6_ADDR, 1, struct in6_addr type)
 fi
 
 AC_CACHE_CHECK([for struct addrinfo], ac_cv_have_struct_addrinfo, [
@@ -472,7 +485,7 @@ AC_CACHE_CHECK([for struct addrinfo], ac_cv_have_struct_addrinfo, [
 	)
 ])
 if test "x$ac_cv_have_struct_addrinfo" = "xyes" ; then
-	AC_DEFINE(HAVE_STRUCT_ADDRINFO)
+	AC_DEFINE(HAVE_STRUCT_ADDRINFO, 1, struct sockaddr type)
 fi
 
 AC_CACHE_CHECK([for struct timeval], ac_cv_have_struct_timeval, [
@@ -484,7 +497,7 @@ AC_CACHE_CHECK([for struct timeval], ac_cv_have_struct_timeval, [
 	)
 ])
 if test "x$ac_cv_have_struct_timeval" = "xyes" ; then
-	AC_DEFINE(HAVE_STRUCT_TIMEVAL)
+	AC_DEFINE(HAVE_STRUCT_TIMEVAL, 1, struct timeval)
 	have_struct_timeval=1
 fi
 
@@ -501,7 +514,24 @@ AC_CACHE_CHECK([for sun_len field in struct sockaddr_un],
 	)
 ])
 if test "x$ac_cv_have_sun_len_in_struct_sockaddr_un" = "xyes" ; then
-	AC_DEFINE(HAVE_SUN_LEN_IN_SOCKADDR_UN)
+	AC_DEFINE(HAVE_SUN_LEN_IN_SOCKADDR_UN, 1, sockaddr_un type has sun_len field)
+fi
+
+AC_CACHE_CHECK([for sin_len field in sockaddr_in],
+		ac_cv_have_sin_len_in_struct_sockaddr_in, [
+	AC_TRY_COMPILE(
+  		[
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+		],
+		[ struct sockaddr_in s; s.sin_len = sizeof(s); ],
+		[ ac_cv_have_sin_len_in_struct_sockaddr_in="yes" ],
+		[ ac_cv_have_sin_len_in_struct_sockaddr_in="no"],
+	)
+])
+if test x"$ac_cv_have_sin_len_in_struct_sockaddr_in" = "xyes"; then
+   	AC_DEFINE(HAVE_SIN_LEN_IN_SOCKADDR_IN, 1 ,[sockaddr_in type has sin_len field])
 fi
 
 AC_CACHE_CHECK([for ss_family field in struct sockaddr_storage],
@@ -517,7 +547,7 @@ AC_CACHE_CHECK([for ss_family field in struct sockaddr_storage],
 	)
 ])
 if test "x$ac_cv_have_ss_family_in_struct_ss" = "xyes" ; then
-	AC_DEFINE(HAVE_SS_FAMILY_IN_SS)
+	AC_DEFINE(HAVE_SS_FAMILY_IN_SS, 1, struct sockaddr_storage has ss_family)
 fi
 
 AC_CACHE_CHECK([for __ss_family field in struct sockaddr_storage],
@@ -533,7 +563,7 @@ AC_CACHE_CHECK([for __ss_family field in struct sockaddr_storage],
 	)
 ])
 if test "x$ac_cv_have___ss_family_in_struct_ss" = "xyes" ; then
-	AC_DEFINE(HAVE___SS_FAMILY_IN_SS)
+	AC_DEFINE(HAVE___SS_FAMILY_IN_SS, 1, struct sockaddr_storage has __ss_family field)
 fi
 
 AC_CACHE_CHECK([for pid_t], ac_cv_have_pid_t, [
@@ -547,7 +577,7 @@ AC_CACHE_CHECK([for pid_t], ac_cv_have_pid_t, [
         )
 ])
 if test "x$ac_cv_have_pid_t" = "xyes" ; then
-        AC_DEFINE(HAVE_PID_T)
+        AC_DEFINE(HAVE_PID_T, 1, pid_t type)
 fi
 
 AC_CACHE_CHECK([if libc defines __progname], ac_cv_libc_defines___progname, [
@@ -558,7 +588,7 @@ AC_CACHE_CHECK([if libc defines __progname], ac_cv_libc_defines___progname, [
 	)
 ])
 if test "x$ac_cv_libc_defines___progname" = "xyes" ; then
-	AC_DEFINE(HAVE___PROGNAME)
+	AC_DEFINE(HAVE___PROGNAME, 1, Define if libc defines __progname)
 fi
 
 
@@ -570,7 +600,7 @@ AC_CACHE_CHECK([if libc defines sys_errlist], ac_cv_libc_defines_sys_errlist, [
 	)
 ])
 if test "x$ac_cv_libc_defines_sys_errlist" = "xyes" ; then
-	AC_DEFINE(HAVE_SYS_ERRLIST)
+	AC_DEFINE(HAVE_SYS_ERRLIST, 1, sys_errlist structure)
 fi
 
 
@@ -582,7 +612,7 @@ AC_CACHE_CHECK([if libc defines sys_nerr], ac_cv_libc_defines_sys_nerr, [
 	)
 ])
 if test "x$ac_cv_libc_defines_sys_nerr" = "xyes" ; then
-	AC_DEFINE(HAVE_SYS_NERR)
+	AC_DEFINE(HAVE_SYS_NERR, 1, sys_nerr function)
 fi
 
 
@@ -653,7 +683,7 @@ if test ! -d $piddir ; then
 	esac
 fi
 
-AC_DEFINE_UNQUOTED(_PATH_SPREAD_PIDDIR, "$piddir")
+AC_DEFINE_UNQUOTED(_PATH_SPREAD_PIDDIR, "$piddir", Specify location of spread.pid)
 AC_SUBST(piddir)
 
 # Where to find spread.conf and other config files
@@ -662,7 +692,7 @@ case $etcdir in
 	NONE/*) etcdir=`echo $etcdir | sed "s~NONE~$ac_default_prefix~"` ;;
 esac
 
-AC_DEFINE_UNQUOTED(SPREAD_ETCDIR, "$etcdir")
+AC_DEFINE_UNQUOTED(SPREAD_ETCDIR, "$etcdir", "Specify location of spread.conf and other configuration files")
 
 # autoconf does not have docdir option, so add one
 AC_ARG_WITH(docdir,
@@ -680,6 +710,16 @@ AC_ARG_WITH(docdir,
 )
 AC_SUBST(docdir)
 
+AH_TOP(
+#ifndef _CONFIG_H
+#define _CONFIG_H
+)
+
+AH_BOTTOM(
+#include "defines.h"
+
+#endif /* _CONFIG_H */
+)
 
 AC_EXEEXT
 
@@ -732,8 +772,11 @@ AC_SUBST(LIBTSPCORESO)
 AC_SUBST(SHLDCONVERTSTATIC)
 AC_SUBST(SHLDCONVERTSTATICEND)
 
-#AC_OUTPUT(Makefile daemon/Makefile docs/Makefile libspread/Makefile examples/Makefile)
-AC_OUTPUT(Makefile)
+if test ! "$srcdir" = "." ; then
+   AC_LINK_FILES(stdutil/Makefile, stdutil/Makefile)
+fi
+
+AC_OUTPUT(Makefile Makefile.general daemon/Makefile libspines/Makefile testprogs/Makefile controlprogs/Makefile util/Makefile)
 
 # Print summary of options
 

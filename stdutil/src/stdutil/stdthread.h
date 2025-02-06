@@ -1,4 +1,4 @@
-/* Copyright (c) 2000-2006, The Johns Hopkins University
+/* Copyright (c) 2000-2009, The Johns Hopkins University
  * All rights reserved.
  *
  * The contents of this file are subject to a license (the ``License'').
@@ -22,22 +22,21 @@
 #ifndef stdthread_h_2000_03_14_12_28_17_jschultz_at_cnds_jhu_edu
 #define stdthread_h_2000_03_14_12_28_17_jschultz_at_cnds_jhu_edu
 
-#if defined(_REENTRANT)  /* NOTE: these types and functions are only declared+defined when _REENTRANT is defined */
+#include <stdutil/stddefines.h>
 
-#  include <stdutil/stddefines.h>
-
-#  ifdef __cplusplus
+#ifdef __cplusplus
 extern "C" {
-#  endif
+#endif
 
 typedef enum
 {
+  STDMUTEX_NULL  = (int) 0xe38a690cUL,
   STDMUTEX_FAST  = (int) 0xa720c831UL,
   STDMUTEX_RCRSV = (int) 0x3f6c20deUL
 
 } stdmutex_type;
 
-#  include <stdutil/private/stdthread_p.h>
+#include <stdutil/private/stdthread_p.h>
 
 /* Declare thread entry functions like this: void * STDTHREAD_FCN foo(void * arg); */
 
@@ -79,5 +78,4 @@ STDINLINE stdcode      stdcond_wait(stdcond *cond, stdmutex *mut);
 }
 #  endif
 
-#endif
 #endif

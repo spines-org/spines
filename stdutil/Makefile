@@ -1,5 +1,5 @@
 all:
-	cd src; $(MAKE)
+	cd src; $(MAKE) all
 
 clean: 
 	rm -f *~ core*

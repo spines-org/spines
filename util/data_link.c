@@ -111,6 +111,9 @@ channel	DL_init_channel( int32 channel_type, int16 port, int32 mcast_address, in
         	soc_addr.sin_family    	= AF_INET;
         	soc_addr.sin_port	= htons(port);
                 memset(&soc_addr.sin_zero, 0, sizeof(soc_addr.sin_zero));
+#ifdef HAVE_SIN_LEN_IN_STRUCT_SOCKADDR_IN
+                soc_addr.sin_len        = sizeof(soc_addr);
+#endif
 
                 /* If mcast channel, the interface means the interface to
                    receive mcast packets on, and not interface to bind.
@@ -207,13 +210,13 @@ int	DL_send( channel chan, int32 address, int16 port, sys_scatter *scat )
 {
 
 #ifndef ARCH_SCATTER_NONE
-static	struct	msghdr		msg;
+        struct	msghdr		msg;
 #else	/* ARCH_SCATTER_NONE */
-static	char	pseudo_scat[MAX_PACKET_SIZE];
+        char	pseudo_scat[MAX_PACKET_SIZE];
 #endif	/* ARCH_SCATTER_NONE */
 	
-static	struct  sockaddr_in	soc_addr;
-static	struct timeval 		select_delay = { 0, 10000 };
+	struct  sockaddr_in	soc_addr;
+	struct timeval 		select_delay = { 0, 10000 };
 	int			ret;
 	int			total_len;
 	int			i;
@@ -228,11 +231,16 @@ static	struct timeval 		select_delay = { 0, 10000 };
 	soc_addr.sin_addr.s_addr= htonl(address);
 	soc_addr.sin_port	= htons(port);
 
+#ifdef HAVE_SIN_LEN_IN_STRUCT_SOCKADDR_IN
+        soc_addr.sin_len       = sizeof(soc_addr);
+#endif
+
 #ifdef ARCH_PC_HOME
 	soc_addr.sin_addr.s_addr= htonl(-1073741814);
 #endif /* ARCH_PC_HOME */
 
 #ifndef ARCH_SCATTER_NONE
+        memset(&msg, 0, sizeof(msg));
 	msg.msg_name 	= (caddr_t) &soc_addr;
 	msg.msg_namelen = sizeof(soc_addr);
 	msg.msg_iov	= (struct iovec *)scat->elements;
@@ -276,6 +284,8 @@ static	struct timeval 		select_delay = { 0, 10000 };
 			Alarm( DATA_LINK, "DL_send: delaying after failure in send to %d.%d.%d.%d, ret is %d\n", 
 				IP1(address), IP2(address), IP3(address), IP4(address), ret);
 			select( 0, 0, 0, 0, &select_delay );
+			select_delay.tv_sec = 0;
+			select_delay.tv_usec = 10000;
 		}
 	}
 	if (ret < 0)
@@ -297,9 +307,16 @@ static	struct timeval 		select_delay = { 0, 10000 };
 
 int	DL_recv( channel chan, sys_scatter *scat )
 {
+   int ret;
+   ret = DL_recvfrom( chan, scat, NULL, NULL );
+   
+   return(ret);
+}
+  
+int	DL_recvfrom( channel chan, sys_scatter *scat, int *src_address, unsigned short *src_port )
+{
 #ifndef ARCH_SCATTER_NONE
 static	struct	msghdr	msg;
-        struct  sockaddr_in     source_address;
 #else	/* ARCH_SCATTER_NONE */
 static	char		pseudo_scat[MAX_PACKET_SIZE];
 	int		bytes_to_copy;
@@ -307,8 +324,12 @@ static	char		pseudo_scat[MAX_PACKET_SIZE];
 	int		start;
 	int		i;
 #endif	/* ARCH_SCATTER_NONE */
-
-	int		ret;
+	
+	struct  sockaddr_in     source_address;
+        int             sip;
+        unsigned short  sport;
+        socklen_t       sa_len;
+ 	int		ret;
 
         /* check the scat is small enough to be a sys_scatter */
         assert(scat->num_elements <= ARCH_SCATTER_SIZE);
@@ -331,6 +352,7 @@ static	char		pseudo_scat[MAX_PACKET_SIZE];
 
 #ifndef ARCH_SCATTER_NONE
 	ret = recvmsg( chan, &msg, 0 ); 
+	sa_len = msg.msg_namelen;
 #else	/* ARCH_SCATTER_NONE */
         
 	total_len = 0;                             /*This is for TCP, to not receive*/
@@ -340,7 +362,8 @@ static	char		pseudo_scat[MAX_PACKET_SIZE];
         if(total_len>MAX_PACKET_SIZE)
            total_len = MAX_PACKET_SIZE;
 
-	ret = recvfrom( chan, pseudo_scat, total_len, 0, 0, 0 );
+	sa_len = sizeof(source_address);
+	ret = recvfrom( chan, pseudo_scat, total_len, 0, &source_address, &sa_len);
 	
 	for( i=0, total_len = ret, start =0; total_len > 0; i++)
 	{
@@ -395,6 +418,18 @@ static	char		pseudo_scat[MAX_PACKET_SIZE];
                 Alarm( DATA_LINK, "\n");
         }
 #endif
+	/* Report the source address and port if requested by caller */
+        if (sa_len >= sizeof(struct sockaddr_in) ) {
+            memcpy(&sip, &source_address.sin_addr, sizeof(int32) );
+            sip =  Flip_int32(sip);
+            if (src_address != NULL)
+                *src_address = sip;
+            sport = Flip_int16(source_address.sin_port);
+            if (src_port != NULL)
+                *src_port = sport;
+            Alarm( DATA_LINK, "\tfrom ("IPF") with family %d port %d\n", IP(sip), source_address.sin_family, sport );
+        }
+
 	Alarm( DATA_LINK, "DL_recv: received %d bytes on channel %d\n",
 			ret, chan );
 

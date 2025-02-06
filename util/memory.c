@@ -54,7 +54,7 @@
 #include "errors.h"
 #include "memory.h"
 #include "alarm.h"
-#include "../objects.h"
+#include "../daemon/objects.h"
 
 #define NO_REF_CNT             -1
 #define MAX_MEM_OBJECTS         200

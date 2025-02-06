@@ -67,7 +67,7 @@
 
 #include <string.h>
 #include "sp_events.h"
-#include "../objects.h"    /* For memory */
+#include "../daemon/objects.h"    /* For memory */
 #include "memory.h"     /* for memory */
 #include "alarm.h"
 

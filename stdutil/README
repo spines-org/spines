@@ -1,4 +1,4 @@
-This is the v1.0.1 (November 2007) distribution of the StdUtil library.
+This is the v1.1.0 (May 2009) distribution of the StdUtil library.
 
 DESCRIPTION:
 
@@ -14,13 +14,15 @@ DOCUMENTATION:
 
 Documentation is currently incomplete but will be available in a
 subsequent release in HTML format in the docs directory.  The
-documentation will also be available at
+documentation will also be available at:
+
 http://www.cnds.jhu.edu/software/stdutil/docs
 
 BUILDING: 
 
 StdUtil uses the standard configure/make process for building on unix 
-type systems.
+type systems, although it builds in place and does not have a make install
+option.
 
 PROBLEMS:
 
@@ -30,4 +32,4 @@ fix the problem.
 
 Enjoy,
 John Schultz <jschultz@cnds.jhu.edu>
-November 2007
+May 2009

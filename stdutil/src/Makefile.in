@@ -1,7 +1,7 @@
 .SUFFIXES: .do .to .tdo .lo .ldo .lto .ltdo
 .PHONY: all standard libdir clean distclean uberclean
 
-LIBVERSION=1.0
+LIBVERSION=1.1
 
 ############################################ PROGRAMS #########################################
 
@@ -106,7 +106,7 @@ $(SHARED_THREADED_DEBUG_LIB): $(SHARED_THREADED_DEBUG_OBJS)
 	$(SOFTLINK) -f $@ $(LIBDIR)/libstdutil-debug.@DYNLIBEXT@
 
 clean:
-	rm -f *.o *.do *.to *.tdo *.lo *.ldo *.lto *.ltdo core* *~ $(ALLTARGETS) $(LIBDIR)/libstdutil.a $(LIBDIR)/libstdutil.@DYNLIBEXT@ $(LIBDIR)/libstdutil-debug.a $(LIBDIR)/libstdutil-debug.@DYNLIBEXT@
+	rm -f *.o *.do *.to *.tdo *.lo *.ldo *.lto *.ltdo core* *~ stdutil/*~ stdutil/private/*~ $(ALLTARGETS) $(LIBDIR)/libstdutil.a $(LIBDIR)/libstdutil.@DYNLIBEXT@ $(LIBDIR)/libstdutil-debug.a $(LIBDIR)/libstdutil-debug.@DYNLIBEXT@
 
 distclean: clean
 	rm -f Makefile stdutil/private/stdarch_autoconf.h

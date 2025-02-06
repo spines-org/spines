@@ -1,4 +1,4 @@
-/* Copyright (c) 2000-2006, The Johns Hopkins University
+/* Copyright (c) 2000-2009, The Johns Hopkins University
  * All rights reserved.
  *
  * The contents of this file are subject to a license (the ``License'').
@@ -19,9 +19,114 @@
  *         (CNDS - http://www.cnds.jhu.edu)
  */ 
 
-#if defined(_REENTRANT)
+#include <stdlib.h>
+#include <stdutil/stderror.h>
+#include <stdutil/stdthread.h>
 
-#  include <stdlib.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* TODO: Need to implement code for STDMUTEX_NULL for threaded versions */
+/* TODO: Need to implement code for STDCOND_NULL */
+/* TODO: Need to break out the different implementations into their
+   own sections of code (i.e. - multiple implementations of each
+   function) like we did for !defined(_REENTRANT) 
+*/
+
+#if !defined(_REENTRANT)
+
+STDINLINE stdcode stdthread_spawn(stdthread * thr_ptr, stdthread_id * id,
+				  stdthread_fcn thr_fcn, void * fcn_arg)
+{
+  return STDENOSYS;
+}
+
+STDINLINE stdcode stdthread_detach(stdthread thr)
+{
+  return STDENOSYS;
+}
+
+STDINLINE stdcode stdthread_join(stdthread thr, void ** exitval_ptr)
+{
+  return STDENOSYS;
+}
+
+STDINLINE void stdthread_exit(void * exitval)
+{
+  exit(0);
+}
+
+STDINLINE stdthread_id stdthread_self(void)
+{
+  return STDENOSYS;
+}
+
+STDINLINE stdbool stdthread_eq(stdthread_id id1, stdthread_id id2)
+{
+  return STDENOSYS;
+}
+
+STDINLINE stdcode stdmutex_construct(stdmutex *mut, stdmutex_type t)
+{
+  return (t == STDMUTEX_NULL ? STDESUCCESS : STDENOSYS);
+}
+
+STDINLINE stdcode stdmutex_destruct(stdmutex *mut)
+{
+  return STDESUCCESS;
+}
+
+STDINLINE stdcode stdmutex_grab(stdmutex *mut)
+{
+  return STDESUCCESS;
+}
+
+STDINLINE stdcode stdmutex_trygrab(stdmutex *mut)
+{
+  return STDESUCCESS;
+}
+
+STDINLINE stdcode stdmutex_drop(stdmutex *mut)
+{
+  return STDESUCCESS;
+}
+
+STDINLINE stdcode stdmutex_is_owner(stdmutex *mut, unsigned * grab_cnt)
+{
+  *grab_cnt = (unsigned) -1;
+
+  return STDESUCCESS;
+}
+
+STDINLINE stdcode stdcond_construct(stdcond *cond)
+{
+  return STDENOSYS;
+}
+
+STDINLINE stdcode stdcond_destruct(stdcond *cond)
+{
+  return STDENOSYS;
+}
+
+STDINLINE stdcode stdcond_wake_one(stdcond *cond)
+{
+  return STDENOSYS;
+}
+
+STDINLINE stdcode stdcond_wake_all(stdcond *cond)
+{
+  return STDENOSYS;
+}
+
+STDINLINE stdcode stdcond_wait(stdcond *cond, stdmutex *mut)
+{
+  return STDENOSYS;
+}
+
+/*STDINLINE stdcode stdcond_timedwait(stdcond *cond, stdmutex *mut, long ns);*/
+
+#else
 
 #  if defined(_WIN32)
 #    include <process.h>
@@ -31,13 +136,6 @@
 #  else
 #    include <sys/time.h>
 #  endif
-
-#  include <stdutil/stderror.h>
-#  include <stdutil/stdthread.h>
-
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /************************************************************************************************
  * stdthread_spawn: Create a new thread and start its execution.
@@ -439,7 +537,7 @@ STDINLINE static stdcode stdmutex_fast_drop(stdmutex *mut)
  * stdmutex_fast_cond_wait: Wait on a condition protected by a fast mutex.
  ***********************************************************************************************/
 
-STDINLINE stdcode stdmutex_fast_cond_wait(stdmutex *mut, stdcond *cond)
+STDINLINE static stdcode stdmutex_fast_cond_wait(stdmutex *mut, stdcond *cond)
 #  if defined(_WIN32)
 {
   /* NOTE: this WIN32 code works for both fast and recursive mutexes:
@@ -799,8 +897,7 @@ STDINLINE static stdcode stdmutex_rcrsv_drop(stdmutex *mut)
  * stdmutex_rcrsv_cond_wait: Atomically unlock a 'mut' and wait on 'cond.'
  ***********************************************************************************************/
 
-STDINLINE stdcode stdmutex_rcrsv_cond_wait(stdmutex *mut, stdcond *cond)
-                                           
+STDINLINE static stdcode stdmutex_rcrsv_cond_wait(stdmutex *mut, stdcond *cond)                                           
 #  if defined(_WIN32)
 {
   /* NOTE: the WIN32 code works for both fast and recursive mutexes: 
@@ -863,12 +960,17 @@ STDINLINE stdcode stdmutex_construct(stdmutex *mut, stdmutex_type t)
   stdcode ret = STDEINVAL;
 
   switch (t) {
+
   case STDMUTEX_FAST:
     ret = stdmutex_fast_init(mut);
     break;
 
   case STDMUTEX_RCRSV:
     ret = stdmutex_rcrsv_init(mut);
+    break;
+
+  case STDMUTEX_NULL:
+    ret = STDESUCCESS;
     break;
   }
 
@@ -884,12 +986,17 @@ STDINLINE stdcode stdmutex_destruct(stdmutex *mut)
   stdcode ret = STDEINVAL;
 
   switch (mut->mut_type) {
+
   case STDMUTEX_FAST:
     ret = stdmutex_fast_fini(mut);
     break;
 
   case STDMUTEX_RCRSV:
     ret = stdmutex_rcrsv_fini(mut);
+    break;
+
+  case STDMUTEX_NULL:
+    ret = STDESUCCESS;
     break;
   }
 
@@ -905,12 +1012,17 @@ STDINLINE stdcode stdmutex_grab(stdmutex *mut)
   stdcode ret = STDEINVAL;
 
   switch (mut->mut_type) {
+
   case STDMUTEX_FAST:
     ret = stdmutex_fast_grab(mut, STDTRUE);
     break;
 
   case STDMUTEX_RCRSV:
     ret = stdmutex_rcrsv_grab(mut, STDTRUE);
+    break;
+
+  case STDMUTEX_NULL:
+    ret = STDESUCCESS;
     break;
   }
 
@@ -926,12 +1038,17 @@ STDINLINE stdcode stdmutex_trygrab(stdmutex *mut)
   stdcode ret = STDEINVAL;
 
   switch (mut->mut_type) {
+
   case STDMUTEX_FAST:
     ret = stdmutex_fast_grab(mut, STDFALSE);
     break;
 
   case STDMUTEX_RCRSV:
     ret = stdmutex_rcrsv_grab(mut, STDFALSE);
+    break;
+
+  case STDMUTEX_NULL:
+    ret = STDESUCCESS;
     break;
   }
 
@@ -947,12 +1064,17 @@ STDINLINE stdcode stdmutex_drop(stdmutex *mut)
   stdcode ret = STDEINVAL;
 
   switch (mut->mut_type) {
+
   case STDMUTEX_FAST:
     ret = stdmutex_fast_drop(mut);
     break;
 
   case STDMUTEX_RCRSV:
     ret = stdmutex_rcrsv_drop(mut);
+    break;
+
+  case STDMUTEX_NULL:
+    ret = STDESUCCESS;
     break;
   }
 
@@ -968,12 +1090,18 @@ STDINLINE stdcode stdmutex_is_owner(stdmutex *mut, unsigned *grab_cnt)
   stdcode ret = STDEINVAL;
 
   switch (mut->mut_type) {
+
   case STDMUTEX_FAST:
     ret = STDENOSYS;
     break;
 
   case STDMUTEX_RCRSV:
     ret = stdmutex_rcrsv_is_owner(mut, grab_cnt);
+    break;
+
+  case STDMUTEX_NULL:
+    *grab_cnt = (unsigned) -1;
+    ret = STDESUCCESS;
     break;
   }
 
@@ -1070,12 +1198,17 @@ STDINLINE stdcode stdcond_wait(stdcond *cond, stdmutex *mut)
   stdcode ret = STDEINVAL;
 
   switch (mut->mut_type) {
+
   case STDMUTEX_FAST:
     ret = stdmutex_fast_cond_wait(mut, cond);
     break;
 
   case STDMUTEX_RCRSV:
     ret = stdmutex_rcrsv_cond_wait(mut, cond);
+    break;
+
+  case STDMUTEX_NULL:
+    ret = STDESUCCESS;
     break;
   }
 
@@ -1094,12 +1227,17 @@ STDINLINE stdcode stdcond_wait_timed(stdcond *  cond,
   stdcode ret = STDEINVAL;
 
   switch (mut->mut_type) {
+
   case STDMUTEX_FAST:
     ret = stdmutex_fast_cond_wait_timed(mut, cond);
     break;
 
   case STDMUTEX_RCRSV:
     ret = stdmutex_rcrsv_cond_wait_timed(mut, cond);
+    break;
+
+  case STDMUTEX_NULL:
+    ret = STDESUCCESS;
     break;
   }
 
@@ -1189,10 +1327,8 @@ STDINLINE stdcode stdcond_wait_timed(stdcond *cond, stdmutex *mut, const stdtime
 #  endif
 #endif
 
-#ifdef __cplusplus
-}
 #endif
 
-#else
-int stdthread_trnsl_dummy;  /* avoids empty translation unit error #if !defined(_REENTRANT) */
+#ifdef __cplusplus
+}
 #endif

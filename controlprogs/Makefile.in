@@ -1,0 +1,23 @@
+include ../Makefile.general
+
+VPATH=@srcdir@
+top_srcdir=@top_srcdir@
+
+CPPFLAGS=-I../util -I$(top_srcdir) -I$(top_srcdir)/util -I$(top_srcdir)/libspines @CPPFLAGS@
+
+all: setlink 
+
+setlink: setlink.o ../libspines/spines_lib.a
+	$(CC) -o setlink setlink.o ../libspines/spines_lib.a $(LIBS) 
+
+clean:
+	rm -f *~
+	rm -f *.o
+	rm -f *.to
+
+distclean: clean
+	rm -f setlink
+	rm -f Makefile 
+
+
+

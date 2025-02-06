@@ -171,6 +171,9 @@ typedef         unsigned long   socklen_t;
 #define EAGAIN      WSAEWOULDBLOCK
 #define EINPROGRESS WSAEINPROGRESS
 
+/* Windows does not define MAXHOSTNAMELEN, so we define it here to a reasonable host name limit */
+#define MAXHOSTNAMELEN 128
+
 #ifndef int16
 #define int16 short
 char *soch_strerror(int err);  /* forward declare this func from the arch.c file (win32 only) */
@@ -196,6 +199,10 @@ char *soch_strerror(int err);  /* forward declare this func from the arch.c file
 #define         INT32_MAX       INT_MAX
 #endif
 
+#ifndef int64_t
+#define int64_t __int64
+#endif
+
 /* Declare functions from arch.c */
 char    *sock_strerror(int err);
 
@@ -216,28 +223,20 @@ char    *sock_strerror(int err);
 #define		Set_endian( type )	( ( (type) & ~ENDIAN_TYPE )| ARCH_ENDIAN )
 #define		Same_endian( type )	( ( (type) & ENDIAN_TYPE ) == ARCH_ENDIAN )
 #define		Clear_endian( type )	( (type) & ~ENDIAN_TYPE )
-
+#ifndef         Flip_int16
 #define		Flip_int16( type )	( ( ((type) >> 8) & 0x00ff) | ( ((type) << 8) & 0xff00) )
-
+#endif
+#ifndef         Flip_int32
 #define		Flip_int32( type )	( ( ((type) >>24) & 0x000000ff) | ( ((type) >> 8) & 0x0000ff00) | ( ((type) << 8) & 0x00ff0000) | ( ((type) <<24) & 0xff000000) )
-
+#endif
 #define		channel			int
-#define		mailbox			int
-
-typedef	struct	dummy_membership_id {
-	int32	proc_id;
-	int32	time;
-} membership_id;
-
-typedef struct	dummy_group_id {
-	membership_id	memb_id;
-	int32		index;
-} group_id;
+#define         mailbox                 int
 
 /* 
  * General Useful Types
  */
 
+#undef bool     /* work around bad/different bool definitions in system headers */
 typedef         short           bool;
 #ifndef TRUE
 #define         TRUE            1

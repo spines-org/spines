@@ -1,0 +1,44 @@
+.SUFFIXES: .lo .to .tlo
+
+
+CC=@CC@
+LD=@LD@
+AR=@AR@
+RANLIB=@RANLIB@
+LIBS=@LIBS@ 
+
+
+prefix=@prefix@
+exec_prefix=@exec_prefix@
+bindir=@bindir@
+sbindir=@sbindir@
+datarootdir=@datarootdir@
+libdir=@libdir@
+includedir=@includedir@
+mandir=@mandir@
+mansubdir=@mansubdir@
+sysconfdir=@sysconfdir@
+piddir=@piddir@
+srcdir=@srcdir@
+buildtoolsdir=$(top_srcdir)/buildtools
+host=@host@
+
+CC=@CC@
+LD=@LD@
+CFLAGS=@CFLAGS@ $(LOCAL_CFLAGS)
+LDFLAGS=@LDFLAGS@ 
+LIBS=@LIBS@ 
+THLDFLAGS=@THLDFLAGS@
+THLIBS=@THLIBS@
+LEX=@LEX@
+INSTALL=@INSTALL@
+SOFTLINK=@LN_S@
+EXEEXT=@EXEEXT@
+WIRELESS_SUPPORT=@WIRELESS_SUPPORT@
+
+%.o:	%.c
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c $<  -o $*.o 
+
+%.to:	%.c
+	$(CC) $(CFLAGS) $(CPPFLAGS) -D_REENTRANT -c $< -o $*.to
+
